@@ -127,7 +127,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **TRV-02 (M)** Guests can submit and update their travel details via the magic link.
 - **TRV-03 (M)** **Transfers**: create pickup/drop runs (vehicle, driver, capacity, time) and assign guests; manifest per vehicle; arrivals board by time window.
 - **TRV-04 (M)** **Hotels & room blocks**: hotels, room types, blocked count, rate, check-in/check-out.
-- **TRV-05 (M)** **Room allocation**: assign members to rooms, with occupancy and conflict warnings; rooming list export for hotels.
+- **TRV-05 (M)** **Room allocation**: assign members to rooms, with occupancy and conflict warnings; rooming list export for hotels (names, room, dates and contact phone only; no ID documents or ID numbers, see §8).
 - **TRV-06 (S)** Inter-venue shuttle schedules per function.
 
 ### 3.6 Seating & Check-in (`SEAT`)
@@ -261,8 +261,8 @@ Event
 | **Responsiveness / PWA** | Mobile-first for guest, vendor and day-of screens. Installable PWA. Cached run sheet, guest lookup and check-in work through brief connectivity loss at venues. |
 | **Performance** | Lists of 1,000 guests filter and search in under 300 ms (p95); pages interactive in under 2.5 s on 4G. |
 | **Scale** | ~1,000 guests, 40 vendors and ~50 staff users per event; around 100 concurrent events at launch. |
-| **Security** | HTTPS everywhere; no passwords stored; OTPs are hashed, short-lived, attempt-limited and rate-limited; magic links are long, unguessable, revocable and rate-limited; role and scope checks enforced server-side; bank/ID data encrypted at rest and masked in the UI. |
-| **Privacy** | Personal data (phones, travel, IDs) visible only to roles that need it. Data export and deletion per event. Aligned with India's DPDP Act 2023 (consent for messaging, purpose limitation). |
+| **Security** | HTTPS everywhere; no passwords stored; OTPs are hashed, short-lived, attempt-limited and rate-limited; magic links are long, unguessable, revocable and rate-limited; role and scope checks enforced server-side; vendor bank/tax data encrypted at rest and masked in the UI. |
+| **Privacy** | Personal data (phones, travel) visible only to roles that need it. **No government ID data is collected or stored** (data minimisation). Data export and deletion per event. Aligned with India's DPDP Act 2023 (consent for messaging, purpose limitation). |
 | **Reliability** | Daily backups with point-in-time recovery; 99.5% uptime target; message sending through a retryable job queue. |
 | **Auditability** | Immutable audit log for money, RSVP and permission changes. |
 | **Accessibility** | WCAG 2.1 AA for guest-facing pages; large tap targets and readable fonts for elderly guests. |
@@ -342,6 +342,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 - Public vendor marketplace / discovery.
 - Native iOS/Android apps (the PWA covers mobile).
 - Multi-currency (INR only).
+- **Guest ID collection**: the app does **not** collect, upload or store guest ID proofs or ID numbers (Aadhaar, passport, PAN, …). Hotels collect IDs directly from guests at check-in. Guest forms and file uploads offer no ID fields, and the guest messaging templates tell guests to carry their ID to the hotel.
 
 ---
 
@@ -374,10 +375,9 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
-2. **Gifts / shagun tracking and thank-you notes**: in scope?
-3. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
-4. **Photo sharing / gallery** after the event: in scope?
-5. **Data retention**: how long are guest and personal data kept after the event ends?
-6. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-7. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+1. **Gifts / shagun tracking and thank-you notes**: in scope?
+2. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
+3. **Photo sharing / gallery** after the event: in scope?
+4. **Data retention**: how long are guest and personal data kept after the event ends?
+5. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+6. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
