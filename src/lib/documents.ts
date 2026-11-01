@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
-import { bookings, documentBlobs, documents, invoices, payments, quotes, services, vendors, type DocumentRow } from "@/db/schema";
+import { bookings, documentBlobs, documents, gifts, invoices, messages, payments, quotes, services, vendors, type DocumentRow } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 
 /**
@@ -28,7 +28,9 @@ export type DocumentOwner =
   | { bookingId: string }
   | { invoiceId: string }
   | { paymentId: string }
-  | { serviceId: string };
+  | { serviceId: string }
+  | { messageId: string }
+  | { giftId: string };
 
 export const DOCUMENT_KINDS = ["contract", "quote", "invoice", "receipt", "brief", "other"] as const;
 
@@ -51,16 +53,16 @@ const cleanName = (name: string) =>
 
 async function checkOwner(tx: Tx, eventId: string, owner: DocumentOwner): Promise<Partial<Record<keyof UnionKeys, string>>> {
   const [[key, id]] = Object.entries(owner) as [string, string][];
-  const found = async (t: typeof vendors | typeof quotes | typeof bookings | typeof invoices | typeof payments | typeof services) => {
+  const found = async (t: typeof vendors | typeof quotes | typeof bookings | typeof invoices | typeof payments | typeof services | typeof messages | typeof gifts) => {
     const [row] = await tx.select({ id: t.id }).from(t).where(and(eq(t.id, id), eq(t.eventId, eventId)));
     return !!row;
   };
-  const table = { vendorId: vendors, quoteId: quotes, bookingId: bookings, invoiceId: invoices, paymentId: payments, serviceId: services }[key as keyof UnionKeys];
+  const table = { vendorId: vendors, quoteId: quotes, bookingId: bookings, invoiceId: invoices, paymentId: payments, serviceId: services, messageId: messages, giftId: gifts }[key as keyof UnionKeys];
   if (!table || !(await found(table))) throw new DocumentError("invalid");
   return { [key]: id };
 }
 
-type UnionKeys = { vendorId: 1; quoteId: 1; bookingId: 1; invoiceId: 1; paymentId: 1; serviceId: 1 };
+type UnionKeys = { vendorId: 1; quoteId: 1; bookingId: 1; invoiceId: 1; paymentId: 1; serviceId: 1; messageId: 1; giftId: 1 };
 
 export async function saveDocument(
   db: Database,
@@ -112,7 +114,16 @@ export async function getDocument(db: Tx, eventId: string, documentId: string) {
 
 export async function listDocuments(db: Tx, eventId: string, owner: DocumentOwner): Promise<DocumentRow[]> {
   const [[key, id]] = Object.entries(owner) as [keyof DocumentOwner & string, string][];
-  const col = { vendorId: documents.vendorId, quoteId: documents.quoteId, bookingId: documents.bookingId, invoiceId: documents.invoiceId, paymentId: documents.paymentId, serviceId: documents.serviceId }[key];
+  const col = {
+    vendorId: documents.vendorId,
+    quoteId: documents.quoteId,
+    bookingId: documents.bookingId,
+    invoiceId: documents.invoiceId,
+    paymentId: documents.paymentId,
+    serviceId: documents.serviceId,
+    messageId: documents.messageId,
+    giftId: documents.giftId,
+  }[key];
   return db
     .select()
     .from(documents)
