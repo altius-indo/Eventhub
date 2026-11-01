@@ -82,6 +82,22 @@ In development, codes and invitations aren't really sent. They're written to a d
 
 `dev` providers refuse to run in production unless `ALLOW_DEV_DELIVERY=1` is set.
 
+## Working with Claude Code
+
+This repo is set up for Claude Code:
+
+| Where | What |
+|---|---|
+| `CLAUDE.md` | Project memory: commands, stack, layout, core concepts, conventions |
+| `.claude/rules/*.md` | Path-scoped rules that load when matching files are touched (server actions, database, i18n, security & privacy, testing, UI, Next.js 16) |
+| `.claude/settings.json` | Shared permissions and hooks |
+| `.claude/hooks/` | Session status on start; blocks edits to `.env` and generated migrations; blocks force-push, pushes to main and reading secrets; lints each edited file, checks English/Hindi parity, reminds about migrations; typechecks before Claude finishes |
+| `.claude/skills/` | `/new-module`, `/db-migration`, `/e2e-check` (browser test against a production build and a separate `eventhub_e2e` database), `/adr`, `/i18n-strings`, `/ship-milestone` |
+| `.claude/agents/` | Roles: `product-analyst`, `architect`, `module-builder` (isolated worktree), `code-reviewer`, `security-reviewer`, `qa-tester`, `hindi-translator` |
+| `docs/adr/` | Architecture decision records (13 so far) |
+
+Personal overrides go in `CLAUDE.local.md` and `.claude/settings.local.json` (both git-ignored).
+
 ## Project layout
 
 ```
