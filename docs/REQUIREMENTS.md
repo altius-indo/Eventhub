@@ -24,7 +24,7 @@
 | Tenancy | One account can own/collaborate on **multiple events**; events can be copied as templates |
 | Monetisation | Free / personal use; no billing in v1 |
 | Tech stack | Next.js (TypeScript) + PostgreSQL + Prisma + Tailwind |
-| Planning structure | **Event → Function → Service → Requirement**; vendors are booked to meet requirements (one or more vendors per requirement, with split) |
+| Planning structure | **Event → Function → Service → Requirement**; vendors are booked to meet requirements (one or more vendors per requirement, with split). Coordinators **propose** requirements; the **Planner approves** |
 | Quotes | Vendors quote **per service** or as a **combined quote across functions** (e.g. Catering for Mehendi + Sangeet + Reception); every line maps to a specific service's requirement |
 | Release scope | **All modules in Phase 1** (sequenced as internal milestones; see §9) |
 
@@ -54,7 +54,7 @@
 | Itinerary / functions | RW | RW | RW | R | RW (own functions) | Assigned functions | Invited functions |
 | Run sheet | RW | R | RW | R | RW (own functions) | Own items | – |
 | Tasks | RW | RW | RW | Own/assigned | Own functions | Own tasks | – |
-| Services & requirements | RW | RW | RW | R | RW (own functions) | Services they're invited to quote for or booked on | – |
+| Services & requirements | RW | RW (propose) | RW + approve | R + propose | R + propose (own functions) | Services they're invited to quote for or booked on | – |
 | Vendors & quotes | RW | RW | RW | R | R (own functions) | Own | – |
 | Contracts & documents | RW | RW | RW | – | – | Own | – |
 | Budget | RW | RW (approve) | RW | R (own side payer)* | – | – | – |
@@ -136,12 +136,18 @@ Event
   - **Date/time and venue**: default from the function, overridable (e.g. decor set-up the evening before).
   - **Budget estimate**: planned cost, which feeds the budget (§3.9).
   - **Priority**: must-have / nice-to-have.
-  - **Status**: open → quoting → partially booked → booked → delivered (or cancelled).
+  - **Status**: proposed → open → quoting → partially booked → booked → delivered (or cancelled / rejected).
 - **SVC-05 (S)** **Quantity-linked requirements**: a requirement's quantity can be linked to live data, such as catering pax = RSVP headcount for the function + buffer %, or cars = guests needing pickup / car capacity. Changes flag the requirement and the booked vendor for review.
 - **SVC-06 (M)** **Fulfilment**: a requirement is met by **one or more vendors**, each covering a share (quantity or %) at an agreed amount. The requirement shows coverage, e.g. "20 / 30 cars covered", and stays *partially booked* until fully covered.
 - **SVC-07 (M)** **Gap view**: across the event, list requirements not fully covered, sorted by function date and priority, with days remaining.
 - **SVC-08 (S)** Mark requirements **delivered** after the function (by the service owner, optionally confirmed by the vendor). This can release the final payment milestone.
 - **SVC-09 (S)** Copy services and requirements from one function to another, or from an event template.
+- **SVC-10 (M)** **Proposal & approval workflow**:
+  - **Who proposes**: Side Coordinators (any function, tagged with their side) and Function Coordinators (their own functions) can **propose** new requirements, new services, or changes to existing requirements (quantity, specs, timing, estimate). Hosts can also propose.
+  - **Who approves**: the **Planner** reviews proposals and can approve, reject (with reason) or request changes. The Owner can also approve, as a fallback when no Planner is assigned.
+  - **Before approval**: proposed items are visible but excluded from budget *planned* totals (shown separately as "pending proposals" with their estimated impact). They can't be sent for quotes or booked.
+  - **Changes to booked requirements**: changes to a requirement that's already booked also need approval. Once approved, the booked vendor is notified, and any cost change goes through budget approval (BGT-04).
+  - **Notifications and audit**: proposers are notified of decisions. Planners have an approval queue with a badge count, filterable by function and side. Every proposal, decision and comment is kept in the audit log.
 
 ### 3.8 Vendors & Quotes (`VND`)
 - **VND-01 (M)** Vendor directory: service types offered (one vendor can offer several), contacts, GSTIN, PAN, bank details (masked), rating, notes.
@@ -251,6 +257,7 @@ Function ─< Service (type, owner, brief, payer allocation)
                     └─< Invoice ─< InvoiceLine (GST)
       ─< BudgetLine (standalone costs) ─ payer allocation
       ─< ApprovalRequest (booking, revision, overspend)
+      ─< Proposal (proposer, target: new Service|Requirement or change diff, status, decision by, comments)
       ─< Thread (team|vendor|function) ─< Message
       ─< Broadcast (segment, channels) ─< Delivery (status per recipient)
       ─< AuditLog
@@ -334,5 +341,4 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 8. **Photo sharing / gallery** after the event: in scope?
 9. **Data retention**: how long are guest and personal data kept after the event ends?
 10. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-11. **Who can create requirements**: can side or function coordinators add requirements, or only propose them for planner approval?
-12. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+11. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
