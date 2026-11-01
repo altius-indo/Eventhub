@@ -27,6 +27,7 @@ export default async function EventLayout({ children, params }: LayoutProps<"/ev
     { href: `${base}/messages`, label: t("nav.messages") },
     ...(ctx.can("gifts.record") ? [{ href: `${base}/gifts`, label: t("nav.gifts") }] : []),
     { href: `${base}/website`, label: t("nav.website") },
+    ...(ctx.can("gallery.view") ? [{ href: `${base}/gallery`, label: t("nav.gallery") }] : []),
     { href: `${base}/tasks`, label: t("nav.tasks") },
     { href: `${base}/members`, label: t("nav.members") },
     { href: `${base}/approvals`, label: t("nav.approvals"), badge: ctx.can("approvals.decide") ? pending : 0 },

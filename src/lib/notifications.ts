@@ -38,6 +38,8 @@ export function categoryOf(kind: string): Category {
     vendor: "vendors",
     gift: "gifts",
     thank_you: "gifts",
+    // Gallery moderation and removal requests wait for the family's decision (GAL-04).
+    gallery: "approvals",
   };
   return map[head] ?? "chat";
 }

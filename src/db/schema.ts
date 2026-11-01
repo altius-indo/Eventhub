@@ -487,7 +487,8 @@ export type SiteContent = {
     events: { visible: boolean; title: LocalizedText };
     travel: { visible: boolean; title: LocalizedText; body: LocalizedText };
     faqs: { visible: boolean; title: LocalizedText; items: { q: LocalizedText; a: LocalizedText }[] };
-    gallery: { visible: boolean; title: LocalizedText; imageIds: string[] };
+    /** `highlights`: also show the photos the family picked from the event gallery (GAL-05). */
+    gallery: { visible: boolean; title: LocalizedText; imageIds: string[]; highlights?: boolean };
     gifts: { visible: boolean; title: LocalizedText; body: LocalizedText };
     contact: { visible: boolean; title: LocalizedText; people: { name: string; phone: string }[] };
   };
@@ -1970,3 +1971,230 @@ export type StorageUsageRow = typeof storageUsage.$inferSelect;
 export type StorageReservation = typeof storageReservations.$inferSelect;
 export type GuestErasureRequest = typeof guestErasureRequests.$inferSelect;
 export type EventMetric = typeof eventMetrics.$inferSelect;
+
+// [M7 gallery]
+// ---------------------------------------------------------------------------
+// Post-event photo gallery — GAL-01..08, GAL-10, GAL-11 (milestone 7). Bytes live in object
+// storage (ADR-0030); rows hold keys, sizes and state. Direct uploads ADR-0031, renditions ADR-0032.
+// ---------------------------------------------------------------------------
+
+export const albumKind = pgEnum("album_kind", ["delivery", "family", "guest"]);
+export const uploaderKind = pgEnum("uploader_kind", ["member", "vendor", "household"]);
+export const mediaKind = pgEnum("media_kind", ["photo", "video"]);
+export const mediaStatus = pgEnum("media_status", ["uploading", "processing", "pending", "approved", "hidden", "failed"]);
+export const removalStatus = pgEnum("removal_status", ["open", "removed", "kept"]);
+
+/** Per-event gallery switches (GAL-03/04/06/08/10). No row = defaults. */
+export const gallerySettings = pgTable("gallery_settings", {
+  eventId: uuid("event_id")
+    .primaryKey()
+    .references(() => events.id, { onDelete: "cascade" }),
+  guestUploads: boolean("guest_uploads").notNull().default(false),
+  autoApprove: boolean("auto_approve").notNull().default(false),
+  guestOriginals: boolean("guest_originals").notNull().default(false),
+  reactions: boolean("reactions").notNull().default(true),
+  watermarkText: text("watermark_text"),
+  /** Last orphan-object sweep (daily job). */
+  sweptAt: ts("swept_at"),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+/** Albums inside a function (GAL-01). Delivery albums belong to a vendor's booking (GAL-02). */
+export const galleryAlbums = pgTable(
+  "gallery_albums",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    kind: albumKind("kind").notNull(),
+    bookingId: uuid("booking_id").references(() => bookings.id, { onDelete: "set null" }),
+    vendorId: uuid("vendor_id").references(() => vendors.id, { onDelete: "set null" }),
+    title: text("title").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    /** Visible to guests once released; deliveries stay private to the family until then (GAL-02). */
+    releasedAt: ts("released_at"),
+    releasedBy: uuid("released_by").references(() => users.id, { onDelete: "set null" }),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("gallery_albums_fn_idx").on(t.eventId, t.functionId, t.sortOrder), index("gallery_albums_vendor_idx").on(t.vendorId)],
+);
+
+/** One photo or video (GAL-01..06). `taken_at` starts as the upload time and becomes the EXIF time. */
+export const mediaItems = pgTable(
+  "media_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    albumId: uuid("album_id")
+      .notNull()
+      .references(() => galleryAlbums.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    uploaderKind: uploaderKind("uploader_kind").notNull(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    vendorId: uuid("vendor_id").references(() => vendors.id, { onDelete: "set null" }),
+    householdId: uuid("household_id").references(() => households.id, { onDelete: "cascade" }),
+    /** Chosen by the browser per file, so a retried "begin" resumes instead of duplicating. */
+    clientKey: uuid("client_key").notNull(),
+    kind: mediaKind("kind").notNull(),
+    mime: text("mime").notNull(),
+    filename: text("filename").notNull(),
+    originalKey: text("original_key").notNull(),
+    originalBytes: bigint("original_bytes", { mode: "number" }).notNull().default(0),
+    reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull().default(0),
+    /** The quota reservation held while uploading (gone once committed, released or expired). */
+    reservationId: uuid("reservation_id").references(() => storageReservations.id, { onDelete: "set null" }),
+    thumbKey: text("thumb_key"),
+    webKey: text("web_key"),
+    width: integer("width"),
+    height: integer("height"),
+    takenAt: ts("taken_at").notNull().defaultNow(),
+    status: mediaStatus("status").notNull().default("uploading"),
+    /** Set when no preview could be made (e.g. a HEIC sharp can't read); the original still downloads. */
+    previewError: text("preview_error"),
+    uploadExpiresAt: ts("upload_expires_at"),
+    processingAttempts: integer("processing_attempts").notNull().default(0),
+    lockedUntil: ts("locked_until"),
+    highlight: boolean("highlight").notNull().default(false),
+    approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }),
+    approvedAt: ts("approved_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("media_items_client_uq").on(t.eventId, t.clientKey),
+    index("media_items_album_idx").on(t.eventId, t.albumId, t.takenAt, t.id),
+    index("media_items_fn_idx").on(t.eventId, t.functionId, t.status),
+    index("media_items_household_idx").on(t.householdId),
+    index("media_items_work_idx").on(t.status).where(sql`status in ('uploading', 'processing')`),
+  ],
+);
+
+/** A member's favourites (GAL-07). */
+export const mediaFavourites = pgTable(
+  "media_favourites",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    mediaId: uuid("media_id")
+      .notNull()
+      .references(() => mediaItems.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.mediaId, t.userId] }), index("media_favourites_user_idx").on(t.eventId, t.userId)],
+);
+
+/** The printed-album selection shared with the photographer (GAL-07). */
+export const albumSelections = pgTable(
+  "album_selections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    bookingId: uuid("booking_id").references(() => bookings.id, { onDelete: "set null" }),
+    vendorId: uuid("vendor_id").references(() => vendors.id, { onDelete: "set null" }),
+    title: text("title").notNull(),
+    note: text("note"),
+    deadline: date("deadline"),
+    sharedAt: ts("shared_at"),
+    sharedBy: uuid("shared_by").references(() => users.id, { onDelete: "set null" }),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("album_selections_event_idx").on(t.eventId), index("album_selections_vendor_idx").on(t.vendorId)],
+);
+
+export const albumSelectionItems = pgTable(
+  "album_selection_items",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    selectionId: uuid("selection_id")
+      .notNull()
+      .references(() => albumSelections.id, { onDelete: "cascade" }),
+    mediaId: uuid("media_id")
+      .notNull()
+      .references(() => mediaItems.id, { onDelete: "cascade" }),
+    addedAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.selectionId, t.mediaId] }), index("album_selection_items_media_idx").on(t.mediaId)],
+);
+
+/** Guest likes, one per family (GAL-08). */
+export const mediaLikes = pgTable(
+  "media_likes",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    mediaId: uuid("media_id")
+      .notNull()
+      .references(() => mediaItems.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.mediaId, t.householdId] })],
+);
+
+/** Guest comments (GAL-08); the family can hide them. */
+export const mediaComments = pgTable(
+  "media_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    mediaId: uuid("media_id")
+      .notNull()
+      .references(() => mediaItems.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    hiddenAt: ts("hidden_at"),
+    hiddenBy: uuid("hidden_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("media_comments_media_idx").on(t.mediaId, t.createdAt)],
+);
+
+/** "Please remove this photo of me" (GAL-04). Kept after the photo goes, for the record. */
+export const mediaRemovalRequests = pgTable(
+  "media_removal_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    mediaId: uuid("media_id").references(() => mediaItems.id, { onDelete: "set null" }),
+    householdId: uuid("household_id").references(() => households.id, { onDelete: "set null" }),
+    reason: text("reason"),
+    status: removalStatus("status").notNull().default("open"),
+    decidedBy: uuid("decided_by").references(() => users.id, { onDelete: "set null" }),
+    decidedAt: ts("decided_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("media_removal_event_idx").on(t.eventId, t.status, t.createdAt)],
+);
+
+export type GallerySettings = typeof gallerySettings.$inferSelect;
+export type GalleryAlbum = typeof galleryAlbums.$inferSelect;
+export type MediaItem = typeof mediaItems.$inferSelect;
+export type AlbumSelection = typeof albumSelections.$inferSelect;
+export type MediaComment = typeof mediaComments.$inferSelect;
+export type MediaRemovalRequest = typeof mediaRemovalRequests.$inferSelect;

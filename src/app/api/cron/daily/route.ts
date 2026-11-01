@@ -15,6 +15,8 @@ import { purgeExpiredEvents, sendRetentionReminders } from "@/lib/retention";
 import { getStore } from "@/lib/storage";
 import { processStorageDeletions, reconcileStorage } from "@/lib/storage-gc";
 import { releaseExpiredReservations } from "@/lib/storage-quota";
+import { sweepOrphanObjects, sweepUploads } from "@/lib/gallery";
+import { processRenditions } from "@/lib/renditions";
 
 /** Long enough for a day's reminders across events. */
 export const maxDuration = 60;
@@ -56,9 +58,13 @@ export async function GET(req: Request) {
     // Housekeeping: with the remaining budget; anything left runs tomorrow.
     { name: "purge", run: () => purgeDeletedEvents(db, now), minMs: 3_000 },
     { name: "retentionPurge", run: (left) => purgeExpiredEvents(db, now, { budgetMs: left - 2_000, appUrl }), minMs: 3_000 },
+    // [M7 gallery jobs] uploads whose grant expired (finish or drop), leftover renditions
+    { name: "galleryUploads", run: () => sweepUploads(db, getStore(), now) },
     { name: "expiredReservations", run: () => releaseExpiredReservations(db, now) },
+    { name: "galleryRenditions", run: async (left) => (await processRenditions(db, getStore(), { budgetMs: Math.min(10_000, left - 2_000) })).processed, minMs: 4_000 },
     { name: "storageDeletions", run: (left) => processStorageDeletions(db, getStore(), now, { budgetMs: Math.min(15_000, left - 2_000) }), minMs: 3_000 },
     { name: "storageReconcile", run: (left) => reconcileStorage(db, getStore(), now, { budgetMs: Math.min(10_000, left - 2_000) }), minMs: 3_000 },
+    { name: "galleryOrphans", run: () => sweepOrphanObjects(db, getStore(), now), minMs: 3_000 },
     { name: "oldNotifications", run: () => purgeOldNotifications(db, now) },
     // Notices queued by the retention purge (7-day final notice).
     { name: "outboxFinal", run: async (left) => (await processOutbox(db, { budgetMs: left - 1_000 })).processed, minMs: 2_000 },

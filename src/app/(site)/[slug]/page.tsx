@@ -11,6 +11,7 @@ import { getDb } from "@/db";
 import type { Event, EventFunction, SiteContent } from "@/db/schema";
 import { createTranslator, formatDay, formatTime, type Locale, type Translator } from "@/i18n/core";
 import { listFunctions } from "@/lib/functions";
+import { guestHasGallery, householdFunctionIds, listHighlights } from "@/lib/gallery";
 import { passUrl } from "@/lib/guest-links";
 import { getPortalData, rsvpOpen, type PortalData } from "@/lib/rsvp";
 import { travelLabels, travelSummary } from "@/lib/server/m3-labels";
@@ -176,6 +177,9 @@ export default async function WeddingSite(props: Props) {
     : null;
 
   const publicFunctions = allFunctions.filter((f) => f.isPublic);
+  // Event gallery (GAL-05): highlights on the site; a "Photos" link for families with something to see.
+  const highlights = s.gallery.visible && s.gallery.highlights ? await listHighlights(db, event.id) : [];
+  const photosLink = guest ? await guestHasGallery(db, event.id, { kind: "guest", householdId: guest.household.id, functionIds: await householdFunctionIds(db, event.id, guest.household.id) }) : false;
   const sectionView: Record<SiteContent["order"][number], ReactNode> = {
     welcome: null, // rendered as the hero
     story: s.story.visible && (
@@ -220,12 +224,16 @@ export default async function WeddingSite(props: Props) {
         </div>
       </Section>
     ),
-    gallery: s.gallery.visible && s.gallery.imageIds.length > 0 && (
+    gallery: s.gallery.visible && (s.gallery.imageIds.length > 0 || highlights.length > 0) && (
       <Section id="gallery" title={pick(s.gallery.title, locale)} theme={theme}>
         <div className="columns-2 gap-3 sm:columns-3">
           {s.gallery.imageIds.map((id) => (
             // eslint-disable-next-line @next/next/no-img-element
             <img key={id} src={`/site-images/${id}`} alt="" loading="lazy" className="mb-3 w-full break-inside-avoid rounded-xl" />
+          ))}
+          {highlights.map((h) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img key={h.id} src={`/${slug}/gallery/highlights/${h.id}`} alt="" loading="lazy" width={h.width ?? undefined} height={h.height ?? undefined} className="mb-3 h-auto w-full break-inside-avoid rounded-xl" />
           ))}
         </div>
       </Section>
@@ -279,6 +287,14 @@ export default async function WeddingSite(props: Props) {
         )}
         {s.welcome.visible && pick(s.welcome.message, locale) && <p className="mx-auto mt-5 max-w-xl whitespace-pre-line text-lg leading-relaxed">{pick(s.welcome.message, locale)}</p>}
       </section>
+
+      {photosLink && (
+        <p className="mx-auto max-w-3xl px-4 pb-6">
+          <a href={`/${slug}/gallery`} className={btn} style={{ background: "var(--accent)" }}>
+            {t("gallery.site.nav")}
+          </a>
+        </p>
+      )}
 
       {portal && guest && <Personal slug={slug} portal={portal} t={t} locale={locale} theme={theme} event={event} />}
 

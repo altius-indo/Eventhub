@@ -5,3 +5,4 @@
 import "./broadcasts";
 import "./thank-yous";
 import "./vendor-access";
+import "./gallery-hooks";
