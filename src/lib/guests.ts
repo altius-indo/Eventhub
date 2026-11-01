@@ -347,16 +347,22 @@ export function cleanFilters(input: Record<string, unknown>): GuestFilters {
 function guestConditions(eventId: string, f: GuestFilters): SQL[] {
   const conds: SQL[] = [eq(guests.eventId, eventId)];
   if (f.q) {
-    const pattern = `%${f.q.replace(/[\\%_]/g, "\\$&")}%`;
-    const phoneDigits = f.q.replace(/\D/g, "");
-    conds.push(
-      or(
-        ilike(guests.name, pattern),
-        ilike(households.name, pattern),
-        ilike(guests.email, pattern),
-        phoneDigits.length >= 4 ? ilike(guests.phone, `%${phoneDigits}%`) : undefined,
-      )!,
-    );
+    // A phone typed with spaces ("98765 43210") is one term; otherwise every word must match
+    // the guest's name, family, email or phone, in any order ("Sharma Rajesh").
+    const digitsOnly = /^[\d\s+()-]+$/.test(f.q);
+    const terms = digitsOnly ? [f.q] : f.q.split(/\s+/).filter(Boolean).slice(0, 5);
+    for (const term of terms) {
+      const pattern = `%${term.replace(/[\\%_]/g, "\\$&")}%`;
+      const phoneDigits = term.replace(/\D/g, "");
+      conds.push(
+        or(
+          ilike(guests.name, pattern),
+          ilike(households.name, pattern),
+          ilike(guests.email, pattern),
+          phoneDigits.length >= 4 ? ilike(guests.phone, `%${phoneDigits}%`) : undefined,
+        )!,
+      );
+    }
   }
   if (f.side && (sideEnum.enumValues as readonly string[]).includes(f.side)) conds.push(eq(households.side, f.side as Household["side"]));
   if (f.age && (ageGroupEnum.enumValues as readonly string[]).includes(f.age)) conds.push(eq(guests.ageGroup, f.age as Guest["ageGroup"]));

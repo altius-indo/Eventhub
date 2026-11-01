@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ListFilterBar } from "@/components/list-filter-bar";
 import { SimpleForm } from "@/components/simple-form";
 import { SubmitButton } from "@/components/submit-button";
 import { Alert, Badge, Card, Input, LinkButton, PageHeader, Select, buttonClass } from "@/components/ui";
@@ -80,75 +81,71 @@ export default async function GuestsPage({ params, searchParams }: PageProps<"/e
 
       {/* Filters */}
       <Card>
-        <form className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4" role="search">
-          <Input name="q" defaultValue={filters.q ?? ""} placeholder={t("guests.search")} aria-label={t("guests.search")} className="sm:col-span-2" />
-          <Select name="side" defaultValue={filters.side ?? ""} aria-label={t("household.side")}>
-            <option value="">{t("guests.anySide")}</option>
-            {(["bride", "groom", "both"] as const).map((s) => (
-              <option key={s} value={s}>
-                {t(`sides.${s}`)}
-              </option>
-            ))}
-          </Select>
-          <Select name="fn" defaultValue={filters.fn ?? ""} aria-label={t("guests.invitedTo")}>
-            <option value="">{t("guests.anyFunction")}</option>
-            {fns.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-            <option value="none">{t("guests.notInvited")}</option>
-          </Select>
-          <Select name="tag" defaultValue={filters.tag ?? ""} aria-label={t("guestForm.tags")}>
-            <option value="">{t("guests.anyTag")}</option>
-            {tags.map((tag) => (
-              <option key={tag} value={tag}>
-                {tag}
-              </option>
-            ))}
-          </Select>
-          <Select name="age" defaultValue={filters.age ?? ""} aria-label={t("guestForm.ageGroup")}>
-            <option value="">{t("guests.anyAge")}</option>
-            {(["adult", "child", "infant"] as const).map((a) => (
-              <option key={a} value={a}>
-                {t(`ages.${a}`)}
-              </option>
-            ))}
-          </Select>
-          <Select name="diet" defaultValue={filters.diet ?? ""} aria-label={t("guestForm.diet")}>
-            <option value="">{t("guests.anyDiet")}</option>
-            {(["veg", "non_veg", "jain", "vegan", "other"] as const).map((d) => (
-              <option key={d} value={d}>
-                {t(`diets.${d}`)}
-              </option>
-            ))}
-            <option value="unknown">{t("guests.dietUnknown")}</option>
-          </Select>
-          <Select name="rsvp" defaultValue={filters.rsvp ?? ""} aria-label={t("rsvp.title")}>
-            <option value="">{t("rsvp.anyRsvp")}</option>
-            {(["attending", "maybe", "declined", "pending"] as const).map((r) => (
-              <option key={r} value={r}>
-                {t(`rsvp.${r}`)}
-              </option>
-            ))}
-          </Select>
-          <Select name="travel" defaultValue={filters.travel ?? ""} aria-label={t("travel.title")}>
-            <option value="">{t("rsvp.travelAny")}</option>
-            <option value="submitted">{t("rsvp.travelSubmitted")}</option>
-            <option value="missing">{t("rsvp.travelMissing")}</option>
-            <option value="pickup">{t("rsvp.travelPickup")}</option>
-          </Select>
-          <div className="flex gap-2">
-            <button type="submit" className={buttonClass("primary", "flex-1")}>
-              {t("guests.filter")}
-            </button>
-            {filtered && (
-              <Link href={base} className={buttonClass("ghost")}>
-                {t("guests.clear")}
-              </Link>
-            )}
-          </div>
-        </form>
+        <ListFilterBar
+          values={filters as Record<string, string>}
+          search={{ name: "q", label: t("guests.search"), placeholder: t("guests.search") }}
+          tabs={{
+            name: "side",
+            label: t("guests.filters.sideLabel"),
+            options: [
+              { value: "", label: t("guests.filters.allSides") },
+              ...(["bride", "groom", "both"] as const).map((s) => ({ value: s, label: t(`guests.filters.sideShort.${s}`) })),
+            ],
+          }}
+          chips={[
+            { label: t("guests.notInvitedShort"), set: { fn: "none" } },
+            { label: t("guests.filters.noReply"), set: { rsvp: "pending" } },
+            { label: t("guests.filters.pickup"), set: { travel: "pickup" } },
+            { label: t("guests.filters.children"), set: { age: "child" } },
+          ]}
+          selects={[
+            {
+              name: "fn",
+              label: t("guests.invitedTo"),
+              options: [
+                { value: "", label: t("guests.anyFunction") },
+                ...fns.map((f) => ({ value: f.id, label: f.name })),
+                { value: "none", label: t("guests.notInvited") },
+              ],
+            },
+            {
+              name: "rsvp",
+              label: t("rsvp.title"),
+              options: [
+                { value: "", label: t("rsvp.anyRsvp") },
+                ...(["attending", "maybe", "declined", "pending"] as const).map((r) => ({ value: r, label: t(`rsvp.${r}`) })),
+              ],
+            },
+            ...(tags.length > 0
+              ? [{ name: "tag", label: t("guestForm.tags"), options: [{ value: "", label: t("guests.anyTag") }, ...tags.map((tag) => ({ value: tag, label: tag }))] }]
+              : []),
+            {
+              name: "age",
+              label: t("guestForm.ageGroup"),
+              options: [{ value: "", label: t("guests.anyAge") }, ...(["adult", "child", "infant"] as const).map((a) => ({ value: a, label: t(`ages.${a}`) }))],
+            },
+            {
+              name: "diet",
+              label: t("guestForm.diet"),
+              options: [
+                { value: "", label: t("guests.anyDiet") },
+                ...(["veg", "non_veg", "jain", "vegan", "other"] as const).map((d) => ({ value: d, label: t(`diets.${d}`) })),
+                { value: "unknown", label: t("guests.dietUnknown") },
+              ],
+            },
+            {
+              name: "travel",
+              label: t("travel.title"),
+              options: [
+                { value: "", label: t("rsvp.travelAny") },
+                { value: "submitted", label: t("rsvp.travelSubmitted") },
+                { value: "missing", label: t("rsvp.travelMissing") },
+                { value: "pickup", label: t("rsvp.travelPickup") },
+              ],
+            },
+          ]}
+          labels={{ quick: t("guests.filters.quick"), more: t("guests.filters.more"), moreActive: t("guests.filters.moreActive"), clear: t("guests.filters.clearAll") }}
+        />
 
         {(views.length > 0 || filtered) && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-sm">

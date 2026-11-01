@@ -127,6 +127,9 @@ describe("households and invites", () => {
     expect(await names({})).toEqual(["Anil", "Anya", "Imran", "Rajesh"]);
     expect(await names({ q: "sharma" })).toEqual(["Anya", "Rajesh"]);
     expect(await names({ q: "43210" })).toEqual(["Rajesh"]);
+    expect(await names({ q: "98765 43210" })).toEqual(["Rajesh"]); // a phone with a space is one term
+    expect(await names({ q: "sharma rajesh" })).toEqual(["Rajesh"]); // every word, any order, any field
+    expect(await names({ q: "rajesh verma" })).toEqual([]);
     expect(await names({ side: "groom" })).toEqual(["Anil"]);
     expect(await names({ tag: "VIP" })).toEqual(["Anil", "Rajesh"]);
     expect(await names({ fn: mehendi.id })).toEqual(["Anya", "Rajesh"]);
