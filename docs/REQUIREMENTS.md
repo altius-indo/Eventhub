@@ -61,9 +61,10 @@
 | Budget | RW | RW (approve) | RW | R (own side payer)* | – | – | – |
 | Invoices & payments | RW | RW (approve) | RW | R (own side payer)* | – | Own (upload, view status) | – |
 
-\* Open question; see §11.
 | Messaging / broadcasts | RW | RW | RW | Own side | Own functions | Own threads | Receive / reply |
 | Reports | RW | R | R | Own side | Own functions | – | – |
+
+\* Open question; see §11.
 
 
 ---
