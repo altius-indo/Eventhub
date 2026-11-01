@@ -73,6 +73,14 @@ A web app for planning large, multi-day Indian weddings: itinerary, guests and l
 - Thank-you notes: tracker, templates in English and Hindi (amounts are never included), review and bulk send, printed-card labels, and a reminder 4 weeks after the wedding.
 - Messages are sent through a retrying queue. Email works via Resend; WhatsApp and SMS show "not connected" until provider accounts are set up.
 
+**Milestone 7 (Post-event & hardening)** is built:
+
+- Photo gallery per function: albums, uploads from the family, photographers (vendor portal) and guests (from their personal link), with progress and resume; previews made automatically (HEIC included); review queue for guest uploads; release per album with a one-time "your photos are ready" message; favourites and an album selection shared with the photographer; likes, comments and removal requests; optional watermark; highlights on the wedding website; download-all in parts. Guests only see released photos of functions they were invited to, and downloads have location data removed.
+- Files live in private Vercel Blob storage (Mumbai) with per-event limits (250 GB; 300 items / 5 GB per family) and warnings at 80% and 95%.
+- Data retention: deletion one year after the last function, reminders at 60, 30 and 7 days (never deleted without notice), a one-click archive (Excel, printable pages, documents, gallery), and guest erasure requests.
+- Offline check-in (cached guest list and pass lookup), dashboard RSVP funnel, headcount and arrivals, more Excel exports, faster guest search, and security headers.
+- Easier navigation: opens the last event you used, an event switcher and logo, a menu button on phones, simpler search and filters for guests and tasks.
+
 ## Tech
 
 Next.js 16 (App Router, server actions) · TypeScript · PostgreSQL · Drizzle ORM · Tailwind CSS 4 · Vitest.
