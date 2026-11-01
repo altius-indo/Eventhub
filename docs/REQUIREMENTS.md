@@ -20,6 +20,7 @@
 | Staff & vendor login | **Passwordless OTP** to phone (SMS / WhatsApp) **or** email; no passwords |
 | Guest access | Magic link per household, no account or password |
 | Payments | **Tracking only**; money moves outside the app |
+| Wedding website | **Public wedding microsite** per event; shows only what the family marks public, with a personalised view when opened via a guest's magic link |
 | Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to the receiving family |
 | Spend approvals | **Per-category thresholds**; a cost is approved by the family/families paying it, so **shared costs need both families** |
 | Region | India: INR (lakh/crore formatting), GST on invoices |
@@ -65,6 +66,7 @@
 | Messaging / broadcasts | RW | RW | RW | Own side | Own functions | Own threads | Receive / reply |
 | Reports | RW | R | R | Own side | Own functions | – | – |
 | Gifts / shagun & thank-yous | RW | RW (own family side) | – (grantable) | Record + view own entries | – | – | – |
+| Wedding website | RW + publish | RW + publish | RW (publish needs Owner/Host) | – | – | – | View (+ personalised view via magic link) |
 
 
 
@@ -278,12 +280,46 @@ Event
   - **Printed cards**: export names and postal addresses as Excel or a label PDF, then mark them sent manually.
 - **GFT-10 (S)** **Reminders**: nudge the family when households remain un-thanked N weeks after the event (default 4 weeks); dashboard shows the % thanked.
 
+### 3.15 Public Wedding Website (`WEB`)
+- **WEB-01 (M)** **Microsite per event** at `eventhub.<domain>/<couple-slug>`, e.g. `/priya-weds-arjun`, with a mobile-first responsive layout.
+- **WEB-02 (M)** **Sections** (each can be shown/hidden and reordered):
+  - **Welcome**: hero with couple names, date(s), city and countdown.
+  - **Our story**: text plus photos.
+  - **Events**: public functions only (WEB-04), with date, time, dress code/theme and venue.
+  - **Travel & stay**: getting there, recommended hotels, local tips.
+  - **FAQs**: free text.
+  - **Photo gallery**: pre-wedding/engagement photos uploaded by the family.
+  - **Gift note**: free text, e.g. "Your blessings are our gift".
+  - **Contact**: coordinator names and phone numbers, chosen by the family.
+- **WEB-03 (M)** **Visibility modes**:
+  - **Unlisted** (the default): anyone with the link, `noindex`.
+  - **Passcode-protected**: one shared passcode, rate-limited.
+  - **Public**: indexable by search engines.
+  - The site can be unpublished at any time.
+- **WEB-04 (M)** **Privacy controls**:
+  - Each function is marked *public* (listed on the site) or *private* (shown only to invited guests). Exact venue address and map can be set to *invited guests only*.
+  - The site **never** shows the guest list, RSVP data, travel/room info or gift data, except a guest's own data in personalised view (WEB-05).
+- **WEB-05 (M)** **Personalised view**: opening the site from a household's magic link (GST-06) shows that household:
+  - their invited functions, including private ones;
+  - their RSVP form, travel/pickup and room details, and QR check-in pass.
+  The site doubles as the guest portal (ITN-04).
+- **WEB-06 (M)** **"Find my invitation"**: visitors without a magic link can enter their phone number or email. If it matches a household, the magic link is sent to that number/email (it is not shown on screen), so strangers cannot RSVP or see private details. Unmatched visitors see a "contact the family" message. No open self-registration in v1.
+- **WEB-07 (M)** **Design & languages**:
+  - **Look**: a choice of wedding theme templates (traditional, modern, minimal), colour palette, fonts, monogram/logo and cover photo.
+  - **Languages**: content entered per language with a language toggle (English + Hindi in v1).
+- **WEB-08 (M)** **Editor**: section-based editor with live preview, draft vs published versions, and publish/unpublish. Owner, Host or Planner can edit; **publishing needs Owner or Host**.
+- **WEB-09 (M)** **Sharing**: share link with a rich preview (Open Graph image, title, date) for WhatsApp and social media. QR code of the site URL for printed invites. "Add to calendar" for public functions.
+- **WEB-10 (S)** **Live updates on the day**: an announcements strip fed by broadcasts marked "show on website", plus a live-stream link/embed for remote family.
+- **WEB-11 (S)** **Custom domain** (e.g. `priyawedsarjun.com`) with automatic HTTPS.
+- **WEB-12 (S)** Basic visit analytics (views, link opens, "find my invitation" attempts), privacy-friendly and cookie-less.
+- **WEB-13 (C)** Digital shagun via a UPI QR shown on the site (display only; the app does not process the payment). Deferred; see §8.
+
 ## 4. Non-Functional Requirements
 
 | Area | Requirement |
 |---|---|
 | **Responsiveness / PWA** | Mobile-first for guest, vendor and day-of screens. Installable PWA. Cached run sheet, guest lookup and check-in work through brief connectivity loss at venues. |
-| **Performance** | Lists of 1,000 guests filter and search in under 300 ms (p95); pages interactive in under 2.5 s on 4G. |
+| **Performance** | Lists of 1,000 guests filter and search in under 300 ms (p95); pages interactive in under 2.5 s on 4G. The wedding website is statically generated/cached and loads in under 2 s on 3G-class connections, with images optimised and lazy-loaded. |
 | **Scale** | ~1,000 guests, 40 vendors and ~50 staff users per event; around 100 concurrent events at launch. |
 | **Security** | HTTPS everywhere; no passwords stored; OTPs are hashed, short-lived, attempt-limited and rate-limited; magic links are long, unguessable, revocable and rate-limited; role and scope checks enforced server-side; vendor bank/tax data encrypted at rest and masked in the UI. |
 | **Privacy** | Personal data (phones, travel) visible only to roles that need it. **No government ID data is collected or stored** (data minimisation). Data export and deletion per event. Aligned with India's DPDP Act 2023 (consent for messaging, purpose limitation). |
@@ -327,6 +363,9 @@ Function ─< Service (type, owner, brief, payer allocation)
       ─< Proposal (proposer, target: new Service|Requirement or change diff, status, decision by, comments)
       ─< Thread (team|vendor|function) ─< Message
       ─< Broadcast (segment, channels) ─< Delivery (status per recipient)
+      ─ Website (slug, visibility, passcode_hash, theme, locales[], published_version, custom_domain?)
+              ├─< WebsiteSection (type, order, visible, content per locale, media)
+              └─ per-Function settings: public|private, venue visibility
       ─< Gift (household|free-text giver, type, amount|item, function, received_for, recorded_by, envelope_no, side)
       ─< CashHandover (collector, function, recorded vs counted, handed_to)
       ─< ThankYou (household, status, channel, template, sent_at, sent_by)
@@ -339,7 +378,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 
 1. **Set up the wedding**: Owner creates the event → adds functions → invites the planner and side coordinators → applies the checklist and budget template.
 2. **Build the guest list**: Coordinators import Excel → map columns → fix duplicates → tag side and groups → set per-function invites.
-3. **Invite & RSVP**: Send WhatsApp invites with magic links → guests RSVP per function and member, enter travel → reminders go to non-responders.
+3. **Invite & RSVP**: Family builds and publishes the wedding website → send WhatsApp invites with personal magic links (which open the personalised site) → guests RSVP per function and member, enter travel → reminders go to non-responders.
 4. **Logistics**: Planner reviews the arrivals board → creates pickup runs → allocates rooms → exports rooming lists to hotels.
 5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → above the category threshold, the paying family approves (both families for shared costs) → vendor uploads invoice in the portal → payer records payment → vendor sees "Paid".
 6. **Day-of**: Coordinators open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests → shagun collectors log envelopes in envelope mode and reconcile cash after each function.
@@ -370,6 +409,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 - Public vendor marketplace / discovery.
 - Native iOS/Android apps (the PWA covers mobile).
 - Multi-currency (INR only).
+- Digital shagun collection on the wedding website (WEB-13).
 - **Guest ID collection**: the app does **not** collect, upload or store guest ID proofs or ID numbers (Aadhaar, passport, PAN, …). Hotels collect IDs directly from guests at check-in. Guest forms and file uploads offer no ID fields, and the guest messaging templates tell guests to carry their ID to the hotel.
 
 ---
@@ -382,7 +422,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 |---|---|
 | **M1 Foundation** | Auth, events, members, roles and scoping policy layer, audit log, i18n scaffold, PWA shell, dashboard skeleton |
 | **M2 Guests & Itinerary** | Households/guests, import/export, tags/sides, functions, master schedule, per-function invites, tasks |
-| **M3 Guest Experience** | Magic links, RSVP, personalised itinerary, guest travel submission, Hindi guest pages |
+| **M3 Guest Experience** | Magic links, RSVP, personalised itinerary, guest travel submission, Hindi guest pages, public wedding website (editor, themes, visibility, personalised view) |
 | **M4 Logistics** | Travel, transfers, hotels/room blocks, room allocation, seating plans, QR check-in |
 | **M5 Services, Vendors & Money** | Service catalogue, services & requirements per function, fulfilment/gap view, vendor directory, quotes per service and comparison, contracts, budget (categories/functions/payer), approvals, invoices with GST, payment schedules/status |
 | **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders, gift register & envelope mode, thank-you notes |
@@ -403,8 +443,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
-2. **Photo sharing / gallery** after the event: in scope?
-3. **Data retention**: how long are guest and personal data kept after the event ends?
-4. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-5. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+1. **Photo sharing / gallery** after the event: in scope?
+2. **Data retention**: how long are guest and personal data kept after the event ends?
+3. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+4. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
