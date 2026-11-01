@@ -172,9 +172,15 @@ export async function recipientsFor(db: Tx, eventId: string, householdIds: strin
     .from(guests)
     .where(and(eq(guests.eventId, eventId), inArray(guests.householdId, householdIds)))
     .orderBy(desc(guests.isHead), asc(guests.sortOrder), asc(guests.createdAt));
+  const byHousehold = new Map<string, typeof rows>();
+  for (const g of rows) {
+    const list = byHousehold.get(g.householdId);
+    if (list) list.push(g);
+    else byHousehold.set(g.householdId, [g]);
+  }
   const out = new Map<string, Contact[]>();
   for (const hid of householdIds) {
-    const members = rows.filter((g) => g.householdId === hid);
+    const members = byHousehold.get(hid) ?? [];
     const reachable = members.filter((g) => (g.phone?.trim() || g.email?.trim()) && (g.isHead || g.ageGroup === "adult"));
     const chosen = allAdults ? reachable : reachable.slice(0, 1);
     out.set(

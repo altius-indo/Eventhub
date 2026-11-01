@@ -399,34 +399,34 @@ export async function listGuests(db: Tx, eventId: string, filters: GuestFilters,
     .where(conds)
     .orderBy(asc(households.name), asc(households.id));
 
-  const [{ total }] = await db
-    .select({ total: sql<number>`count(*)::int` })
-    .from(householdIdsQuery.as("h"));
-  const pageRows = await householdIdsQuery.limit(HOUSEHOLDS_PER_PAGE).offset((Math.max(1, page) - 1) * HOUSEHOLDS_PER_PAGE);
+  // Independent queries run in parallel (§4: 1,000 guests filter in < 300 ms p95; tests/perf.test.ts).
+  const [[{ total, matching }], pageRows] = await Promise.all([
+    db
+      .select({ total: sql<number>`count(distinct ${households.id})::int`, matching: sql<number>`count(*)::int` })
+      .from(guests)
+      .innerJoin(households, eq(households.id, guests.householdId))
+      .where(conds),
+    householdIdsQuery.limit(HOUSEHOLDS_PER_PAGE).offset((Math.max(1, page) - 1) * HOUSEHOLDS_PER_PAGE),
+  ]);
   const ids = pageRows.map((r) => r.id);
-  if (ids.length === 0) return { households: [] as HouseholdWithMembers[], totalHouseholds: total, matchingGuests: 0 };
+  if (ids.length === 0) return { households: [] as HouseholdWithMembers[], totalHouseholds: total, matchingGuests: matching };
 
-  const rows = await db
-    .select({ guest: guests, household: households })
-    .from(guests)
-    .innerJoin(households, eq(households.id, guests.householdId))
-    .where(and(conds, inArray(households.id, ids)))
-    .orderBy(asc(households.name), asc(households.id), asc(guests.sortOrder), asc(guests.createdAt));
-  const invites = await db
-    .select()
-    .from(functionInvites)
-    .where(
-      inArray(
-        functionInvites.guestId,
-        rows.map((r) => r.guest.id),
-      ),
-    );
-  const [{ matching }] = await db
-    .select({ matching: sql<number>`count(*)::int` })
-    .from(guests)
-    .innerJoin(households, eq(households.id, guests.householdId))
-    .where(conds);
+  const pageConds = and(conds, inArray(households.id, ids));
+  const [rows, invites] = await Promise.all([
+    db
+      .select({ guest: guests, household: households })
+      .from(guests)
+      .innerJoin(households, eq(households.id, guests.householdId))
+      .where(pageConds)
+      .orderBy(asc(households.name), asc(households.id), asc(guests.sortOrder), asc(guests.createdAt)),
+    db
+      .select({ guestId: functionInvites.guestId, functionId: functionInvites.functionId })
+      .from(functionInvites)
+      .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+      .where(and(eq(guests.eventId, eventId), inArray(guests.householdId, ids))),
+  ]);
 
+  const fnsByGuest = groupInvites(invites);
   const byId = new Map<string, HouseholdWithMembers>();
   for (const { guest, household } of rows) {
     let h = byId.get(household.id);
@@ -434,31 +434,40 @@ export async function listGuests(db: Tx, eventId: string, filters: GuestFilters,
       h = { ...household, members: [] };
       byId.set(household.id, h);
     }
-    h.members.push({ ...guest, functionIds: invites.filter((i) => i.guestId === guest.id).map((i) => i.functionId) });
+    h.members.push({ ...guest, functionIds: fnsByGuest.get(guest.id) ?? [] });
   }
   return { households: [...byId.values()], totalHouseholds: total, matchingGuests: matching };
 }
 
+/** guest id -> invited function ids, in one pass (avoids an O(guests × invites) filter). */
+function groupInvites(invites: { guestId: string; functionId: string }[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const i of invites) {
+    const list = out.get(i.guestId);
+    if (list) list.push(i.functionId);
+    else out.set(i.guestId, [i.functionId]);
+  }
+  return out;
+}
+
 /** Every guest matching the filters (for export and bulk actions). */
 export async function listAllGuests(db: Tx, eventId: string, filters: GuestFilters = {}) {
-  const rows = await db
-    .select({ guest: guests, household: households })
-    .from(guests)
-    .innerJoin(households, eq(households.id, guests.householdId))
-    .where(and(...guestConditions(eventId, filters)))
-    .orderBy(asc(households.name), asc(households.id), asc(guests.sortOrder), asc(guests.createdAt));
-  const invites = rows.length
-    ? await db
-        .select()
-        .from(functionInvites)
-        .where(
-          inArray(
-            functionInvites.guestId,
-            rows.map((r) => r.guest.id),
-          ),
-        )
-    : [];
-  return rows.map((r) => ({ ...r, functionIds: invites.filter((i) => i.guestId === r.guest.id).map((i) => i.functionId) }));
+  // Invites for the whole event in parallel (one indexed scan) rather than a 1,000-id IN list.
+  const [rows, invites] = await Promise.all([
+    db
+      .select({ guest: guests, household: households })
+      .from(guests)
+      .innerJoin(households, eq(households.id, guests.householdId))
+      .where(and(...guestConditions(eventId, filters)))
+      .orderBy(asc(households.name), asc(households.id), asc(guests.sortOrder), asc(guests.createdAt)),
+    db
+      .select({ guestId: functionInvites.guestId, functionId: functionInvites.functionId })
+      .from(functionInvites)
+      .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+      .where(eq(guests.eventId, eventId)),
+  ]);
+  const fnsByGuest = groupInvites(invites);
+  return rows.map((r) => ({ ...r, functionIds: fnsByGuest.get(r.guest.id) ?? [] }));
 }
 
 export async function getHouseholdWithMembers(db: Tx, eventId: string, householdId: string): Promise<HouseholdWithMembers> {
@@ -479,7 +488,8 @@ export async function getHouseholdWithMembers(db: Tx, eventId: string, household
           ),
         )
     : [];
-  return { ...household, members: members.map((m) => ({ ...m, functionIds: invites.filter((i) => i.guestId === m.id).map((i) => i.functionId) })) };
+  const fnsByGuest = groupInvites(invites);
+  return { ...household, members: members.map((m) => ({ ...m, functionIds: fnsByGuest.get(m.id) ?? [] })) };
 }
 
 export async function guestStats(db: Tx, eventId: string) {

@@ -5,6 +5,7 @@ import {
   addWalkIn,
   checkIn,
   checkInCounts,
+  checkInSnapshot,
   CheckInError,
   lookupPass,
   recentCheckIns,
@@ -49,6 +50,26 @@ function publicHousehold(h: CheckInHousehold) {
       checkedInBy: m.checkedInBy,
     })),
   };
+}
+
+/**
+ * Offline snapshot (SEAT-04, ADR-0034): the desk caches this in localStorage so pass lookup and
+ * name search work when it opens without a connection. Members with check-in rights only.
+ */
+export async function GET(_req: Request, { params }: RouteContext<"/events/[eventId]/logistics/check-in/[functionId]/api">) {
+  const { eventId, functionId } = await params;
+  const noStore = { "Cache-Control": "private, no-store" };
+  const session = await getSessionContext();
+  if (!session) return NextResponse.json({ error: "signed_out" }, { status: 401, headers: noStore });
+  if (!isUuid(eventId) || !isUuid(functionId)) return NextResponse.json({ error: "not_found" }, { status: 404, headers: noStore });
+  const ctx = await getEventContext(eventId);
+  if (!ctx.can("checkin.operate")) return NextResponse.json({ error: "forbidden" }, { status: 403, headers: noStore });
+  try {
+    return NextResponse.json(await checkInSnapshot(getDb(), eventId, functionId), { headers: noStore });
+  } catch (err) {
+    if (err instanceof CheckInError) return NextResponse.json({ error: err.code }, { status: 404, headers: noStore });
+    throw err;
+  }
 }
 
 export async function POST(req: Request, { params }: RouteContext<"/events/[eventId]/logistics/check-in/[functionId]/api">) {

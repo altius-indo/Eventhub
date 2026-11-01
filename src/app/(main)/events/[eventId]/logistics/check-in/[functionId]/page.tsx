@@ -21,7 +21,7 @@ export default async function CheckInPage({ params, searchParams }: PageProps<"/
     "scan", "stopScan", "scanHelp", "cameraUnavailable", "search", "searchButton", "noResults", "markArrived", "arrivedAt", "by",
     "notInvited", "declined", "undo", "walkIn", "walkInName", "walkInCount", "walkInAdd", "expected", "arrived", "maybe", "noReply",
     "walkIns", "uninvited", "recent", "pending", "retrying", "saved", "allowUninvited", "invalidPass", "wrongEvent", "offline",
-    "signInAgain", "legacyPass", "rejected", "logIn",
+    "signInAgain", "legacyPass", "rejected", "logIn", "offlineCopy",
   ] as const;
   const labels = {
     ...Object.fromEntries(keys.map((k) => [k, t(`checkin.${k}`, { time: "{time}", name: "{name}", count: "{count}" })])),

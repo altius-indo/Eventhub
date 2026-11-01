@@ -46,9 +46,14 @@ export default async function SeatingPage({ params }: PageProps<"/events/[eventI
           <h2 className="text-xl font-semibold">{t("seating.forFunction", { name: fn.name })}</h2>
           <p className="text-sm text-muted">{t("seating.progress", { seated: plan.seated, invited: plan.invited })}</p>
         </div>
-        <Link href={`/events/${eventId}/schedule/${functionId}/seating/print`} className={buttonClass("secondary")}>
-          {t("logistics.print")}
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <a href={`/events/${eventId}/schedule/${functionId}/seating/export`} className={buttonClass("secondary")}>
+            {t("seating.export")}
+          </a>
+          <Link href={`/events/${eventId}/schedule/${functionId}/seating/print`} className={buttonClass("secondary")}>
+            {t("logistics.print")}
+          </Link>
+        </div>
       </div>
       {plan.warnings.map((w, i) => (
         <Alert key={i} tone="warning">

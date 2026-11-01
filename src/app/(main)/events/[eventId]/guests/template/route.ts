@@ -22,6 +22,7 @@ export async function GET(_req: Request, { params }: RouteContext<"/events/[even
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "Content-Disposition": 'attachment; filename="eventhub-guest-template.xlsx"',
+      "Cache-Control": "private, no-store",
     },
   });
 }

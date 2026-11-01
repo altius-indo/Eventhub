@@ -59,6 +59,9 @@ export default async function RunPage({ params }: PageProps<"/events/[eventId]/l
               <Link href={`${base}/transfers/${runId}/print`} className={buttonClass("ghost", "min-h-10")}>
                 {t("logistics.print")}
               </Link>
+              <a href={`${base}/transfers/${runId}/export`} className={buttonClass("ghost", "min-h-10")}>
+                {t("transfers.export")}
+              </a>
               {run.driverPhone && manifest.length > 0 && (
                 <a href={whatsappShareUrl(run.driverPhone, manifestText(run, manifest, fmt))} target="_blank" rel="noopener noreferrer" className={buttonClass("secondary", "min-h-10")}>
                   {t("transfers.shareDriver")}

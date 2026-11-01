@@ -2,7 +2,7 @@
 
 import { signOutAction } from "@/app/actions";
 
-/** Signs out, drops cached pages and any unsent check-ins on this device (shared devices). */
+/** Signs out, drops cached pages, any unsent check-ins and the offline guest list on this device (shared devices). */
 export function SignOutButton({ label, unsavedWarning }: { label: string; unsavedWarning: string }) {
   return (
     <form
@@ -20,7 +20,8 @@ export function SignOutButton({ label, unsavedWarning }: { label: string; unsave
         }
         navigator.serviceWorker?.controller?.postMessage("clear-pages");
         try {
-          for (const key of Object.keys(localStorage)) if (key.startsWith("eh_checkin_queue_")) localStorage.removeItem(key);
+          // Queued check-ins and the offline guest-list copy (ADR-0034) never outlive the session.
+          for (const key of Object.keys(localStorage)) if (key.startsWith("eh_checkin_queue_") || key.startsWith("eh_checkin_snapshot_")) localStorage.removeItem(key);
         } catch {
           /* storage unavailable */
         }
