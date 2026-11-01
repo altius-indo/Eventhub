@@ -8,8 +8,11 @@ import {
   auditLogs,
   documents,
   eventMetrics,
+  functions,
+  gifts,
   events,
   guestErasureRequests,
+  guests as guestsTable,
   households,
   notifications,
   outboundMessages,
@@ -37,6 +40,7 @@ import {
   sendRetentionReminders,
 } from "@/lib/retention";
 import { FsStore, setStoreForTests } from "@/lib/storage";
+import { getStorageUsage } from "@/lib/storage-quota";
 import { processStorageDeletions } from "@/lib/storage-gc";
 import { createVendor } from "@/lib/vendors";
 import { actorOf, db, makeUser, resetDb } from "./helpers";
@@ -88,7 +92,9 @@ describe("deletion date (EVT-07)", () => {
     const late = new Date("2026-12-11T19:00:00Z");
     expect(retentionFor(ev, "2026-12-11", late)).toMatchObject({ started: true, deletionDate: "2027-12-11", daysLeft: 364 });
     expect(retentionFor({ ...ev, timezone: "UTC" }, "2026-12-11", late)).toMatchObject({ started: false, daysLeft: 365 });
-    expect(retentionFor(ev, null, late)).toEqual({ clockDate: null, deletionDate: null, started: false, daysLeft: null });
+    expect(retentionFor(ev, null, late)).toEqual({ clockDate: null, deletionDate: null, started: false, daysLeft: null, fallback: false });
+    // No dates at all: 2 years after the event was created (ADR-0033).
+    expect(retentionFor({ ...ev, createdAt: new Date("2026-03-01T10:00:00Z") }, null, late)).toMatchObject({ deletionDate: "2028-03-01", fallback: true, started: false });
   });
 
   it("uses the latest function", async () => {
@@ -132,12 +138,51 @@ describe("retention reminders (EVT-08)", () => {
     expect(await sendRetentionReminders(db(), ist("2027-11-22"))).toBe(1); // 59 days → the 60-day one
   });
 
-  it("never reminds or deletes events without dates", async () => {
+  it("deletes events without dates 2 years after creation, with reminders (ADR-0033)", async () => {
     const host = await makeUser("host@example.com");
     const event = await createEvent(db(), actorOf(host), { name: "Undated" });
-    expect(await sendRetentionReminders(db(), ist("2040-01-01"))).toBe(0);
-    expect(await purgeExpiredEvents(db(), ist("2040-01-01"))).toBe(0);
+    await db().update(events).set({ createdAt: new Date("2026-03-01T06:00:00Z") }).where(eq(events.id, event.id));
+    expect((await getRetention(db(), { ...event, createdAt: new Date("2026-03-01T06:00:00Z") }, ist("2027-01-01"))).deletionDate).toBe("2028-03-01");
+    expect(await sendRetentionReminders(db(), ist("2027-12-30"))).toBe(0);
+    expect(await sendRetentionReminders(db(), ist("2028-01-01"))).toBe(1); // 60 days
+    expect(await sendRetentionReminders(db(), ist("2028-02-23"))).toBe(1); // 7 days
+    expect(await purgeExpiredEvents(db(), ist("2028-02-29"))).toBe(0);
+    expect(await purgeExpiredEvents(db(), ist("2028-03-01"))).toBe(1);
+    expect(await db().select().from(events).where(eq(events.id, event.id))).toHaveLength(0);
+  });
+
+  it("emails again when reminders restart for a new deletion date", async () => {
+    const { event, actor } = await setup();
+    expect(await sendRetentionReminders(db(), ist("2027-12-05"))).toBe(1); // 6 days: the 7-day one
+    await createFunction(db(), event.id, actor, { name: "Reception", date: "2026-12-12", ...blank });
+    expect(await sendRetentionReminders(db(), ist("2027-12-06"))).toBe(1); // deletion now 2027-12-12
+    const mails = await db().select().from(outboundMessages).where(like(outboundMessages.idempotencyKey, `retention:${event.id}:%`));
+    expect(mails.filter((m) => m.toAddress === "host@example.com")).toHaveLength(2);
+  });
+});
+
+describe("no deletion without notice (EVT-08)", () => {
+  it("warns first when no reminder went out, then purges 7 days later", async () => {
+    // Last function two years ago, and the reminder job never ran.
+    const { event } = await setup();
+    await db().update(functions).set({ date: "2024-10-31" }).where(eq(functions.eventId, event.id));
+    const now = ist("2026-11-01");
+    expect(await purgeExpiredEvents(db(), now)).toBe(0);
     expect(await db().select().from(events).where(eq(events.id, event.id))).toHaveLength(1);
+    const notes = await db().select().from(notifications).where(eq(notifications.kind, "retention.reminder"));
+    expect(notes).toHaveLength(1);
+    expect(notes[0].data).toMatchObject({ date: "2026-11-08", days: 7 });
+    const mails = await db().select().from(outboundMessages).where(like(outboundMessages.idempotencyKey, `retention:${event.id}:%`));
+    expect(mails.filter((m) => m.toAddress === "host@example.com")).toHaveLength(1);
+    expect(String(mails[0].vars.text)).toContain("2026");
+    // The banner shows the real date.
+    expect((await getRetention(db(), event, now)).deletionDate).toBe("2026-11-08");
+    // A second run does not send again, and nothing goes before the 7 days are up.
+    expect(await purgeExpiredEvents(db(), ist("2026-11-02"))).toBe(0);
+    expect(await purgeExpiredEvents(db(), ist("2026-11-07"))).toBe(0);
+    expect(await db().select().from(notifications).where(eq(notifications.kind, "retention.reminder"))).toHaveLength(1);
+    expect(await purgeExpiredEvents(db(), ist("2026-11-08"))).toBe(1);
+    expect(await db().select().from(events).where(eq(events.id, event.id))).toHaveLength(0);
   });
 });
 
@@ -145,6 +190,8 @@ describe("purge (EVT-07)", () => {
   it("keeps anonymised counts, queues storage and deletes everything on the deletion date", async () => {
     const { event, actor, vendor } = await setup();
     const doc = await saveDocument(db(), event.id, actor, { owner: { vendorId: vendor.id }, kind: "contract", filename: "contract.pdf", data: PDF });
+    // Hosts were warned 7 days before (EVT-08).
+    expect(await sendRetentionReminders(db(), ist("2027-12-04"))).toBe(1);
     expect(await purgeExpiredEvents(db(), ist("2027-12-10"))).toBe(0);
     // 23:00 IST on 10 Dec is still the day before; 00:30 IST on 11 Dec is the day.
     expect(await purgeExpiredEvents(db(), new Date("2027-12-10T17:30:00Z"))).toBe(0);
@@ -247,7 +294,9 @@ describe("guest erasure requests (EVT-09)", () => {
     expect(done.processedAt).not.toBeNull();
     expect(await db().select().from(households).where(eq(households.id, household.id))).toHaveLength(0);
     const [logged] = await listErasureRequests(db(), event.id);
-    expect(logged.request.householdName).toBe("Sharma family");
+    // The log keeps a neutral reference, not the family's name, and drops the note.
+    expect(logged.request.householdName).toBe(`Erased family #${req.id.slice(0, 8)}`);
+    expect(logged.request.note).toBeNull();
     expect(logged.request.householdId).toBeNull();
     expect((await db().select().from(storageDeletions)).map((q) => q.prefix)).toContain(`events/${event.id}/households/${household.id}/`);
     await processStorageDeletions(db(), store, new Date(Date.now() + 1000));
@@ -257,10 +306,112 @@ describe("guest erasure requests (EVT-09)", () => {
     await expect(processErasureRequest(db(), event.id, req.id, actor)).rejects.toMatchObject({ code: "already_processed" });
   });
 
+  it("removes the family from audit data, gift attachments and outgoing messages (DPDP)", async () => {
+    const { event, actor, household } = await setup();
+    const [rajesh] = await db().select().from(guestsTable).where(eq(guestsTable.householdId, household.id));
+    const subject = { isAppAdmin: false, membership: { role: "host" as const, giftAccess: "none" as const } };
+    const { gift } = await createGift(db(), { eventId: event.id, actor, subject }, { householdId: household.id, type: "item", itemDescription: "Silver thali" });
+    const photo = await saveDocument(db(), event.id, actor, { owner: { giftId: gift.id }, kind: "other", filename: "rajesh-thali.pdf", data: PDF });
+    const usedBefore = (await getStorageUsage(db(), event.id)).used;
+    const base = { eventId: event.id, purpose: "broadcast", channel: "email" as const, templateKey: "plain", vars: { text: "Hello Rajesh" } };
+    await db().insert(outboundMessages).values([
+      { ...base, guestId: rajesh.id, toAddress: "rajesh@example.com", status: "sent", idempotencyKey: "m1" },
+      { ...base, guestId: rajesh.id, toAddress: "rajesh@example.com", status: "queued", idempotencyKey: "m2" },
+    ]);
+    // An unrelated audit row stays as it was.
+    const other = await createHousehold(db(), event.id, actor, {
+      household: { name: "Verma family", side: "groom", address: null, city: null, postalCode: null, notes: null },
+      members: [guestSchema.parse({ name: "Anil Verma" })],
+    });
+    const req = await recordErasureRequest(db(), event.id, household.id, actor, { note: "Rajesh called" });
+    await processErasureRequest(db(), event.id, req.id, actor);
+
+    const logs = await db().select().from(auditLogs).where(eq(auditLogs.eventId, event.id));
+    const json = JSON.stringify(logs);
+    for (const pii of ["sharma", "rajesh", "9876543210"]) expect(json.toLowerCase()).not.toContain(pii);
+    expect(logs.find((l) => l.entityId === other.household.id)?.data).toMatchObject({ name: "Verma family" });
+
+    expect(await db().select().from(documents).where(eq(documents.id, photo.id))).toHaveLength(0);
+    expect((await getStorageUsage(db(), event.id)).used).toBe(usedBefore - PDF.length);
+    await processStorageDeletions(db(), store, new Date(Date.now() + 1000));
+    expect(await store.head(photo.storageKey!)).toBeNull();
+    // The gift itself stays, anonymised (GFT-07 reconciliation).
+    expect(await db().select().from(gifts).where(eq(gifts.id, gift.id))).toHaveLength(1);
+
+    const msgs = await db().select().from(outboundMessages).where(eq(outboundMessages.eventId, event.id));
+    expect(msgs.map((m) => m.idempotencyKey)).toEqual(["m1"]);
+    expect(msgs[0]).toMatchObject({ toAddress: "", vars: {}, guestId: null, status: "sent" });
+  });
+
   it("rejects households from another event", async () => {
     const { actor, household } = await setup();
     const other = await createEvent(db(), actor, { name: "Other" });
     await expect(recordErasureRequest(db(), other.id, household.id, actor)).rejects.toMatchObject({ code: "not_found" });
     expect(await db().select().from(guestErasureRequests)).toHaveLength(0);
+  });
+});
+
+describe("archive stream", () => {
+  it("stops promptly when the download is cancelled mid-way", async () => {
+    let sourceCancelled = false;
+    let generatorClosed = false;
+    let pulls = 0;
+    const endless = () =>
+      new ReadableStream<Uint8Array>({
+        pull(c) {
+          pulls++;
+          c.enqueue(new Uint8Array(256 * 1024));
+        },
+        cancel() {
+          sourceCancelled = true;
+        },
+      });
+    async function* entries() {
+      try {
+        yield { path: "big.bin", data: async () => endless() };
+        yield { path: "never.bin", data: new Uint8Array(1) };
+      } finally {
+        generatorClosed = true;
+      }
+    }
+    const reader = zipStream(entries()).getReader();
+    await reader.read();
+    const started = Date.now();
+    await reader.cancel();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(sourceCancelled).toBe(true);
+    expect(generatorClosed).toBe(true);
+    // The producer is idle: no more reads from the source after cancelling.
+    const after = pulls;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(pulls).toBe(after);
+  });
+
+  it("lists files it couldn't read in MISSING.txt, retrying documents once", async () => {
+    const { event, actor, vendor } = await setup();
+    const doc = await saveDocument(db(), event.id, actor, { owner: { vendorId: vendor.id }, kind: "contract", filename: "contract.pdf", data: PDF });
+    const flaky = await saveDocument(db(), event.id, actor, { owner: { vendorId: vendor.id }, kind: "quote", filename: "quote.pdf", data: PDF });
+    await store.delete(doc.storageKey!);
+    // The flaky one fails once, then reads.
+    let failures = 0;
+    const real = store.getBytes.bind(store);
+    store.getBytes = async (key: string) => {
+      if (key === flaky.storageKey && failures++ === 0) throw new Error("store hiccup");
+      return real(key);
+    };
+    try {
+      const subject = { isAppAdmin: false, membership: { role: "host" as const, giftAccess: "none" as const } };
+      const ctx: ArchiveContext = { db: db(), event, t: createTranslator("en"), locale: "en", subject, actor, now: new Date() };
+      const files = unzipSync(new Uint8Array(await new Response(zipStream((await partEntries(ctx, "main"))!)).arrayBuffer()));
+      const names = Object.keys(files);
+      expect(names.some((n) => n.endsWith("quote.pdf"))).toBe(true);
+      expect(names.some((n) => n.endsWith("contract.pdf"))).toBe(false);
+      const missing = strFromU8(files["MISSING.txt"]);
+      expect(missing).toContain("contract.pdf");
+      expect(missing).not.toContain("quote.pdf");
+    } finally {
+      store.getBytes = real;
+    }
   });
 });

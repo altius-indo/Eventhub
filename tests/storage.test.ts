@@ -3,15 +3,28 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { documentBlobs, documents, eventStorageOverrides, notifications, platformSettings, storageDeletions, storageUsage } from "@/db/schema";
+import { documentBlobs, documents, eventStorageOverrides, notifications, platformSettings, storageDeletions, storageHouseholdUsage, storageReservations, storageUsage } from "@/db/schema";
 import { deleteDocument, getDocument, saveDocument } from "@/lib/documents";
 import { createEvent } from "@/lib/events";
 import { createHousehold, guestSchema } from "@/lib/guests";
-import { documentKey, eventKey, FsStore, householdPrefix, isValidKey, isValidPrefix, setStoreForTests, StorageError } from "@/lib/storage";
+import { documentKey, eventKey, FsStore, householdPrefix, isValidKey, isValidPrefix, setStoreForTests, StorageError, storageMisconfigured } from "@/lib/storage";
 import { signedDevUrl, verifyDevUrl } from "@/lib/storage/fs";
 import { mimeAllowed } from "@/lib/storage/types";
-import { processStorageDeletions, queueStorageDeletion, reconcileStorage } from "@/lib/storage-gc";
-import { commit, DEFAULT_STORAGE_LIMITS, free, getStorageLimits, getStorageUsage, release, reserve, StorageQuotaError } from "@/lib/storage-quota";
+import { processStorageDeletions, queueStorageDeletion, reconcileStorage, stuckStorageDeletions } from "@/lib/storage-gc";
+import { usageSources } from "@/lib/storage-sources";
+import {
+  commit,
+  DEFAULT_STORAGE_LIMITS,
+  free,
+  getStorageLimits,
+  getStorageUsage,
+  reconcileUsage,
+  registerUsageSource,
+  release,
+  releaseExpiredReservations,
+  reserve,
+  StorageQuotaError,
+} from "@/lib/storage-quota";
 import { createVendor } from "@/lib/vendors";
 import { actorOf, db, makeUser, resetDb } from "./helpers";
 
@@ -198,6 +211,60 @@ describe("storage quota (LIM-01/03)", () => {
     await db().transaction((tx) => reserve(tx, event.id, 60, "guest", { householdId: h.id }));
   });
 
+  it("gives back reservations of abandoned uploads when they expire", async () => {
+    const { event, actor } = await setup();
+    const { household: h } = await createHousehold(db(), event.id, actor, {
+      household: { name: "Sharma", side: "bride", address: null, city: null, postalCode: null, notes: null },
+      members: [guestSchema.parse({ name: "Rajesh" })],
+    });
+    await db().insert(eventStorageOverrides).values({ eventId: event.id, storageBytes: 1000, guestItems: 1 });
+    const t0 = new Date("2026-12-10T10:00:00Z");
+    // A guest upload that never finishes, and one by a member that does.
+    const abandoned = await db().transaction((tx) => reserve(tx, event.id, 700, "guest", { householdId: h.id, now: t0, ttlSeconds: 3600 }));
+    expect(abandoned.expiresAt.toISOString()).toBe("2026-12-10T11:00:00.000Z");
+    const ok = await db().transaction((tx) => reserve(tx, event.id, 200, "member", { now: t0 }));
+    await db().transaction((tx) => commit(tx, event.id, 200, 150, { reservationId: ok.id }));
+    expect(await db().select().from(storageReservations)).toHaveLength(1);
+    expect((await getStorageUsage(db(), event.id)).reserved).toBe(700);
+    await expect(db().transaction((tx) => reserve(tx, event.id, 200, "member", { now: t0 }))).rejects.toMatchObject({ code: "storage_full" });
+
+    // The daily job gives the space (and the family's allowance) back after expiry.
+    expect(await releaseExpiredReservations(db(), new Date("2026-12-10T10:59:00Z"))).toBe(0);
+    expect(await releaseExpiredReservations(db(), new Date("2026-12-10T11:00:00Z"))).toBe(1);
+    expect((await getStorageUsage(db(), event.id)).reserved).toBe(0);
+    const [hh] = await db().select().from(storageHouseholdUsage).where(eq(storageHouseholdUsage.householdId, h.id));
+    expect([hh.items, hh.bytes]).toEqual([0, 0]);
+    await db().transaction((tx) => reserve(tx, event.id, 1, "guest", { householdId: h.id, now: new Date("2026-12-10T11:01:00Z") }));
+
+    // A late commit of the expired one still counts the object; a late release does nothing.
+    await db().transaction((tx) => commit(tx, event.id, 700, 700, { reservationId: abandoned.id }));
+    expect((await getStorageUsage(db(), event.id)).used).toBe(850);
+    await db().transaction((tx) => release(tx, event.id, 700, { reservationId: abandoned.id }));
+    expect((await getStorageUsage(db(), event.id)).reserved).toBe(1);
+  });
+
+  it("reconcile recomputes reserved bytes from live reservations", async () => {
+    const { event } = await setup();
+    const t0 = new Date("2026-12-10T10:00:00Z");
+    await db().transaction((tx) => reserve(tx, event.id, 300, "member", { now: t0, ttlSeconds: 600 }));
+    await db().transaction((tx) => reserve(tx, event.id, 50, "vendor", { now: t0, ttlSeconds: 7200 }));
+    // The counter drifted (e.g. a crash between steps).
+    await db().update(storageUsage).set({ reservedBytes: 9999 }).where(eq(storageUsage.eventId, event.id));
+    await db().transaction((tx) => reconcileUsage(tx, event.id, new Date("2026-12-10T10:30:00Z")));
+    expect((await getStorageUsage(db(), event.id)).reserved).toBe(50);
+    expect(await db().select().from(storageReservations)).toHaveLength(1);
+  });
+
+  it("commit and release without an id still match the right reservation", async () => {
+    const { event } = await setup();
+    await db().transaction((tx) => reserve(tx, event.id, 100, "member"));
+    await db().transaction((tx) => reserve(tx, event.id, 40, "member"));
+    await db().transaction((tx) => commit(tx, event.id, 40));
+    await db().transaction((tx) => release(tx, event.id, 100));
+    expect(await db().select().from(storageReservations)).toHaveLength(0);
+    expect(await getStorageUsage(db(), event.id)).toMatchObject({ used: 40, reserved: 0 });
+  });
+
   it("warns Hosts once at 80% and once at 95%", async () => {
     const { event } = await setup();
     await db().insert(eventStorageOverrides).values({ eventId: event.id, storageBytes: 1000 });
@@ -277,7 +344,43 @@ describe("documents in object storage (ADR-0030)", () => {
   });
 });
 
+describe("usage sources", () => {
+  it("reconcile adds up every centrally registered source, not just documents", async () => {
+    const { event, actor } = await setup();
+    const vendor = await createVendor(db(), event.id, actor, { name: "Caterer", contactName: null, phone: null, email: null, gstin: null, notes: null, serviceTypeIds: [] });
+    await saveDocument(db(), event.id, actor, { owner: { vendorId: vendor.id }, kind: "contract", filename: "c.pdf", data: PDF });
+    // storage-quota re-exports the central registry, so both import paths register in one place.
+    registerUsageSource({ key: "test.extra", measure: async (_db, id) => (id === event.id ? 1234 : 0) });
+    try {
+      expect(usageSources().map((s) => s.key)).toEqual(expect.arrayContaining(["documents", "test.extra"]));
+      await db().transaction((tx) => reconcileUsage(tx, event.id));
+      expect((await getStorageUsage(db(), event.id)).used).toBe(PDF.length + 1234);
+    } finally {
+      registerUsageSource({ key: "test.extra", measure: async () => 0 });
+    }
+  });
+});
+
+describe("storage configuration", () => {
+  it("requires STORAGE_DRIVER=fs explicitly in production without a Blob token", () => {
+    expect(storageMisconfigured({ NODE_ENV: "production" })).toBe(true);
+    expect(storageMisconfigured({ NODE_ENV: "production", STORAGE_DRIVER: "fs" })).toBe(false);
+    expect(storageMisconfigured({ NODE_ENV: "production", BLOB_READ_WRITE_TOKEN: "x" })).toBe(false);
+    expect(storageMisconfigured({ NODE_ENV: "production", STORAGE_DRIVER: "blob" })).toBe(true);
+    expect(storageMisconfigured({ NODE_ENV: "development" })).toBe(false);
+    expect(storageMisconfigured({ NODE_ENV: "test" })).toBe(false);
+  });
+});
+
 describe("storage deletion queue", () => {
+  it("counts deletions that keep failing for the App Admin", async () => {
+    await db().transaction((tx) => queueStorageDeletion(tx, `events/${EID}/`, "retention"));
+    await db().transaction((tx) => queueStorageDeletion(tx, `events/${EID}/households/h2/`, "erasure"));
+    expect(await stuckStorageDeletions(db())).toBe(0);
+    await db().update(storageDeletions).set({ attempts: 5 }).where(eq(storageDeletions.prefix, `events/${EID}/`));
+    expect(await stuckStorageDeletions(db())).toBe(1);
+  });
+
   it("deletes queued prefixes and retries failures with backoff", async () => {
     await store.put(`events/${EID}/households/h1/a.jpg`, Buffer.from("a"), "image/jpeg");
     await db().transaction((tx) => queueStorageDeletion(tx, householdPrefix(EID, "h1"), "erasure"));

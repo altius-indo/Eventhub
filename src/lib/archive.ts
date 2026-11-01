@@ -73,6 +73,9 @@ export function registerArchivePart(provider: ArchivePartProvider) {
 
 export const PART_ID = /^[a-z0-9-]{1,40}$/;
 
+/** Archive downloads allowed per event per day (any part); the route uses `allowAttempt`. */
+export const ARCHIVE_DOWNLOADS_PER_DAY = 10;
+
 export async function listArchiveParts(db: Tx, eventId: string, t: Translator): Promise<ArchivePart[]> {
   const parts: ArchivePart[] = [{ id: "main", label: t("archive.mainPart"), bytes: null }];
   for (const p of providers) parts.push(...(await p.listParts(db, eventId, t)).filter((x) => PART_ID.test(x.id) && x.id !== "main"));
@@ -112,9 +115,11 @@ export async function* mainEntries(ctx: ArchiveContext): AsyncIterable<ArchiveEn
 
 function documentEntry(db: Tx, doc: DocumentRow, t: Translator): ArchiveEntry {
   const folder = `${t("archive.folders.documents")}/${safeName(t(`documents.kinds.${doc.kind}`))}`;
+  const read = () => documentBytes(db, doc).then((b) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength));
   return {
     path: `${folder}/${doc.createdAt.toISOString().slice(0, 10)}-${doc.id.slice(0, 8)}-${safeName(doc.filename)}`,
-    data: () => documentBytes(db, doc).then((b) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength)).catch(() => null),
+    // One retry (a store hiccup); if it still fails, zipStream lists the file in MISSING.txt.
+    data: () => read().catch(() => read()),
     mtime: doc.createdAt,
   };
 }
@@ -130,53 +135,129 @@ export async function partEntries(ctx: ArchiveContext, partId: string): Promise<
   return null;
 }
 
+export type ZipOptions = {
+  /**
+   * Files that couldn't be read (their `data()` threw or returned null) are left out and listed
+   * in this text file at the end of the ZIP, so a missing file is never silent.
+   */
+  missing?: { name: string; header: string };
+};
+
+const DEFAULT_MISSING = { name: "MISSING.txt", header: "These files could not be read and are not in this archive:" };
+
 /**
  * Streams entries as a ZIP. Files are added one after another and read lazily, and the producer
  * waits while the consumer's queue is full, so memory stays around one file plus a few MB.
+ * Cancelling the response (the browser went away) stops the producer promptly: it stops reading
+ * entries, cancels any open source stream and drops the ZIP.
  */
-export function zipStream(entries: AsyncIterable<ArchiveEntry>): ReadableStream<Uint8Array> {
-  let pending: Promise<void> | null = null;
+export function zipStream(entries: AsyncIterable<ArchiveEntry>, opts: ZipOptions = {}): ReadableStream<Uint8Array> {
+  const missingFile = opts.missing ?? DEFAULT_MISSING;
+  let cancelled = false;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let wake: (() => void) | null = null;
+  const nudge = () => {
+    const w = wake;
+    wake = null;
+    w?.();
+  };
   return new ReadableStream<Uint8Array>(
     {
       start(controller) {
         const zip = new Zip((err, chunk, final) => {
-          if (err) return controller.error(err);
+          if (cancelled) return;
+          if (err) {
+            cancelled = true;
+            return controller.error(err);
+          }
           controller.enqueue(chunk);
           if (final) controller.close();
         });
-        const wait = async () => {
-          while ((controller.desiredSize ?? 1) <= 0) await new Promise((r) => setTimeout(r, 5));
+        /** Resolves when the consumer wants more; false once the stream is cancelled or errored. */
+        const wait = async (): Promise<boolean> => {
+          for (;;) {
+            if (cancelled) return false;
+            const size = controller.desiredSize;
+            if (size === null) {
+              cancelled = true;
+              return false;
+            }
+            if (size > 0) return true;
+            // Woken by pull() or cancel(); the timer is only a safety net.
+            await new Promise<void>((r) => {
+              wake = r;
+              setTimeout(r, 100);
+            });
+          }
         };
-        pending = (async () => {
+        void (async () => {
+          const iterator = entries[Symbol.asyncIterator]();
+          const missing: string[] = [];
           try {
-            for await (const e of entries) {
+            for (;;) {
+              if (!(await wait())) break;
+              const step = await iterator.next();
+              if (step.done || cancelled) break;
+              const e = step.value;
+              let data: Uint8Array | ReadableStream<Uint8Array> | null;
+              try {
+                data = typeof e.data === "function" ? await e.data() : e.data;
+              } catch {
+                data = null;
+              }
+              if (cancelled) break;
+              if (data == null) {
+                missing.push(e.path);
+                continue;
+              }
               const file = e.compress ? new ZipDeflate(e.path, { level: 6 }) : new ZipPassThrough(e.path);
               if (e.mtime) file.mtime = e.mtime;
-              const data = typeof e.data === "function" ? await e.data() : e.data;
-              if (data == null) continue;
               zip.add(file);
               if (data instanceof Uint8Array) {
                 file.push(data, true);
               } else {
-                const reader = data.getReader();
+                reader = data.getReader();
                 for (;;) {
                   const { done, value } = await reader.read();
-                  if (done) break;
+                  if (done || cancelled) break;
                   file.push(value, false);
-                  await wait();
+                  if (!(await wait())) break;
                 }
+                reader = null;
+                if (cancelled) break;
                 file.push(new Uint8Array(0), true);
               }
-              await wait();
+            }
+            if (cancelled) {
+              zip.terminate();
+              return;
+            }
+            if (missing.length) {
+              const note = new ZipDeflate(missingFile.name, { level: 6 });
+              zip.add(note);
+              note.push(strToU8(`${missingFile.header}\n\n${missing.join("\n")}\n`), true);
             }
             zip.end();
           } catch (err) {
-            controller.error(err);
+            if (!cancelled) {
+              cancelled = true;
+              controller.error(err);
+            }
+          } finally {
+            if (cancelled) await iterator.return?.().catch(() => undefined);
           }
         })();
       },
-      async cancel() {
-        await pending?.catch(() => undefined);
+      pull() {
+        nudge();
+      },
+      cancel() {
+        cancelled = true;
+        nudge();
+        // Stop any source stream being read (e.g. a gallery original) right away.
+        const r = reader;
+        reader = null;
+        return r?.cancel().catch(() => undefined);
       },
     },
     new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }),

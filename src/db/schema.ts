@@ -1869,6 +1869,28 @@ export const storageHouseholdUsage = pgTable(
   (t) => [index("storage_household_usage_event_idx").on(t.eventId)],
 );
 
+/**
+ * Space held for an upload in flight (LIM-03). The `storage_usage.reserved_bytes` counter is the
+ * sum of these rows; a reservation that is never committed or released (abandoned browser upload)
+ * expires and is given back by the daily job, and reconcile recomputes the counter from live rows.
+ */
+export const storageReservations = pgTable(
+  "storage_reservations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id").references(() => households.id, { onDelete: "cascade" }),
+    bytes: bigint("bytes", { mode: "number" }).notNull(),
+    items: integer("items").notNull().default(0),
+    audience: text("audience").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("storage_reservations_event_idx").on(t.eventId, t.expiresAt), index("storage_reservations_expiry_idx").on(t.expiresAt)],
+);
+
 /** App Admin overrides of the storage limits for one event (null = platform default). */
 export const eventStorageOverrides = pgTable("event_storage_overrides", {
   eventId: uuid("event_id")
@@ -1945,5 +1967,6 @@ export const guestErasureRequests = pgTable(
 );
 
 export type StorageUsageRow = typeof storageUsage.$inferSelect;
+export type StorageReservation = typeof storageReservations.$inferSelect;
 export type GuestErasureRequest = typeof guestErasureRequests.$inferSelect;
 export type EventMetric = typeof eventMetrics.$inferSelect;

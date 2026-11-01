@@ -61,3 +61,18 @@ deletable in one go (EVT-07).
 - Website images (ADR-0009) are still in Postgres; moving them is follow-up work.
 - Backups: Blob isn't covered by the database's point-in-time recovery; deletions are immediate,
   which satisfies the 35-day purge (EVT-09) but means accidental deletes can't be undone from backup.
+
+## Amendments (M7 review, 2026-11-01)
+
+- **Reservations are rows** (`storage_reservations`, event cascade) with an expiry (default 7 h,
+  longer than the longest upload grant). `reserve()` returns `{ id, bytes, expiresAt }`; pass the id
+  to `commit`/`release` as `reservationId` (optional for older callers: the oldest reservation of the
+  same size and family is used). Expired reservations are given back by the daily job and before
+  each new reservation for that event; `reconcileUsage` recomputes `reserved_bytes` from live rows,
+  so an abandoned browser upload never holds quota for ever.
+- **Usage sources are registered in one module** (`src/lib/storage-sources.ts`, imported by
+  `storage-quota.ts`), so reconcile always sees every source and can't reset usage to documents only.
+  The gallery adds its sources there (`// [M7 gallery usage source]`).
+- **Production driver**: with `NODE_ENV=production` and no `BLOB_READ_WRITE_TOKEN`, the filesystem
+  driver must be chosen explicitly (`STORAGE_DRIVER=fs`), otherwise `getStore()` throws
+  `not_configured`; the dev-blob route answers 404 unless the fs driver is active and configured.

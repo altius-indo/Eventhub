@@ -19,7 +19,7 @@ export default async function AdminEventsPage({ searchParams }: PageProps<"/admi
     .groupBy(events.id)
     .orderBy(desc(events.createdAt))
     .limit(100);
-  // EVT-07: when each event's data goes; events without dates are never deleted automatically.
+  // EVT-07: when each event's data goes; events without dates go 2 years after creation (flagged).
   const retention = await retentionByEvent(getDb(), rows.map((r) => r.event.id));
 
   return (
@@ -41,7 +41,7 @@ export default async function AdminEventsPage({ searchParams }: PageProps<"/admi
                   <p className="flex flex-wrap items-center gap-2 font-medium">
                     {event.name}
                     {event.deletedAt && <Badge tone="danger">{t("admin.deletedBadge")}</Badge>}
-                    {!event.deletedAt && !retention.get(event.id)?.deletionDate && <Badge tone="warning">{t("admin.noRetentionDate")}</Badge>}
+                    {!event.deletedAt && retention.get(event.id)?.fallback && <Badge tone="warning">{t("admin.noRetentionDate")}</Badge>}
                   </p>
                   <p className="text-sm text-muted">
                     {t("admin.memberCount", { count: members })} · {t("admin.createdOn", { date: formatDate(locale, event.createdAt) })}

@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { Card } from "@/components/ui";
 import { phoneLoginEnabled } from "@/lib/delivery";
 import { getSessionContext, getTranslator, safeNext } from "@/lib/server/session";
+import { ClearOfflineCopies } from "@/components/offline-pages";
 import { LoginForm } from "./login-form";
 
 export const metadata: Metadata = { title: "Log in" };
@@ -14,6 +15,8 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
   const { t } = await getTranslator();
   return (
     <div className="mx-auto max-w-sm pt-4 sm:pt-10">
+      {/* No session here: offline day-of copies on this device go (ADR-0034). */}
+      <ClearOfflineCopies />
       <p className="mb-6 text-center text-sm text-muted">{t("app.tagline")}</p>
       <Card>
         <h1 className="text-xl font-semibold">{t("auth.login.title")}</h1>

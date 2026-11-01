@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { checkIn, checkInSnapshot, CheckInError } from "@/lib/checkin";
+import { checkIn, checkInSnapshot, CheckInError, snapshotExpiry, zonedMidnight } from "@/lib/checkin";
 import { sha256 } from "@/lib/crypto";
 import { createEvent } from "@/lib/events";
 import { createFunction } from "@/lib/functions";
@@ -91,5 +91,15 @@ describe("checkInSnapshot (SEAT-04, ADR-0034)", () => {
     await expect(checkInSnapshot(db(), other.id, sangeet.id)).rejects.toBeInstanceOf(CheckInError);
     const otherFn = await createFunction(db(), other.id, actor, { name: "Mehendi", date: "2026-12-20", ...blank });
     expect((await checkInSnapshot(db(), other.id, otherFn.id)).households).toEqual([]);
+  });
+
+  it("expires at the end of the day after the function (event time zone), or 24 h, whichever is later", async () => {
+    const { event, sangeet } = await setup();
+    // Sangeet on 10 Dec: usable until 12 Dec 00:00 IST = 11 Dec 18:30 UTC.
+    expect((await checkInSnapshot(db(), event.id, sangeet.id, new Date("2026-12-09T10:00:00Z"))).expiresAt).toBe("2026-12-11T18:30:00.000Z");
+    // Downloaded late on the day after: still 24 h from then.
+    expect((await checkInSnapshot(db(), event.id, sangeet.id, new Date("2026-12-11T12:00:00Z"))).expiresAt).toBe("2026-12-12T12:00:00.000Z");
+    expect(zonedMidnight("2026-12-12", "Asia/Kolkata").toISOString()).toBe("2026-12-11T18:30:00.000Z");
+    expect(snapshotExpiry(null, "Asia/Kolkata", new Date("2026-12-01T00:00:00Z")).toISOString()).toBe("2026-12-02T00:00:00.000Z");
   });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { cacheCurrentPage, clearOfflineCopies, QUEUE_PREFIX, SNAPSHOT_PREFIX } from "./offline-pages";
 import { Alert, Badge, Button, Card, CardTitle, Field, Input, Select, buttonClass } from "./ui";
 
 type Member = { id: string; name: string; ageGroup: "adult" | "child" | "infant"; invited: boolean; rsvp: "attending" | "maybe" | "declined" | null; checkedInAt: string | null; checkedInBy: string | null };
@@ -12,6 +13,8 @@ type Queued = { guestId: string; at: string; source: "scan" | "manual"; allowUni
 type Snapshot = {
   functionId: string;
   generatedAt: string;
+  /** Not used after this (end of the day after the function, or 24 h; ADR-0034). */
+  expiresAt: string;
   households: { id: string; name: string; side: string; passHash: string | null; members: Omit<Member, "checkedInBy">[] }[];
 };
 
@@ -30,18 +33,25 @@ type Detector = { detect(source: CanvasImageSource): Promise<{ rawValue: string 
 type ApiResult = { kind: "ok"; data: any } | { kind: "rejected"; status: number; data: { error?: string } } | { kind: "retry"; signedOut: boolean }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 const CHUNK = 50;
-const QUEUE_PREFIX = "eh_checkin_queue_";
-const SNAPSHOT_PREFIX = "eh_checkin_snapshot_";
 const SNAPSHOT_EVERY_TICKS = 6; // refresh the offline copy about once a minute
 
+/** The stored copy, unless it's missing, malformed or past its `expiresAt` (then it's deleted). */
 function readSnapshot(key: string): Snapshot | null {
   try {
     const v = JSON.parse(localStorage.getItem(key) ?? "null");
-    return v && Array.isArray(v.households) ? (v as Snapshot) : null;
+    if (!v || !Array.isArray(v.households)) return null;
+    const expires = typeof v.expiresAt === "string" ? Date.parse(v.expiresAt) : NaN;
+    if (!(expires > Date.now())) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return v as Snapshot;
   } catch {
     return null;
   }
 }
+
+const fresh = (s: Snapshot | null) => (s && Date.parse(s.expiresAt) > Date.now() ? s : null);
 
 function dropSnapshots(keep?: string) {
   try {
@@ -155,7 +165,8 @@ export function CheckInDesk({
     }
     if (res.status === 401 || res.status === 403 || res.status === 404) {
       snapshotRef.current = null;
-      dropSnapshots();
+      // Signed out or removed: the cached desk page and every snapshot go (ADR-0034).
+      clearOfflineCopies();
       return;
     }
     if (!res.ok || res.type === "opaqueredirect") return;
@@ -178,7 +189,7 @@ export function CheckInDesk({
     } else if (r.kind === "retry" && r.signedOut) {
       setSignedOut(true);
       snapshotRef.current = null;
-      dropSnapshots();
+      clearOfflineCopies();
     }
   }, [api]);
 
@@ -253,6 +264,8 @@ export function CheckInDesk({
       // Only this person's copy for this function stays on the device.
       dropSnapshots(snapshotKey);
       snapshotRef.current = readSnapshot(snapshotKey);
+      // Store this page for offline use even if it was opened by an in-app link (ADR-0034).
+      cacheCurrentPage();
       flush().then(refreshCounts).then(refreshSnapshot);
     }, 0);
     const id = setInterval(async () => {
@@ -298,7 +311,7 @@ export function CheckInDesk({
       if (r.kind === "retry") {
         if (r.signedOut) setSignedOut(true);
         // Offline: match the scanned pass against the cached copy (hashes only, ADR-0034).
-        const snap = r.signedOut ? null : snapshotRef.current;
+        const snap = r.signedOut ? null : fresh(snapshotRef.current);
         const token = snap ? passTokenOf(raw) : null;
         const hash = token ? await sha256b64url(token).catch(() => null) : null;
         const found = snap && hash ? snap.households.find((h) => h.passHash === hash) : undefined;
@@ -337,7 +350,7 @@ export function CheckInDesk({
     } else if (r.kind === "retry") {
       if (r.signedOut) setSignedOut(true);
       // Offline: search names in the cached copy.
-      const snap = r.signedOut ? null : snapshotRef.current;
+      const snap = r.signedOut ? null : fresh(snapshotRef.current);
       const needle = q.trim().toLocaleLowerCase();
       if (snap && needle.length >= 2) {
         const queue = readQueue(storageKey);

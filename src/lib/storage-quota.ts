@@ -1,15 +1,21 @@
-import { and, eq, sql } from "drizzle-orm";
-import type { Tx } from "@/db";
-import { documents, eventStorageOverrides, platformSettings, storageHouseholdUsage, storageUsage } from "@/db/schema";
+import { and, asc, eq, isNull, lte, sql } from "drizzle-orm";
+import type { Database, Tx } from "@/db";
+import { eventStorageOverrides, platformSettings, storageHouseholdUsage, storageReservations, storageUsage } from "@/db/schema";
+import { usageSources } from "./storage-sources";
 
 /**
  * Per-event storage quota (§4.1, LIM-01/03, ADR-0030).
  *
  * Flow for anything that stores bytes:
- * 1. `reserve(tx, eventId, bytes, audience, { householdId })` before uploading (row-locked, so
- *    concurrent uploads can't overshoot). Throws `StorageQuotaError` when it doesn't fit.
- * 2. After the object is confirmed in the store: `commit(tx, eventId, reserved, actual)`.
- *    If the upload is abandoned/failed: `release(tx, eventId, reserved, { householdId })`.
+ * 1. `const r = await reserve(tx, eventId, bytes, audience, { householdId })` before uploading
+ *    (row-locked, so concurrent uploads can't overshoot). Throws `StorageQuotaError` when it
+ *    doesn't fit. The reservation is a row that expires (default 7 h, `ttlSeconds`).
+ * 2. After the object is confirmed in the store:
+ *    `commit(tx, eventId, reserved, actual, { householdId, reservationId: r.id })`.
+ *    If the upload failed: `release(tx, eventId, reserved, { householdId, reservationId: r.id })`.
+ *    If nobody calls either (the browser went away), the daily job gives the space back
+ *    (`releaseExpiredReservations`). `reservationId` is optional; without it the oldest live
+ *    reservation of the same size (and family) is used.
  * 3. When the object is deleted: `free(tx, eventId, bytes, { householdId })`.
  *
  * Rules (LIM-03): members and guests are blocked at 100% of the event limit; vendors may use a
@@ -82,55 +88,176 @@ export function capFor(limit: number, audience: Audience) {
   return audience === "vendor" ? Math.floor(limit * (1 + VENDOR_RESERVE)) : limit;
 }
 
-export type ReserveOpts = { householdId?: string | null; items?: number };
+export type ReserveOpts = {
+  householdId?: string | null;
+  items?: number;
+  /**
+   * How long the reservation holds if it is neither committed nor released (abandoned upload).
+   * Default: the longest upload grant (6 h) plus an hour; then the space is given back.
+   */
+  ttlSeconds?: number;
+  now?: Date;
+};
 
-/** Reserves space for an upload (call inside the transaction that records it). */
-export async function reserve(tx: Tx, eventId: string, bytes: number, audience: Audience, opts: ReserveOpts = {}) {
+/** What `reserve` returns: pass `id` to `commit`/`release` as `reservationId`. */
+export type Reservation = { id: string; bytes: number; expiresAt: Date };
+
+export const DEFAULT_RESERVATION_TTL_S = 7 * 3600;
+
+type ReservationRow = typeof storageReservations.$inferSelect;
+
+/** Takes reservation rows off the counters (event and household). The usage row must be locked. */
+async function dropReservationCounters(tx: Tx, eventId: string, rows: ReservationRow[]) {
+  if (rows.length === 0) return;
+  const total = rows.reduce((a, r) => a + r.bytes, 0);
+  await tx
+    .update(storageUsage)
+    .set({ reservedBytes: sql`greatest(0, ${storageUsage.reservedBytes} - ${total})` })
+    .where(eq(storageUsage.eventId, eventId));
+  for (const r of rows) {
+    if (!r.householdId) continue;
+    await tx
+      .update(storageHouseholdUsage)
+      .set({
+        items: sql`greatest(0, ${storageHouseholdUsage.items} - ${r.items})`,
+        bytes: sql`greatest(0, ${storageHouseholdUsage.bytes} - ${r.bytes})`,
+      })
+      .where(eq(storageHouseholdUsage.householdId, r.householdId));
+  }
+}
+
+/** Gives back this event's expired reservations (call with the usage row locked). */
+async function releaseExpiredFor(tx: Tx, eventId: string, now: Date) {
+  const rows = await tx
+    .delete(storageReservations)
+    .where(and(eq(storageReservations.eventId, eventId), lte(storageReservations.expiresAt, now)))
+    .returning();
+  await dropReservationCounters(tx, eventId, rows);
+  return rows.length;
+}
+
+/**
+ * Finds and deletes the reservation a commit/release refers to: by id when given, otherwise (for
+ * callers that don't pass one) the oldest one with the same size and family.
+ * Returns the row; `null` when the id no longer exists (already given back, e.g. expired);
+ * `undefined` when no id was given and nothing matched.
+ */
+async function takeReservation(tx: Tx, eventId: string, bytes: number, householdId: string | null | undefined, reservationId: string | undefined) {
+  if (reservationId) {
+    const [row] = await tx
+      .delete(storageReservations)
+      .where(and(eq(storageReservations.id, reservationId), eq(storageReservations.eventId, eventId)))
+      .returning();
+    return row ?? null;
+  }
+  const [match] = await tx
+    .select({ id: storageReservations.id })
+    .from(storageReservations)
+    .where(
+      and(
+        eq(storageReservations.eventId, eventId),
+        eq(storageReservations.bytes, bytes),
+        householdId ? eq(storageReservations.householdId, householdId) : isNull(storageReservations.householdId),
+      ),
+    )
+    .orderBy(asc(storageReservations.createdAt))
+    .limit(1);
+  if (!match) return undefined;
+  const [row] = await tx.delete(storageReservations).where(eq(storageReservations.id, match.id)).returning();
+  return row ?? undefined;
+}
+
+/**
+ * Reserves space for an upload (call inside the transaction that records it). The reservation is
+ * a row with an expiry, so an upload the browser abandons doesn't hold the space for ever.
+ */
+export async function reserve(tx: Tx, eventId: string, bytes: number, audience: Audience, opts: ReserveOpts = {}): Promise<Reservation> {
   if (!Number.isInteger(bytes) || bytes <= 0) throw new StorageQuotaError("invalid");
-  const usage = await lockUsage(tx, eventId);
+  const now = opts.now ?? new Date();
+  let usage = await lockUsage(tx, eventId);
+  if (await releaseExpiredFor(tx, eventId, now)) {
+    [usage] = await tx.select().from(storageUsage).where(eq(storageUsage.eventId, eventId));
+  }
   const limits = await getStorageLimits(tx, eventId);
   const remaining = capFor(limits.storageBytes, audience) - usage.usedBytes - usage.reservedBytes;
   if (bytes > remaining) throw new StorageQuotaError("storage_full", Math.max(0, remaining));
-  if (audience === "guest" && opts.householdId) {
-    const items = opts.items ?? 1;
-    const h = await lockHousehold(tx, eventId, opts.householdId);
+  const household = audience === "guest" && opts.householdId ? opts.householdId : null;
+  const items = household ? (opts.items ?? 1) : 0;
+  if (household) {
+    const h = await lockHousehold(tx, eventId, household);
     if (h.items + items > limits.guestItems) throw new StorageQuotaError("household_items", Math.max(0, limits.guestItems - h.items));
     if (h.bytes + bytes > limits.guestBytes) throw new StorageQuotaError("household_bytes", Math.max(0, limits.guestBytes - h.bytes));
     await tx
       .update(storageHouseholdUsage)
       .set({ items: sql`${storageHouseholdUsage.items} + ${items}`, bytes: sql`${storageHouseholdUsage.bytes} + ${bytes}` })
-      .where(eq(storageHouseholdUsage.householdId, opts.householdId));
+      .where(eq(storageHouseholdUsage.householdId, household));
   }
   await tx
     .update(storageUsage)
     .set({ reservedBytes: sql`${storageUsage.reservedBytes} + ${bytes}` })
     .where(eq(storageUsage.eventId, eventId));
+  const ttl = Math.max(60, Math.floor(opts.ttlSeconds ?? DEFAULT_RESERVATION_TTL_S));
+  const expiresAt = new Date(now.getTime() + ttl * 1000);
+  const [row] = await tx
+    .insert(storageReservations)
+    .values({ eventId, householdId: household, bytes, items, audience, expiresAt, createdAt: now })
+    .returning({ id: storageReservations.id });
+  return { id: row.id, bytes, expiresAt };
 }
 
 /**
  * Turns a reservation into usage. `actualBytes` (default: the reservation) is what was really
- * stored; for guests the household's bytes are corrected by the difference.
+ * stored; for guests the household's bytes are corrected by the difference. Pass the
+ * `reservationId` from `reserve` when you have it. If the reservation already expired (and was
+ * given back), the object is counted as new usage.
  */
-export async function commit(tx: Tx, eventId: string, reservedBytes: number, actualBytes = reservedBytes, opts: { householdId?: string | null } = {}) {
+export async function commit(
+  tx: Tx,
+  eventId: string,
+  reservedBytes: number,
+  actualBytes = reservedBytes,
+  opts: { householdId?: string | null; reservationId?: string; items?: number } = {},
+) {
   await lockUsage(tx, eventId);
-  await tx
-    .update(storageUsage)
-    .set({
-      reservedBytes: sql`greatest(0, ${storageUsage.reservedBytes} - ${reservedBytes})`,
-      usedBytes: sql`${storageUsage.usedBytes} + ${actualBytes}`,
-    })
-    .where(eq(storageUsage.eventId, eventId));
-  if (opts.householdId && actualBytes !== reservedBytes) {
+  const row = await takeReservation(tx, eventId, reservedBytes, opts.householdId, opts.reservationId);
+  if (row === null) {
     await tx
-      .update(storageHouseholdUsage)
-      .set({ bytes: sql`greatest(0, ${storageHouseholdUsage.bytes} + ${actualBytes - reservedBytes})` })
-      .where(eq(storageHouseholdUsage.householdId, opts.householdId));
+      .update(storageUsage)
+      .set({ usedBytes: sql`${storageUsage.usedBytes} + ${actualBytes}` })
+      .where(eq(storageUsage.eventId, eventId));
+    if (opts.householdId) {
+      await tx.insert(storageHouseholdUsage).values({ eventId, householdId: opts.householdId }).onConflictDoNothing();
+      await tx
+        .update(storageHouseholdUsage)
+        .set({ items: sql`${storageHouseholdUsage.items} + ${opts.items ?? 1}`, bytes: sql`${storageHouseholdUsage.bytes} + ${actualBytes}` })
+        .where(eq(storageHouseholdUsage.householdId, opts.householdId));
+    }
+  } else {
+    const held = row?.bytes ?? reservedBytes;
+    const household = row ? row.householdId : opts.householdId;
+    await tx
+      .update(storageUsage)
+      .set({
+        reservedBytes: sql`greatest(0, ${storageUsage.reservedBytes} - ${held})`,
+        usedBytes: sql`${storageUsage.usedBytes} + ${actualBytes}`,
+      })
+      .where(eq(storageUsage.eventId, eventId));
+    if (household && actualBytes !== held) {
+      await tx
+        .update(storageHouseholdUsage)
+        .set({ bytes: sql`greatest(0, ${storageHouseholdUsage.bytes} + ${actualBytes - held})` })
+        .where(eq(storageHouseholdUsage.householdId, household));
+    }
   }
   await checkStorageWarnings(tx, eventId);
 }
 
 /** Gives back a reservation for an upload that didn't happen. */
-export async function release(tx: Tx, eventId: string, bytes: number, opts: ReserveOpts = {}) {
+export async function release(tx: Tx, eventId: string, bytes: number, opts: ReserveOpts & { reservationId?: string } = {}) {
+  await lockUsage(tx, eventId);
+  const row = await takeReservation(tx, eventId, bytes, opts.householdId, opts.reservationId);
+  if (row === null) return; // already given back
+  if (row) return dropReservationCounters(tx, eventId, [row]);
   await tx
     .update(storageUsage)
     .set({ reservedBytes: sql`greatest(0, ${storageUsage.reservedBytes} - ${bytes})` })
@@ -156,6 +283,23 @@ async function householdDown(tx: Tx, opts: ReserveOpts, bytes: number) {
       bytes: sql`greatest(0, ${storageHouseholdUsage.bytes} - ${bytes})`,
     })
     .where(eq(storageHouseholdUsage.householdId, opts.householdId));
+}
+
+/** Daily: gives back reservations of abandoned uploads (expired rows), one event per transaction. */
+export async function releaseExpiredReservations(db: Database, now = new Date(), opts: { limit?: number } = {}) {
+  const due = await db
+    .selectDistinct({ eventId: storageReservations.eventId })
+    .from(storageReservations)
+    .where(lte(storageReservations.expiresAt, now))
+    .limit(opts.limit ?? 500);
+  let n = 0;
+  for (const { eventId } of due) {
+    n += await db.transaction(async (tx) => {
+      await lockUsage(tx, eventId);
+      return releaseExpiredFor(tx, eventId, now);
+    });
+  }
+  return n;
 }
 
 /** LIM-03: warn Hosts once at 80% and once at 95% of the event's storage limit. */
@@ -184,33 +328,13 @@ export async function checkStorageWarnings(tx: Tx, eventId: string) {
 // Usage sources: what the counter should add up to (reconciliation, LIM-01 breakdown)
 // ---------------------------------------------------------------------------
 
-/**
- * A kind of stored object that counts against the quota. Documents are built in; the gallery
- * (WP-B) registers its own (e.g. `gallery.vendor`, `gallery.member`, `gallery.guest`), with an
- * i18n label at `storage.sources.<key>`.
- */
-export type UsageSource = { key: string; measure: (db: Tx, eventId: string) => Promise<number> };
-
-const sources = new Map<string, UsageSource>();
-
-export function registerUsageSource(source: UsageSource) {
-  sources.set(source.key, source);
-}
-
-registerUsageSource({
-  key: "documents",
-  measure: async (db, eventId) => {
-    const [r] = await db
-      .select({ n: sql<number>`coalesce(sum(${documents.bytes}), 0)::bigint`.mapWith(Number) })
-      .from(documents)
-      .where(eq(documents.eventId, eventId));
-    return r?.n ?? 0;
-  },
-});
+// Every source is registered centrally in `storage-sources.ts` (imported above), so reconcile
+// always sees all of them. Re-exported for callers that used them from this module.
+export { registerUsageSource, type UsageSource } from "./storage-sources";
 
 export async function storageBreakdown(db: Tx, eventId: string) {
   const out: { key: string; bytes: number }[] = [];
-  for (const s of sources.values()) out.push({ key: s.key, bytes: await s.measure(db, eventId) });
+  for (const s of usageSources()) out.push({ key: s.key, bytes: await s.measure(db, eventId) });
   return out;
 }
 
@@ -242,10 +366,19 @@ export async function getStorageUsage(db: Tx, eventId: string): Promise<StorageU
   };
 }
 
-/** Sets the usage counter to what the sources add up to (drift from cascaded deletes). */
+/**
+ * Sets the counters to what's really there (drift from cascaded deletes and abandoned uploads):
+ * used = what the sources add up to; reserved = the live reservation rows, after giving back
+ * expired ones.
+ */
 export async function reconcileUsage(tx: Tx, eventId: string, now = new Date()) {
   await lockUsage(tx, eventId);
+  await releaseExpiredFor(tx, eventId, now);
   const total = (await storageBreakdown(tx, eventId)).reduce((a, b) => a + b.bytes, 0);
-  await tx.update(storageUsage).set({ usedBytes: total, reconciledAt: now }).where(eq(storageUsage.eventId, eventId));
+  const [r] = await tx
+    .select({ n: sql<number>`coalesce(sum(${storageReservations.bytes}), 0)::bigint`.mapWith(Number) })
+    .from(storageReservations)
+    .where(eq(storageReservations.eventId, eventId));
+  await tx.update(storageUsage).set({ usedBytes: total, reservedBytes: r?.n ?? 0, reconciledAt: now }).where(eq(storageUsage.eventId, eventId));
   return total;
 }
