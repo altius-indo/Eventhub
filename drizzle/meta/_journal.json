@@ -85,6 +85,13 @@
       "when": 1793564536033,
       "tag": "0011_event_logo_last_event",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793566413369,
+      "tag": "0012_gallery_review_fixes",
+      "breakpoints": true
     }
   ]
 }
