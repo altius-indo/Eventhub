@@ -4,16 +4,16 @@ import type { ArchiveEntry } from "@/lib/archive";
 import { allowFullDownload, getAlbum, GalleryError, splitParts, zipItems, zipPath, type ZipItem } from "@/lib/gallery";
 import { isUuid } from "@/lib/ids";
 import { getEventContext } from "@/lib/server/event-context";
-import { zipResponse } from "@/lib/server/gallery";
+import { zipData, zipResponse } from "@/lib/server/gallery";
 import { getTranslator } from "@/lib/server/session";
-import { getStore } from "@/lib/storage";
 
-/** Streams for a while; each part stays under ~2 GB (GAL-06). */
+/** Streams for a while; parts are sized (400 MB / 500 files) to finish well inside this (ADR-0031). */
 export const maxDuration = 300;
 
 /**
- * Family ZIP downloads of originals (GAL-06): `?album=<id>` for one album, or `?part=<n>` for
- * part n of everything. Full downloads count once (on part 1) against 5 per event per day.
+ * Family ZIP downloads of originals (GAL-06): `?album=<id>` for one album (split the same way,
+ * `&part=<n>`), or `?part=<n>` for part n of everything. Every part of a full download counts
+ * when it starts (5 per event, per part, per day, §4.1).
  */
 export async function GET(req: Request, { params }: RouteContext<"/events/[eventId]/gallery/download">) {
   const { eventId } = await params;
@@ -23,6 +23,8 @@ export async function GET(req: Request, { params }: RouteContext<"/events/[event
   const db = getDb();
   const q = new URL(req.url).searchParams;
   const albumId = q.get("album");
+  const n = Number(q.get("part") ?? "1");
+  if (!Number.isInteger(n) || n < 1) return new Response("Not found", { status: 404 });
   let items: ZipItem[];
   let name: string;
   if (albumId) {
@@ -34,19 +36,21 @@ export async function GET(req: Request, { params }: RouteContext<"/events/[event
       if (e instanceof GalleryError) return new Response("Not found", { status: 404 });
       throw e;
     }
-    items = await zipItems(db, eventId, { albumId });
+    const parts = splitParts(await zipItems(db, eventId, { albumId }));
+    if (n > Math.max(1, parts.length)) return new Response("Not found", { status: 404 });
+    items = parts[n - 1] ?? [];
+    if (parts.length > 1) name = `${name}-${n}`;
   } else {
-    const n = Number(q.get("part") ?? "1");
     const parts = splitParts(await zipItems(db, eventId));
-    if (!Number.isInteger(n) || n < 1 || n > parts.length) return new Response("Not found", { status: 404 });
-    if (n === 1 && !(await allowFullDownload(db, eventId))) redirect(`/events/${eventId}/gallery?limit=1`);
+    if (n > parts.length) return new Response("Not found", { status: 404 });
+    if (!(await allowFullDownload(db, eventId, n))) redirect(`/events/${eventId}/gallery?limit=1`);
     items = parts[n - 1];
     name = `${ctx.event.name}-gallery-${n}`;
   }
-  const store = getStore();
+  const tz = ctx.event.timezone;
   async function* entries(): AsyncIterable<ArchiveEntry> {
     for (const it of items) {
-      yield { path: zipPath(it, (k) => t(`gallery.albumKinds.${k}`)), data: async () => (await store.get(it.originalKey))?.stream ?? null, mtime: it.takenAt };
+      yield { path: zipPath(it, (k) => t(`gallery.albumKinds.${k}`), tz), data: zipData(it.originalKey, false), mtime: it.takenAt };
     }
   }
   return zipResponse(entries(), name);

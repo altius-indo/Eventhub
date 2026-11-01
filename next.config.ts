@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
   // standard dynamic rendering model instead of Cache Components.
   cacheComponents: false,
   poweredByHeader: false,
+  // HEIC decoding (WASM, ADR-0032): load from node_modules at runtime rather than bundling.
+  serverExternalPackages: ["heic-decode", "libheif-js"],
   experimental: {
     // Guest spreadsheets can be up to 5 MB (see MAX_IMPORT_BYTES).
     serverActions: { bodySizeLimit: "6mb" },

@@ -79,6 +79,42 @@
   --focus: #e893b3;
 }
 
+/*
+ * The wedding website (src/app/(site)) has its own light palette from its theme, so shared
+ * controls (Input, SubmitButton, Alert, ...) must not switch to the dark tokens there.
+ * Applied by the site layout; the page still sets its own `--accent` inline.
+ */
+.site-light {
+  color-scheme: light;
+  --bg: #fff7f5;
+  --surface: #ffffff;
+  --surface-muted: #faeef1;
+  --text: #30252b;
+  --text-muted: #756b70;
+  --border: #eddde3;
+  --primary: #792943;
+  --primary-hover: #5f1f34;
+  --primary-contrast: #ffffff;
+  --primary-soft: #f8e5ec;
+  --brand: #c65b83;
+  --accent: #d4af76;
+  --accent-soft: #f7ecdb;
+  --danger: #b42318;
+  --danger-contrast: #ffffff;
+  --danger-soft: #fdecea;
+  --success: #1f7a4d;
+  --success-soft: #e7f5ee;
+  --warning: #8a5a00;
+  --warning-soft: #fdf3dc;
+  --focus: #c65b83;
+}
+/* Keep the page behind the site (overscroll, short pages) light too. */
+body:has(> .site-light) {
+  color-scheme: light;
+  background: #ffffff;
+  color: #30252b;
+}
+
 @theme inline {
   --color-bg: var(--bg);
   --color-surface: var(--surface);

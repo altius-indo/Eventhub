@@ -8,11 +8,11 @@ import { SubmitButton } from "@/components/submit-button";
 import { Badge, Card, Field, Input, PageHeader } from "@/components/ui";
 import { getDb } from "@/db";
 import { intlLocale } from "@/i18n/core";
-import { decodeCursor, formatBytes, GalleryError, getAlbum, LIMITS, listAlbumMedia, listAlbums } from "@/lib/gallery";
+import { decodeCursor, formatBytes, GalleryError, getAlbum, LIMITS, listAlbumMedia, listAlbums, readyNotice, splitParts, zipItems } from "@/lib/gallery";
 import { getEventContext } from "@/lib/server/event-context";
 import { ACCEPT_ALL, uploaderLabels } from "@/lib/server/gallery";
 import { getTranslator } from "@/lib/server/session";
-import { deleteAlbumAction, releaseAlbumAction, renameAlbumAction } from "../../actions";
+import { deleteAlbumAction, releaseAlbumAction, renameAlbumAction, sendReadyNowAction } from "../../actions";
 
 /** One album: upload (family/delivery albums), release, and the grid in capture order (GAL-01/02). */
 export default async function AlbumPage({ params, searchParams }: PageProps<"/events/[eventId]/gallery/albums/[albumId]">) {
@@ -27,6 +27,8 @@ export default async function AlbumPage({ params, searchParams }: PageProps<"/ev
   });
   const [summary] = await listAlbums(db, eventId, { functionId: album.functionId }).then((l) => l.filter((a) => a.id === album.id));
   const page = await listAlbumMedia(db, eventId, album.id, decodeCursor(sp.after));
+  const notice = await readyNotice(db, eventId, album.functionId);
+  const zipParts = splitParts(await zipItems(db, eventId, { albumId: album.id }));
   const base = `/events/${eventId}/gallery`;
   const name = album.title || t(`gallery.albumKinds.${album.kind}`);
   const canUpload = ctx.can("gallery.upload") && !ctx.viaAdmin && album.kind !== "guest";
@@ -54,12 +56,20 @@ export default async function AlbumPage({ params, searchParams }: PageProps<"/ev
             <SubmitButton variant={album.releasedAt ? "secondary" : "primary"}>{album.releasedAt ? t("gallery.withdraw") : t("gallery.release")}</SubmitButton>
           </SimpleForm>
         )}
+        {ctx.can("gallery.moderate") && album.releasedAt && notice?.status === "quota" && (
+          <SimpleForm action={sendReadyNowAction.bind(null, eventId, album.id)} className="space-y-2">
+            <p className="text-sm text-warning">{t("gallery.readyPending", { channel: notice.channel ?? "" })}</p>
+            <SubmitButton variant="secondary">{t("gallery.sendNow")}</SubmitButton>
+          </SimpleForm>
+        )}
         <div className="flex flex-wrap gap-2">
-          {(summary?.approved ?? 0) + (summary?.pending ?? 0) + (summary?.hidden ?? 0) > 0 && (
-            <a href={`${base}/download?album=${album.id}`} className="inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm hover:bg-surface-muted">
-              {t("gallery.download.album")}
+          {zipParts.map((p, i) => (
+            <a key={i} href={`${base}/download?album=${album.id}&part=${i + 1}`} className="inline-flex min-h-11 items-center rounded-lg border border-border px-4 text-sm hover:bg-surface-muted">
+              {zipParts.length > 1
+                ? t("gallery.download.part", { n: i + 1, total: zipParts.length, size: formatBytes(intlLocale(locale), p.reduce((a, x) => a + x.originalBytes, 0)) })
+                : t("gallery.download.album")}
             </a>
-          )}
+          ))}
         </div>
         {ctx.can("gallery.upload") && album.kind === "family" && album.title && (
           <details>

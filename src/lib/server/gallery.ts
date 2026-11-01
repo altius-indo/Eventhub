@@ -7,6 +7,7 @@ import type { ArchiveEntry } from "../archive";
 import { zipStream } from "../archive";
 import {
   abortUpload,
+  baseName,
   beginUpload,
   completeUpload,
   GalleryError,
@@ -21,7 +22,8 @@ import {
   type Variant,
   type Viewer,
 } from "../gallery";
-import { processRenditions, watermark } from "../renditions";
+import { extFor, NotJpegError, stripJpegMetadata } from "../media-files";
+import { processRenditions, watermarkedCopy } from "../renditions";
 import { getStore, StorageError } from "../storage";
 import { appUrl } from "./session";
 import { getSiteContext } from "./site-context";
@@ -31,14 +33,44 @@ import { getSiteContext } from "./site-context";
  * media variants, and kicking off renditions after the response (ADR-0031/0032).
  */
 
-/** After the response: make renditions for these items, then hand leftovers to the drain route. */
-export function renditionsSoon(ids: string[]) {
+/**
+ * Deduplicates rendition kicks within this server instance: while one is in flight, further
+ * kicks only mark that another round is wanted, which runs once the current one returns (so an
+ * item that arrives just as a drain is finishing isn't left for the daily cron).
+ */
+let kickInFlight = false;
+let kickAgain = false;
+
+async function kickOnce() {
+  const secret = process.env.CRON_SECRET;
+  if (secret) {
+    // The drain route processes one photo at a time and calls itself while work remains.
+    await fetch(`${appUrl()}/api/gallery/renditions/drain`, { method: "POST", headers: { authorization: `Bearer ${secret}` } }).catch(() => undefined);
+  } else {
+    // No drain route without CRON_SECRET (development): process here, one at a time.
+    await processRenditions(getDb(), getStore(), { budgetMs: 40_000, appUrl: appUrl() }).catch((e) => console.error("renditions failed", e));
+  }
+}
+
+/**
+ * After the response: make sure renditions get made (ADR-0032). Triggers the self-chaining drain
+ * route once per request, deduplicated across concurrent uploads, instead of decoding photos
+ * inline in every upload request (memory).
+ */
+export function renditionsSoon() {
   after(async () => {
-    const db = getDb();
-    const res = await processRenditions(db, getStore(), { ids, budgetMs: 40_000 });
-    const secret = process.env.CRON_SECRET;
-    if (res.remaining > 0 && secret) {
-      await fetch(`${appUrl()}/api/gallery/renditions/drain`, { method: "POST", headers: { authorization: `Bearer ${secret}` } }).catch(() => undefined);
+    if (kickInFlight) {
+      kickAgain = true;
+      return;
+    }
+    kickInFlight = true;
+    try {
+      do {
+        kickAgain = false;
+        await kickOnce();
+      } while (kickAgain);
+    } finally {
+      kickInFlight = false;
     }
   });
 }
@@ -73,11 +105,12 @@ export async function handleUploadRequest(req: Request, eventId: string, uploade
         mime: String(body.mime ?? ""),
         size: Number(body.size),
       });
+      if ("done" in res && res.status === "processing") renditionsSoon();
       return json(res);
     }
     if (body.action === "complete") {
       const item = await completeUpload(db, store, eventId, uploader, String(body.mediaId ?? ""));
-      if (item.status === "processing") renditionsSoon([item.id]);
+      if (item.status === "processing") renditionsSoon();
       return json({ mediaId: item.id, status: item.status });
     }
     if (body.action === "abort") {
@@ -102,9 +135,22 @@ export function parseVariant(raw: string): Variant | null {
 const asciiName = (s: string) => s.replace(/[^\w.\- ]+/g, "_").slice(-120) || "photo";
 
 /**
- * Serves one variant of an item the viewer was already allowed to see: views redirect to a
- * 5-minute presigned URL (private caching), downloads stream with an attachment header, and the
- * guest download copy is watermarked when the family set a watermark (GAL-10).
+ * The download name: the uploader's base name for the team and the uploading family, an id-based
+ * name for anyone else (S6); the extension always from the verified type served (S1).
+ */
+export function downloadName(item: Pick<LoadedMedia, "id" | "filename" | "householdId" | "kind">, viewer: Viewer, mime: string) {
+  const showName = viewer.kind !== "guest" || item.householdId === viewer.householdId;
+  const stem = showName ? asciiName(baseName(item.filename)) : `${item.kind === "video" ? "video" : "photo"}-${item.id.slice(0, 8)}`;
+  return `${stem}.${extFor(mime)}`;
+}
+
+const SECURE = { "X-Content-Type-Options": "nosniff" } as const;
+
+/**
+ * Serves one variant of an item the viewer was already allowed to see (see `variantFor`): views
+ * redirect to a 5-minute presigned URL (private caching), downloads stream with an attachment
+ * header. Guests' watermarked copies are made once per watermark text and cached in the store
+ * (GAL-10, S4); JPEG originals for guests are served with their metadata stripped (S2).
  */
 export async function serveMedia(item: LoadedMedia, variant: Variant, viewer: Viewer, settings: GallerySettings, placeholderLabel: string): Promise<Response> {
   const file = variantFor(viewer, item, variant, settings);
@@ -112,39 +158,59 @@ export async function serveMedia(item: LoadedMedia, variant: Variant, viewer: Vi
     if (variant === "thumb") {
       return new Response(PLACEHOLDER(item.kind === "video" ? "" : placeholderLabel), {
         // Not cached while the preview is still being made, or the real thumbnail would never show.
-        headers: { "Content-Type": "image/svg+xml", "Cache-Control": item.status === "processing" ? "private, no-store" : "private, max-age=300", "X-Content-Type-Options": "nosniff" },
+        headers: { "Content-Type": "image/svg+xml", "Cache-Control": item.status === "processing" ? "private, no-store" : "private, max-age=300", ...SECURE },
       });
     }
     return new Response("Not found", { status: 404 });
   }
   const store = getStore();
-  if (variant === "download") {
-    const wm = file.watermark && settings.watermarkText;
-    const base = asciiName(item.filename.replace(/\.[^.]+$/, ""));
-    if (wm) {
-      const bytes = await store.getBytes(file.key);
-      if (!bytes) return new Response("Not found", { status: 404 });
-      const out = await watermark(bytes, settings.watermarkText!);
-      return new Response(new Uint8Array(out), {
-        headers: { "Content-Type": "image/jpeg", "Content-Disposition": `attachment; filename="${base}.jpg"`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
-      });
+  let key = file.key;
+  if (file.watermark && settings.watermarkText) {
+    const marked = await watermarkedCopy(store, item, settings.watermarkText);
+    if (!marked) return new Response("Not found", { status: 404 });
+    key = marked;
+  }
+  const attachment = { "Content-Disposition": `attachment; filename="${downloadName(item, viewer, file.mime)}"` };
+  if (file.strip) {
+    // Originals are at most 50 MB (photos), so stripping in memory is fine.
+    const bytes = await store.getBytes(key);
+    if (!bytes) return new Response("Not found", { status: 404 });
+    let out: Buffer;
+    try {
+      out = stripJpegMetadata(bytes);
+    } catch (e) {
+      if (e instanceof NotJpegError) return new Response("Not found", { status: 404 });
+      throw e;
     }
-    const obj = await store.get(file.key);
-    if (!obj) return new Response("Not found", { status: 404 });
-    const isWeb = file.key.endsWith(".webp");
-    const name = isWeb ? `${base}.webp` : asciiName(item.filename);
-    return new Response(obj.stream, {
-      headers: {
-        "Content-Type": isWeb ? "image/webp" : item.mime,
-        ...(obj.size != null ? { "Content-Length": String(obj.size) } : {}),
-        "Content-Disposition": `attachment; filename="${name}"`,
-        "Cache-Control": "private, no-store",
-        "X-Content-Type-Options": "nosniff",
-      },
+    return new Response(new Uint8Array(out), {
+      headers: { "Content-Type": "image/jpeg", "Content-Length": String(out.length), ...(variant === "download" ? attachment : {}), "Cache-Control": "private, no-store", ...SECURE },
     });
   }
-  const url = await store.presignedGet(file.key, { ttlSeconds: 300 });
+  if (variant === "download") {
+    const obj = await store.get(key);
+    if (!obj) return new Response("Not found", { status: 404 });
+    return new Response(obj.stream, {
+      headers: { "Content-Type": file.mime, ...(obj.size != null ? { "Content-Length": String(obj.size) } : {}), ...attachment, "Cache-Control": "private, no-store", ...SECURE },
+    });
+  }
+  const url = await store.presignedGet(key, { ttlSeconds: 300 });
   return new Response(null, { status: 302, headers: { Location: url, "Cache-Control": "private, max-age=240", "Referrer-Policy": "no-referrer" } });
+}
+
+/** A ZIP entry's bytes: streamed, or (guests' JPEG originals) with metadata stripped first (S2). */
+export function zipData(key: string, strip: boolean) {
+  const store = getStore();
+  return async () => {
+    if (!strip) return (await store.get(key))?.stream ?? null;
+    const bytes = await store.getBytes(key);
+    if (!bytes) return null;
+    try {
+      return new Uint8Array(stripJpegMetadata(bytes));
+    } catch (e) {
+      if (e instanceof NotJpegError) return null;
+      throw e;
+    }
+  };
 }
 
 /**

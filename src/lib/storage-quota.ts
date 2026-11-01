@@ -139,10 +139,13 @@ async function releaseExpiredFor(tx: Tx, eventId: string, now: Date) {
 /**
  * Finds and deletes the reservation a commit/release refers to: by id when given, otherwise (for
  * callers that don't pass one) the oldest one with the same size and family.
- * Returns the row; `null` when the id no longer exists (already given back, e.g. expired);
+ * Returns the row; `null` when the id no longer exists or is passed as `null` (already given back,
+ * e.g. expired);
  * `undefined` when no id was given and nothing matched.
  */
-async function takeReservation(tx: Tx, eventId: string, bytes: number, householdId: string | null | undefined, reservationId: string | undefined) {
+async function takeReservation(tx: Tx, eventId: string, bytes: number, householdId: string | null | undefined, reservationId: string | null | undefined) {
+  // null: the caller knows the reservation was already given back (e.g. it expired).
+  if (reservationId === null) return null;
   if (reservationId) {
     const [row] = await tx
       .delete(storageReservations)
@@ -208,15 +211,15 @@ export async function reserve(tx: Tx, eventId: string, bytes: number, audience: 
 /**
  * Turns a reservation into usage. `actualBytes` (default: the reservation) is what was really
  * stored; for guests the household's bytes are corrected by the difference. Pass the
- * `reservationId` from `reserve` when you have it. If the reservation already expired (and was
- * given back), the object is counted as new usage.
+ * `reservationId` from `reserve` when you have it (`null` = known to be given back already). If the
+ * reservation already expired (and was given back), the object is counted as new usage.
  */
 export async function commit(
   tx: Tx,
   eventId: string,
   reservedBytes: number,
   actualBytes = reservedBytes,
-  opts: { householdId?: string | null; reservationId?: string; items?: number } = {},
+  opts: { householdId?: string | null; reservationId?: string | null; items?: number } = {},
 ) {
   await lockUsage(tx, eventId);
   const row = await takeReservation(tx, eventId, reservedBytes, opts.householdId, opts.reservationId);
@@ -253,7 +256,7 @@ export async function commit(
 }
 
 /** Gives back a reservation for an upload that didn't happen. */
-export async function release(tx: Tx, eventId: string, bytes: number, opts: ReserveOpts & { reservationId?: string } = {}) {
+export async function release(tx: Tx, eventId: string, bytes: number, opts: ReserveOpts & { reservationId?: string | null } = {}) {
   await lockUsage(tx, eventId);
   const row = await takeReservation(tx, eventId, bytes, opts.householdId, opts.reservationId);
   if (row === null) return; // already given back

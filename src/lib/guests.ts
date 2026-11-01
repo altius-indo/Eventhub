@@ -16,6 +16,7 @@ import {
 import { audit, type Actor } from "./audit";
 import { freezeDueLocks } from "./caterer-headcount";
 import { anonymiseGiftsOfHousehold } from "./gifts";
+import { releaseHouseholdMedia } from "./gallery";
 import { assertFunctionsInEvent, NotFoundError } from "./functions";
 import { isUuid } from "./ids";
 import { householdPrefix } from "./storage";
@@ -193,6 +194,8 @@ export async function deleteHousehold(db: Database, eventId: string, householdId
     // Erasure (EVT-09): their gifts stay for reconciliation, without the name or link.
     await anonymiseGiftsOfHousehold(tx, eventId, householdId);
     await freezeDueLocks(tx, eventId, null);
+    // Their gallery uploads stop counting against the event's storage now (LIM-01).
+    await releaseHouseholdMedia(tx, eventId, householdId);
     const [h] = await tx
       .delete(households)
       .where(and(eq(households.id, householdId), eq(households.eventId, eventId)))

@@ -17,7 +17,7 @@ type State = { error?: string; info?: string };
 export async function createVendorAlbumAction(vendorId: string, functionId: string, _p: State, fd: FormData): Promise<State> {
   const ctx = await getVendorContext(vendorId);
   const { t } = await getTranslator();
-  if (!ctx.can("portal.gallery") || !isUuid(functionId)) return { error: t("common.notAllowed") };
+  if (ctx.viaAdmin || !ctx.can("portal.gallery") || !isUuid(functionId)) return { error: t("common.notAllowed") };
   let id: string;
   try {
     id = (await createVendorAlbum(getDb(), { eventId: ctx.event.id, vendorId, userId: ctx.user.id, functionId, title: String(fd.get("title") ?? "") })).id;
@@ -32,7 +32,7 @@ export async function createVendorAlbumAction(vendorId: string, functionId: stri
 export async function deleteVendorFileAction(vendorId: string, albumId: string, mediaId: string, _p: State): Promise<State> {
   const ctx = await getVendorContext(vendorId);
   const { t } = await getTranslator();
-  if (!ctx.can("portal.gallery") || !isUuid(mediaId)) return { error: t("common.notAllowed") };
+  if (ctx.viaAdmin || !ctx.can("portal.gallery") || !isUuid(mediaId)) return { error: t("common.notAllowed") };
   let ids: number[];
   try {
     ids = await deleteVendorUpload(getDb(), { eventId: ctx.event.id, vendorId, mediaId });

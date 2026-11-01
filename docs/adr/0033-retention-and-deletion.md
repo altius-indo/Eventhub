@@ -40,7 +40,8 @@ anonymised counts may be kept.
   with fflate, one per *part*. Part `main` holds Excel files (guests, RSVPs/headcount, budget,
   payments, payables, vendors without bank/PAN, gifts and thank-yous), printable HTML (run sheets,
   invoices, ADR-0015) and every document. Other modules register parts (`registerArchivePart`);
-  the gallery adds `gallery-*` parts of under ~2 GB each, because fflate writes classic ZIPs (no
+  the gallery adds `gallery-*` parts of up to 400 MB / 500 files each (ADR-0031 amendment; the
+  archive download limit counts per part), because fflate writes classic ZIPs (no
   Zip64) and a function has 300 s.
 - **Erasure requests** (`guest_erasure_requests`): recorded from the family's page with the date
   asked; "Erase now" deletes the household (gifts stay, anonymised) and marks the request done. The

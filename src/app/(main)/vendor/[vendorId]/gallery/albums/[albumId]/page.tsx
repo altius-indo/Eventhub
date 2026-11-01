@@ -27,7 +27,7 @@ export default async function VendorAlbumPage({ params, searchParams }: PageProp
   if (album.vendorId !== vendorId || album.kind !== "delivery") notFound();
   const page = await listAlbumMedia(db, ctx.event.id, album.id, decodeCursor(sp.after), { vendorId });
   const base = `/vendor/${vendorId}/gallery`;
-  const writable = ctx.can("portal.gallery") && !album.releasedAt;
+  const writable = ctx.can("portal.gallery") && !ctx.viaAdmin && !album.releasedAt;
 
   return (
     <div className="space-y-4">

@@ -19,6 +19,7 @@ import {
   releaseAlbum,
   removeFromSelection,
   renameAlbum,
+  sendReadyNow,
   setHighlight,
   shareSelection,
   toggleFavourite,
@@ -108,6 +109,22 @@ export async function releaseAlbumAction(eventId: string, albumId: string, relea
   return { info: res.notified > 0 ? t("gallery.notifiedInfo", { count: res.notified }) : t("gallery.releasedInfo") };
 }
 
+/** Retries the "photos are ready" message the messaging limit refused (GAL-11). */
+export async function sendReadyNowAction(eventId: string, albumId: string, _p: State): Promise<State> {
+  const { ctx, t, ok } = await guard(eventId, "gallery.moderate");
+  if (!ok || !isUuid(albumId)) return { error: t("common.notAllowed") };
+  let res;
+  try {
+    res = await sendReadyNow(getDb(), { eventId, actor: ctx.actor, albumId, appUrl: appUrl() });
+  } catch (e) {
+    return { error: errorText(t, e) };
+  }
+  if (res.notified > 0) drainSoon();
+  revalidatePath(`${base(eventId)}/albums/${albumId}`);
+  if (res.quota) return { error: t("gallery.readyPending", { channel: res.quota }) };
+  return { info: res.notified > 0 ? t("gallery.readySentInfo", { count: res.notified }) : t("gallery.readyNothing") };
+}
+
 // Items ---------------------------------------------------------------------
 
 /** One-click moderation buttons (tiles, item page, "approve all"). */
@@ -139,10 +156,10 @@ export async function toggleFavouriteAction(eventId: string, mediaId: string) {
 }
 
 export async function setHighlightAction(eventId: string, mediaId: string, on: boolean, _p: State): Promise<State> {
-  const { t, ok } = await guard(eventId, "gallery.moderate");
+  const { ctx, t, ok } = await guard(eventId, "gallery.moderate");
   if (!ok || !isUuid(mediaId)) return { error: t("common.notAllowed") };
   try {
-    await setHighlight(getDb(), { eventId, mediaId, on });
+    await setHighlight(getDb(), { eventId, actor: ctx.actor, mediaId, on });
   } catch (e) {
     return { error: errorText(t, e) };
   }

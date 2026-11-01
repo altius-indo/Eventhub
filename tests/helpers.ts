@@ -22,7 +22,7 @@ export async function resetDb() {
       storage_usage, storage_household_usage, storage_reservations, event_storage_overrides, storage_deletions, event_metrics,
       retention_notices, guest_erasure_requests,
       gallery_settings, gallery_albums, media_items, media_favourites, album_selections, album_selection_items,
-      media_likes, media_comments, media_removal_requests
+      media_likes, media_comments, media_removal_requests, gallery_ready_notices
     RESTART IDENTITY CASCADE
   `);
 }

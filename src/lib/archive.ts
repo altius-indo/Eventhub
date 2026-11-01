@@ -31,7 +31,7 @@ import { todayIn } from "./tasks";
  * carry the whole gallery (Vercel functions run at most 300 s; fflate writes classic ZIPs, which
  * cap a part below 4 GB and 65,535 files). Part `main` is built in: spreadsheets, printable pages
  * and documents. Other modules add parts with `registerArchivePart` — the gallery (WP-B) adds
- * one or more `gallery-*` parts with the originals, each kept under ~2 GB.
+ * one or more `gallery-*` parts with the originals, each up to 400 MB / 500 files (ADR-0031).
  */
 
 export type ArchiveContext = {
@@ -73,7 +73,7 @@ export function registerArchivePart(provider: ArchivePartProvider) {
 
 export const PART_ID = /^[a-z0-9-]{1,40}$/;
 
-/** Archive downloads allowed per event per day (any part); the route uses `allowAttempt`. */
+/** Archive downloads allowed per event, part and day; the route uses `allowAttempt`. */
 export const ARCHIVE_DOWNLOADS_PER_DAY = 10;
 
 export async function listArchiveParts(db: Tx, eventId: string, t: Translator): Promise<ArchivePart[]> {

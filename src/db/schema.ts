@@ -1994,8 +1994,10 @@ export const gallerySettings = pgTable("gallery_settings", {
   guestOriginals: boolean("guest_originals").notNull().default(false),
   reactions: boolean("reactions").notNull().default(true),
   watermarkText: text("watermark_text"),
-  /** Last orphan-object sweep (daily job). */
+  /** Last completed orphan-object sweep (daily job). */
   sweptAt: ts("swept_at"),
+  /** Progress of the orphan sweep in progress (0 = start; one step per key-prefix chunk). */
+  sweepStep: integer("sweep_step").notNull().default(0),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
 
@@ -2050,10 +2052,19 @@ export const mediaItems = pgTable(
     originalKey: text("original_key").notNull(),
     originalBytes: bigint("original_bytes", { mode: "number" }).notNull().default(0),
     reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull().default(0),
-    /** The quota reservation held while uploading (gone once committed, released or expired). */
-    reservationId: uuid("reservation_id").references(() => storageReservations.id, { onDelete: "set null" }),
+    /**
+     * The quota reservation held while uploading. Deliberately no foreign key: when the daily job
+     * gives an expired reservation back, the id stays here, and commit/release find it gone and
+     * know not to subtract it again (null on old rows means the same).
+     */
+    reservationId: uuid("reservation_id"),
     thumbKey: text("thumb_key"),
     webKey: text("web_key"),
+    /**
+     * Full-size JPEG without metadata for guests, made only for non-JPEG photos (HEIC/PNG/WebP);
+     * JPEG originals are served to guests with their metadata stripped on the fly (ADR-0032).
+     */
+    shareKey: text("share_key"),
     width: integer("width"),
     height: integer("height"),
     takenAt: ts("taken_at").notNull().defaultNow(),
@@ -2191,6 +2202,22 @@ export const mediaRemovalRequests = pgTable(
   },
   (t) => [index("media_removal_event_idx").on(t.eventId, t.status, t.createdAt)],
 );
+
+/**
+ * "Photos from <function> are ready" (GAL-11), once per function: `sent` once queued; `quota` when
+ * the messaging limit refused it, so Hosts can send it later from the album page.
+ */
+export const galleryReadyNotices = pgTable("gallery_ready_notices", {
+  functionId: uuid("function_id")
+    .primaryKey()
+    .references(() => functions.id, { onDelete: "cascade" }),
+  eventId: uuid("event_id")
+    .notNull()
+    .references(() => events.id, { onDelete: "cascade" }),
+  status: text("status").$type<"sent" | "quota">().notNull(),
+  channel: text("channel"),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
 
 export type GallerySettings = typeof gallerySettings.$inferSelect;
 export type GalleryAlbum = typeof galleryAlbums.$inferSelect;

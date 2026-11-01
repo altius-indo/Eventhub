@@ -1,80 +1,60 @@
-import sharp from "sharp";
-import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import sharp, { type Exif, type Sharp } from "sharp";
+import { and, asc, eq, inArray, isNull, lt, min, or, sql } from "drizzle-orm";
 import type { Database } from "@/db";
-import { events, gallerySettings, mediaItems, type MediaItem } from "@/db/schema";
+import { events, galleryAlbums, gallerySettings, mediaItems, type MediaItem } from "@/db/schema";
 import { zonedInstant } from "./caterer-headcount";
+import { notifyFunctionReady } from "./gallery";
+import { parseExif, readExifTags } from "./media-files";
 import type { ObjectStore } from "./storage";
 
 /**
  * Thumbnails and web renditions for gallery photos (ADR-0032).
  *
- * Items arrive here in `processing` once their upload is confirmed. A worker claims up to two at
- * a time with `FOR UPDATE SKIP LOCKED` (so the after-response hook, the drain route and the
- * daily cron never process the same item twice), and with sharp: auto-rotates by EXIF, writes a
- * 480 px WebP thumbnail and a 2048 px WebP web copy, and reads the EXIF capture time. Then the
- * item becomes visible: guest uploads `pending` (or `approved` with auto-approve, GAL-04),
- * family and vendor uploads `approved`.
+ * Items arrive here in `processing` once their upload is confirmed. A worker claims one at a time
+ * with `FOR UPDATE SKIP LOCKED` (so the drain route, the dev fallback and the daily cron never
+ * process the same item twice). Memory is the constraint on a serverless function, so sharp runs
+ * with one thread, no cache and a 100 MP input limit, and each photo is decoded once at full size:
+ * the 2048 px web copy comes from the original, the 480 px thumbnail from the web copy.
+ * HEIC/HEIF (iPhone photos) are decoded with libheif in WebAssembly (`heic-decode`), because the
+ * prebuilt sharp has no HEVC decoder. Non-JPEG photos also get a full-size JPEG without metadata
+ * (`share.jpg`) for guests (S2); JPEG originals are stripped on the fly instead.
  *
- * Videos aren't transcoded (no thumbnail; the browser streams the original). A photo sharp can't
- * decode (some HEIC files) keeps a `preview_error`: it shows a placeholder but still downloads.
+ * Then the item becomes visible: guest uploads `pending` (or `approved` with auto-approve, GAL-04),
+ * family and vendor uploads `approved`. A guest upload whose preview failed is never auto-approved.
+ * Videos aren't transcoded (no thumbnail; the browser streams the original).
  */
+
+sharp.concurrency(1);
+sharp.cache(false);
 
 export const THUMB_PX = 480;
 export const WEB_PX = 2048;
+/** Refuse to decode bigger images (a 100 MP RGBA frame is already ~400 MB). */
+export const MAX_INPUT_PIXELS = 100_000_000;
 const LOCK_MS = 5 * 60_000;
 export const MAX_ATTEMPTS = 3;
+/** Backoff after a temporary failure: 30 s, then 60 s (the drain waits for these, see route). */
+export const RETRY_BASE_MS = 30_000;
+/** The drain route waits for retries due within this window rather than leaving them to the cron. */
+export const DRAIN_WAIT_WINDOW_MS = 2 * 60_000;
 
 // ---------------------------------------------------------------------------
 // EXIF capture time
 // ---------------------------------------------------------------------------
 
 /**
- * Reads DateTimeOriginal (or DateTime) and OffsetTimeOriginal from a raw EXIF block (sharp's
- * `metadata().exif`, starting with "Exif\0\0"). Returns local date/time parts and an optional
- * UTC offset, or null.
+ * Reads DateTimeOriginal (or DateTimeDigitized / DateTime) and OffsetTimeOriginal from a raw EXIF
+ * block (sharp's `metadata().exif`). Returns local date/time parts and an optional UTC offset.
  */
 export function readExifDate(exif: Buffer | undefined | null): { date: string; time: string; offset: string | null } | null {
-  if (!exif || exif.length < 14) return null;
-  let base = 0;
-  if (exif.subarray(0, 6).toString("latin1") === "Exif\0\0") base = 6;
-  const order = exif.subarray(base, base + 2).toString("latin1");
-  const le = order === "II";
-  if (!le && order !== "MM") return null;
-  const u16 = (o: number) => (o + 2 <= exif.length ? (le ? exif.readUInt16LE(o) : exif.readUInt16BE(o)) : -1);
-  const u32 = (o: number) => (o + 4 <= exif.length ? (le ? exif.readUInt32LE(o) : exif.readUInt32BE(o)) : -1);
-  if (u16(base + 2) !== 42) return null;
-
-  const readIfd = (offset: number) => {
-    const tags = new Map<number, string | number>();
-    const start = base + offset;
-    const n = u16(start);
-    if (n < 0 || n > 500) return tags;
-    for (let i = 0; i < n; i++) {
-      const e = start + 2 + i * 12;
-      const tag = u16(e);
-      const type = u16(e + 2);
-      const cnt = u32(e + 4);
-      if (tag < 0 || cnt < 0) break;
-      if (type === 2) {
-        const at = cnt > 4 ? base + u32(e + 8) : e + 8;
-        if (at < 0 || at + cnt > exif.length) continue;
-        tags.set(tag, exif.subarray(at, at + cnt).toString("latin1").replace(/\0+$/, ""));
-      } else if (type === 4) tags.set(tag, u32(e + 8));
-    }
-    return tags;
-  };
-
-  const ifd0 = readIfd(u32(base + 4));
-  const exifPtr = ifd0.get(0x8769);
-  const sub = typeof exifPtr === "number" ? readIfd(exifPtr) : new Map<number, string | number>();
-  const raw = (sub.get(0x9003) ?? sub.get(0x9004) ?? ifd0.get(0x0132)) as string | undefined;
-  const m = typeof raw === "string" ? raw.match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/) : null;
+  if (!parseExif(exif)) return null;
+  const tags = readExifTags(exif);
+  const m = tags.dateTime ? tags.dateTime.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/) : null;
   if (!m) return null;
   const year = Number(m[1]);
   if (year < 1990 || year > 2100 || m[2] === "00" || m[3] === "00") return null;
-  const off = sub.get(0x9011);
-  const offset = typeof off === "string" && /^[+-]\d{2}:\d{2}$/.test(off) ? off : null;
-  return { date: `${m[1]}-${m[2]}-${m[3]}`, time: `${m[4]}:${m[5]}:${m[6]}`, offset };
+  return { date: `${m[1]}-${m[2]}-${m[3]}`, time: `${m[4]}:${m[5]}:${m[6]}`, offset: tags.offset };
 }
 
 /** The capture instant: with the camera's offset if recorded, else as event-local wall clock. */
@@ -94,69 +74,145 @@ export function captureInstant(exif: ReturnType<typeof readExifDate>, timeZone: 
 
 export function renditionKeys(item: Pick<MediaItem, "originalKey">) {
   const dir = item.originalKey.slice(0, item.originalKey.length - "original".length);
-  return { thumb: `${dir}thumb.webp`, web: `${dir}web.webp` };
+  return { thumb: `${dir}thumb.webp`, web: `${dir}web.webp`, share: `${dir}share.jpg` };
 }
 
-export type Rendered = { thumb: Buffer; web: Buffer; width: number; height: number; takenAt: Date | null };
-
-/** Makes the renditions of one photo (throws when sharp can't decode it). */
-export async function renderPhoto(bytes: Buffer, timeZone: string): Promise<Rendered> {
-  const meta = await sharp(bytes, { failOn: "error" }).metadata();
-  const rotated = (meta.orientation ?? 1) >= 5;
-  const width = (rotated ? meta.height : meta.width) ?? 0;
-  const height = (rotated ? meta.width : meta.height) ?? 0;
-  const resize = (px: number) =>
-    sharp(bytes, { failOn: "error" })
-      .rotate()
-      .resize({ width: px, height: px, fit: "inside", withoutEnlargement: true })
-      .webp({ quality: px <= THUMB_PX ? 72 : 82 })
-      .toBuffer();
-  const [thumb, web] = await Promise.all([resize(THUMB_PX), resize(WEB_PX)]);
-  return { thumb, web, width, height, takenAt: captureInstant(readExifDate(meta.exif), timeZone) };
+/** The cached watermarked guest copy for one watermark text (S4); changes with the text. */
+export function watermarkKey(item: Pick<MediaItem, "originalKey">, text: string) {
+  const dir = item.originalKey.slice(0, item.originalKey.length - "original".length);
+  return `${dir}web-wm-${createHash("sha256").update(text).digest("hex").slice(0, 12)}.jpg`;
 }
 
-function finalStatus(item: MediaItem, autoApprove: boolean): "pending" | "approved" {
-  return item.uploaderKind === "household" && !autoApprove ? "pending" : "approved";
+export type Rendered = { thumb: Buffer; web: Buffer; share: Buffer | null; width: number; height: number; takenAt: Date | null };
+
+const isHeif = (mime: string) => mime === "image/heic" || mime === "image/heif";
+
+/** HEIC/HEIF → raw RGBA via libheif (WASM), checking the size before decoding the pixels. */
+async function decodeHeif(bytes: Buffer) {
+  const { default: decode } = await import("heic-decode");
+  const images = await decode.all({ buffer: bytes });
+  try {
+    const first = images[0];
+    if (!first) throw new Error("no image");
+    if (first.width * first.height > MAX_INPUT_PIXELS) throw new Error("too many pixels");
+    const d = await first.decode();
+    return { width: d.width, height: d.height, data: Buffer.from(d.data.buffer, d.data.byteOffset, d.data.byteLength) };
+  } finally {
+    images.dispose();
+  }
 }
 
-async function processOne(db: Database, store: ObjectStore, item: MediaItem, now: Date) {
+/** Capture time as EXIF text, for the share copy. */
+function exifFor(tags: ReturnType<typeof readExifTags>): Exif | null {
+  if (!tags.dateTime) return null;
+  return { IFD2: { DateTimeOriginal: tags.dateTime, ...(tags.offset ? { OffsetTimeOriginal: tags.offset } : {}) } };
+}
+
+/** Makes the renditions of one photo (throws when it can't be decoded). Sequential, one decode. */
+export async function renderPhoto(bytes: Buffer, timeZone: string, mime = "image/jpeg"): Promise<Rendered> {
+  const opts = { failOn: "error" as const, limitInputPixels: MAX_INPUT_PIXELS };
+  let exif: Buffer | undefined;
+  try {
+    exif = (await sharp(bytes, opts).metadata()).exif;
+  } catch {
+    // HEIF containers usually still give their metadata; if not, there's no capture time.
+  }
+  const tags = readExifTags(exif);
+
+  let full: () => Sharp;
+  let width: number;
+  let height: number;
+  if (isHeif(mime)) {
+    // libheif already applies the HEIF rotation/mirroring.
+    const raw = await decodeHeif(bytes);
+    width = raw.width;
+    height = raw.height;
+    full = () => sharp(raw.data, { raw: { width: raw.width, height: raw.height, channels: 4 }, limitInputPixels: MAX_INPUT_PIXELS });
+  } else {
+    const meta = await sharp(bytes, opts).metadata();
+    const rotated = (meta.orientation ?? 1) >= 5;
+    width = (rotated ? meta.height : meta.width) ?? 0;
+    height = (rotated ? meta.width : meta.height) ?? 0;
+    full = () => sharp(bytes, opts).rotate();
+  }
+  // One full-size decode for the web copy; the thumbnail is made from the (small) web copy.
+  const web = await full().resize({ width: WEB_PX, height: WEB_PX, fit: "inside", withoutEnlargement: true }).webp({ quality: 82 }).toBuffer();
+  const thumb = await sharp(web).resize({ width: THUMB_PX, height: THUMB_PX, fit: "inside", withoutEnlargement: true }).webp({ quality: 72 }).toBuffer();
+  let share: Buffer | null = null;
+  if (mime !== "image/jpeg") {
+    // Guests never get the original file of a HEIC/PNG/WebP (metadata, S2): a clean full-size JPEG.
+    let img = full().flatten({ background: "#ffffff" }).jpeg({ quality: 92 });
+    const e = exifFor(tags);
+    if (e) img = img.withExif(e);
+    share = await img.toBuffer();
+  }
+  const takenAt = captureInstant(readExifDate(exif), timeZone);
+  return { thumb, web, share, width, height, takenAt };
+}
+
+function finalStatus(item: MediaItem, autoApprove: boolean, previewFailed: boolean): "pending" | "approved" {
+  if (item.uploaderKind !== "household") return "approved";
+  // A guest upload we couldn't decode is never auto-approved (S1): a person looks at it first.
+  return autoApprove && !previewFailed ? "approved" : "pending";
+}
+
+async function retryLater(db: Database, item: MediaItem, now: Date, error: string) {
+  if (item.processingAttempts >= MAX_ATTEMPTS) {
+    await db.update(mediaItems).set({ status: "failed", previewError: error, lockedUntil: null }).where(eq(mediaItems.id, item.id));
+    return;
+  }
+  const backoff = RETRY_BASE_MS * 2 ** Math.max(0, item.processingAttempts - 1);
+  await db
+    .update(mediaItems)
+    .set({ lockedUntil: new Date(now.getTime() + backoff) })
+    .where(eq(mediaItems.id, item.id));
+}
+
+async function processOne(db: Database, store: ObjectStore, item: MediaItem, now: Date, appUrl: string) {
   const [ctx] = await db
-    .select({ timezone: events.timezone, autoApprove: gallerySettings.autoApprove })
+    .select({ timezone: events.timezone, autoApprove: gallerySettings.autoApprove, releasedAt: galleryAlbums.releasedAt, albumKind: galleryAlbums.kind })
     .from(events)
     .leftJoin(gallerySettings, eq(gallerySettings.eventId, events.id))
+    .leftJoin(galleryAlbums, eq(galleryAlbums.id, item.albumId))
     .where(eq(events.id, item.eventId));
   if (!ctx) return;
-  const status = finalStatus(item, !!ctx.autoApprove);
-  const approved = status === "approved" ? { approvedAt: now } : {};
-  const done = (set: Partial<typeof mediaItems.$inferInsert>) =>
-    db
+  const done = async (set: Partial<typeof mediaItems.$inferInsert>, previewFailed = false) => {
+    const status = finalStatus(item, !!ctx.autoApprove, previewFailed);
+    const rows = await db
       .update(mediaItems)
-      .set({ status, lockedUntil: null, ...approved, ...set })
-      .where(and(eq(mediaItems.id, item.id), eq(mediaItems.status, "processing")));
+      .set({ status, lockedUntil: null, ...(status === "approved" ? { approvedAt: now } : {}), ...set })
+      .where(and(eq(mediaItems.id, item.id), eq(mediaItems.status, "processing")))
+      .returning({ id: mediaItems.id });
+    // An album released while this was processing: tell invited families now (GAL-11).
+    if (rows.length && status === "approved" && ctx.releasedAt && ctx.albumKind !== "guest") {
+      await db.transaction((tx) => notifyFunctionReady(tx, { eventId: item.eventId, functionId: item.functionId, appUrl }));
+    }
+  };
 
   if (item.kind === "video") return done({});
 
   const bytes = await store.getBytes(item.originalKey).catch(() => null);
-  if (!bytes) {
-    // Storage hiccup: retry later, give up after a few attempts.
-    if (item.processingAttempts >= MAX_ATTEMPTS) {
-      await db.update(mediaItems).set({ status: "failed", previewError: "missing", lockedUntil: null }).where(eq(mediaItems.id, item.id));
-    } else {
-      await db.update(mediaItems).set({ lockedUntil: new Date(now.getTime() + item.processingAttempts * LOCK_MS) }).where(eq(mediaItems.id, item.id));
-    }
-    return;
-  }
+  if (!bytes) return retryLater(db, item, now, "missing");
   let r: Rendered;
   try {
-    r = await renderPhoto(bytes, ctx.timezone);
+    r = await renderPhoto(bytes, ctx.timezone, item.mime);
   } catch {
-    // Can't decode (e.g. some HEIC): no preview, but the original is kept and downloadable.
-    return done({ previewError: "decode" });
+    // Can't decode: no preview; the family still has the original (guests get no file of it).
+    return done({ previewError: "decode" }, true);
   }
   const keys = renditionKeys(item);
   await store.put(keys.thumb, r.thumb, "image/webp");
   await store.put(keys.web, r.web, "image/webp");
-  await done({ thumbKey: keys.thumb, webKey: keys.web, width: r.width || null, height: r.height || null, ...(r.takenAt ? { takenAt: r.takenAt } : {}), previewError: null });
+  if (r.share) await store.put(keys.share, r.share, "image/jpeg");
+  await done({
+    thumbKey: keys.thumb,
+    webKey: keys.web,
+    shareKey: r.share ? keys.share : null,
+    width: r.width || null,
+    height: r.height || null,
+    ...(r.takenAt ? { takenAt: r.takenAt } : {}),
+    previewError: null,
+  });
 }
 
 /** Claims up to `n` items that need renditions (skipping ones another worker holds). */
@@ -185,47 +241,71 @@ async function claim(db: Database, now: Date, n: number, ids?: string[]) {
   });
 }
 
+export type RenditionsResult = {
+  processed: number;
+  /** Items ready to process now. */
+  remaining: number;
+  /** When the next item waiting on a retry (or another worker's lease) falls due, if any. */
+  nextDueAt: Date | null;
+};
+
 /**
- * Processes queued items two at a time until none are left or the time budget runs out.
- * `ids` limits it to particular items (right after their upload). Returns what's left.
+ * Processes queued items one at a time until none are left or the time budget runs out.
+ * `ids` limits it to particular items. Returns what's left and when the next retry is due.
  */
-export async function processRenditions(db: Database, store: ObjectStore, opts: { budgetMs?: number; ids?: string[]; now?: () => Date; concurrency?: number } = {}) {
+export async function processRenditions(
+  db: Database,
+  store: ObjectStore,
+  opts: { budgetMs?: number; ids?: string[]; now?: () => Date; concurrency?: number; appUrl?: string } = {},
+): Promise<RenditionsResult> {
   const started = Date.now();
   const clock = opts.now ?? (() => new Date());
+  const appUrl = opts.appUrl ?? (process.env.APP_URL ?? "").replace(/\/$/, "");
   let processed = 0;
   for (;;) {
     if (opts.budgetMs && Date.now() - started > opts.budgetMs) break;
-    const batch = await claim(db, clock(), opts.concurrency ?? 2, opts.ids);
+    const batch = await claim(db, clock(), opts.concurrency ?? 1, opts.ids);
     if (batch.length === 0) break;
-    await Promise.all(
-      batch.map((item) =>
-        processOne(db, store, item, clock()).catch(async (err) => {
-          console.error("rendition failed", item.id, err);
-          if (item.processingAttempts >= MAX_ATTEMPTS) {
-            await db.update(mediaItems).set({ status: "failed", previewError: "error", lockedUntil: null }).where(eq(mediaItems.id, item.id));
-          }
-        }),
-      ),
-    );
+    for (const item of batch) {
+      await processOne(db, store, item, clock(), appUrl).catch(async (err) => {
+        console.error("rendition failed", item.id, err);
+        await retryLater(db, item, clock(), "error");
+      });
+    }
     processed += batch.length;
   }
-  const [{ remaining }] = await db
-    .select({ remaining: sql<number>`count(*)`.mapWith(Number) })
+  const now = clock();
+  const [r] = await db
+    .select({
+      remaining: sql<number>`count(*) filter (where ${mediaItems.lockedUntil} is null or ${mediaItems.lockedUntil} < ${now})`.mapWith(Number),
+      nextDue: min(mediaItems.lockedUntil),
+    })
     .from(mediaItems)
-    .where(and(eq(mediaItems.status, "processing"), or(isNull(mediaItems.lockedUntil), lt(mediaItems.lockedUntil, clock()))));
-  return { processed, remaining };
+    .where(eq(mediaItems.status, "processing"));
+  return { processed, remaining: r?.remaining ?? 0, nextDueAt: r?.nextDue ?? null };
+}
+
+/**
+ * How long the drain should wait before calling itself again: now when items are ready, the
+ * time until the next retry when it's due soon, otherwise null (the daily cron picks it up).
+ */
+export function nextRenditionsDelay(res: RenditionsResult, now: Date): number | null {
+  if (res.remaining > 0) return 0;
+  if (!res.nextDueAt) return null;
+  const wait = res.nextDueAt.getTime() - now.getTime();
+  return wait <= DRAIN_WAIT_WINDOW_MS ? Math.max(0, wait) : null;
 }
 
 // ---------------------------------------------------------------------------
-// Watermark (GAL-10): applied to the guest download copy only, on the fly
+// Watermark (GAL-10): applied to the guest copy, cached per watermark text (S4)
 // ---------------------------------------------------------------------------
 
 const XML_ESC: Record<string, string> = { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" };
 const xml = (s: string) => s.replace(/[<>&"']/g, (c) => XML_ESC[c]);
 
-/** Stamps `text` in the bottom-right corner and returns a JPEG. */
+/** Stamps `text` in the bottom-right corner and returns a JPEG (no metadata). */
 export async function watermark(bytes: Buffer, text: string): Promise<Buffer> {
-  const meta = await sharp(bytes).metadata();
+  const meta = await sharp(bytes, { limitInputPixels: MAX_INPUT_PIXELS }).metadata();
   const rotated = (meta.orientation ?? 1) >= 5;
   const w = (rotated ? meta.height : meta.width) ?? WEB_PX;
   const h = (rotated ? meta.width : meta.height) ?? WEB_PX;
@@ -233,9 +313,20 @@ export async function watermark(bytes: Buffer, text: string): Promise<Buffer> {
   const pad = Math.round(size * 0.8);
   const stroke = Math.max(1, Math.round(size / 18));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><text x="${w - pad}" y="${h - pad}" text-anchor="end" font-family="sans-serif" font-size="${size}" fill="#ffffff" fill-opacity="0.75" stroke="#000000" stroke-opacity="0.35" stroke-width="${stroke}">${xml(text.slice(0, 60))}</text></svg>`;
-  return sharp(bytes)
+  return sharp(bytes, { limitInputPixels: MAX_INPUT_PIXELS })
     .rotate()
     .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
     .jpeg({ quality: 85 })
     .toBuffer();
+}
+
+/** The watermarked guest copy of an item's web rendition, made once per watermark text. */
+export async function watermarkedCopy(store: ObjectStore, item: Pick<MediaItem, "originalKey" | "webKey">, text: string): Promise<string | null> {
+  if (!item.webKey) return null;
+  const key = watermarkKey(item, text);
+  if (await store.head(key)) return key;
+  const web = await store.getBytes(item.webKey);
+  if (!web) return null;
+  await store.put(key, await watermark(web, text), "image/jpeg");
+  return key;
 }

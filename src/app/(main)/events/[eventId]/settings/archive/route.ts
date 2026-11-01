@@ -14,7 +14,7 @@ export const maxDuration = 300;
 /**
  * EVT-08 full archive: one ZIP per part (`?part=main` by default). Hosts and App Admins only
  * (`event.export`), with a fresh OTP (EVT-01d); every download is audited. At most
- * ARCHIVE_DOWNLOADS_PER_DAY downloads per event per day, since each one is a long, heavy request.
+ * ARCHIVE_DOWNLOADS_PER_DAY downloads per event and part per day, since each one is a long, heavy request.
  */
 export async function GET(req: Request, { params }: RouteContext<"/events/[eventId]/settings/archive">) {
   const { eventId } = await params;
@@ -30,7 +30,8 @@ export async function GET(req: Request, { params }: RouteContext<"/events/[event
   const t = createTranslator(locale);
   const entries = await partEntries({ db, event: ctx.event, t, locale, subject: ctx.subject, actor: ctx.actor, now: new Date() }, partId);
   if (!entries) return new Response("Not found", { status: 404 });
-  if (!(await allowAttempt(db, "archive", eventId, ARCHIVE_DOWNLOADS_PER_DAY, 24 * 3600_000))) {
+  // Counted per part: gallery parts are small (400 MB, ADR-0031), so a big archive has many.
+  if (!(await allowAttempt(db, "archive", `${eventId}:${partId}`, ARCHIVE_DOWNLOADS_PER_DAY, 24 * 3600_000))) {
     redirect(`/events/${eventId}/settings?archiveLimit=1#data`);
   }
   await recordArchiveDownload(db, eventId, ctx.actor, partId);

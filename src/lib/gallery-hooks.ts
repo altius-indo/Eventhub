@@ -13,7 +13,7 @@ import { getStore } from "./storage";
  * outbox drainer and the daily cron have them) and by pages that show the archive. (The usage
  * sources live in `storage-sources.ts`.)
  *
- * - archive parts `gallery-1..n` with the originals, each under ~2 GB (EVT-08)
+ * - archive parts `gallery-1..n` with the originals, each up to 400 MB / 500 files (EVT-08)
  * - outbox template `gallery_ready` (GAL-11)
  */
 
@@ -31,7 +31,7 @@ registerArchivePart({
     const folder = ctx.t("gallery.archiveFolder");
     for (const it of part) {
       const entry: ArchiveEntry = {
-        path: `${folder}/${zipPath(it, (k) => ctx.t(`gallery.albumKinds.${k}`))}`,
+        path: `${folder}/${zipPath(it, (k) => ctx.t(`gallery.albumKinds.${k}`), ctx.event.timezone)}`,
         data: async () => (await store.get(it.originalKey))?.stream ?? null,
         mtime: it.takenAt,
       };

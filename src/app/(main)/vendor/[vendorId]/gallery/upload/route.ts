@@ -6,7 +6,8 @@ import { getVendorContext } from "@/lib/server/vendor-context";
 export async function POST(req: Request, { params }: RouteContext<"/vendor/[vendorId]/gallery/upload">) {
   const { vendorId } = await params;
   const ctx = await getVendorContext(vendorId);
-  if (!ctx.can("portal.gallery")) return new Response("Not found", { status: 404 });
+  // An App Admin viewing the portal must not upload as the vendor (S8).
+  if (ctx.viaAdmin || !ctx.can("portal.gallery")) return new Response("Not found", { status: 404 });
   const { t } = await getTranslator();
   return handleUploadRequest(req, ctx.event.id, { kind: "vendor", vendorId, userId: ctx.user.id }, t);
 }

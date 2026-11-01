@@ -64,3 +64,34 @@ upload grants and the reservation-based quota.
 - No tiering of originals after 90 days (Blob has no storage classes; see ADR-0030).
 - A venue QR opens the site gallery; uploading needs the family's guest link on that phone, so
   there are no anonymous uploads.
+
+## Amendments (gallery review, 2026-11-01)
+
+- **Reservation ids without a foreign key**: `media_items.reservation_id` keeps the id after the
+  daily job gives an expired reservation back (the FK used to null it, and commit/release then
+  fell back to "oldest reservation of the same size", stealing another upload's). commit/release
+  look the id up; gone (or `null` on old rows) means "already given back": commit counts the
+  object as new usage (event and family counters), release does nothing.
+- **Content is verified, not declared** (security S1): `complete` reads the first 64 bytes from
+  the store and checks the magic number (JPEG, PNG, RIFF/WEBP, `ftyp` HEIC/HEIF/MP4/QuickTime,
+  WebM EBML) against the declared type (HEIC≈HEIF, MP4≈MOV). A mismatch deletes the object and
+  gives the reservation back. The stored `mime` is the verified type, and file extensions in
+  downloads and ZIPs come from it, never from the uploader's file name.
+- **Lost "complete"**: a retried `begin` for an item still `uploading` first `head()`s the key; if
+  the object is there it finishes the upload and answers `done` (grants never overwrite, so the
+  retry would otherwise fail for ever).
+- **Family erasure** (EVT-09) gives the family's stored bytes and in-flight reservations back in
+  the same transaction, instead of waiting for the nightly reconcile.
+- **Orphan sweep** runs in 32 steps per event (`gallery/<hex>` then `households/<hex>`), checks
+  ids against the database in chunks of 500, saves the step reached and stops at its time budget
+  (events part-way through go first), so it never holds up later cron jobs.
+- **ZIPs within one function's 300 s**: parts are at most **400 MB or 500 files** (about 1.5 MB/s
+  is enough; the old 2 GB parts couldn't stream in time). Because there are more parts, limits
+  count **parts when they start**: the family's full download allows each part 5 times per event
+  per day (§4.1 "5 full downloads"), so restarting at part 2 or parallel parts don't escape it; the
+  EVT-08 archive counts per part as well. Guests' function ZIPs count every part per family (10 a
+  day) and per event and part (5 a day, the same cap as full downloads). ZIP paths use the capture
+  day in the event's timezone.
+- **Guests' ZIPs** contain other families' photos without metadata (stripped JPEG or the clean
+  JPEG copy, ADR-0032) under id-based names, leave out photos whose preview failed, and aren't
+  offered at all while a watermark is set.

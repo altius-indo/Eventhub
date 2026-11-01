@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
 import {
@@ -11,6 +11,7 @@ import {
   functions,
   fulfilments,
   galleryAlbums,
+  galleryReadyNotices,
   gallerySettings,
   guests,
   households,
@@ -19,6 +20,7 @@ import {
   mediaItems,
   mediaLikes,
   mediaRemovalRequests,
+  rateEvents,
   serviceTypes,
   services,
   type GalleryAlbum,
@@ -34,6 +36,7 @@ import { queueStorageDeletion } from "./storage-gc";
 import { commit, free, release, reserve, StorageQuotaError } from "./storage-quota";
 import { vendorUserIds } from "./vendor-access";
 import { allowAttempt } from "./website";
+import { extFor, readStreamHead, sameFamily, sniffMime } from "./media-files";
 
 /**
  * Post-event photo gallery (GAL-01..08, GAL-10, GAL-11).
@@ -66,7 +69,8 @@ export class GalleryError extends Error {
       | "reactions_off"
       | "already_requested"
       | "not_ready"
-      | "album_released",
+      | "album_released"
+      | "not_public",
   ) {
     super(code);
   }
@@ -92,8 +96,14 @@ export const LIMITS = {
 export const GUEST_UPLOADS_PER_HOUR = 300;
 /** Full-gallery ZIP downloads per event per day (§4.1). */
 export const FULL_DOWNLOADS_PER_DAY = 5;
-/** Keep each ZIP part well under classic ZIP's 4 GB (and a 300 s function). */
-export const ZIP_PART_BYTES = 2 * GB;
+/**
+ * ZIP parts must finish streaming inside one 300 s function: ~400 MB or 500 files each, whichever
+ * comes first (about 1.5 MB/s is enough; ADR-0031). The daily limits count parts, not downloads.
+ */
+export const ZIP_PART_BYTES = 400 * MB;
+export const ZIP_PART_FILES = 500;
+/** Guest ZIP parts per family per day (each part counts). */
+export const GUEST_ZIP_PARTS_PER_DAY = 10;
 
 export const PHOTOGRAPHY_KEYS = ["photography", "videography"] as const;
 
@@ -101,7 +111,7 @@ export type Uploader = { kind: "member"; userId: string } | { kind: "vendor"; ve
 
 export type Viewer = { kind: "member" } | { kind: "vendor"; vendorId: string } | { kind: "guest"; householdId: string; functionIds: string[] };
 
-export const DEFAULT_SETTINGS: Omit<GallerySettings, "eventId" | "updatedAt" | "sweptAt"> = {
+export const DEFAULT_SETTINGS: Omit<GallerySettings, "eventId" | "updatedAt" | "sweptAt" | "sweepStep"> = {
   guestUploads: false,
   autoApprove: false,
   guestOriginals: false,
@@ -115,7 +125,7 @@ export const DEFAULT_SETTINGS: Omit<GallerySettings, "eventId" | "updatedAt" | "
 
 export async function getGallerySettings(db: Tx, eventId: string): Promise<GallerySettings> {
   const [row] = await db.select().from(gallerySettings).where(eq(gallerySettings.eventId, eventId));
-  return row ?? { eventId, ...DEFAULT_SETTINGS, sweptAt: null, updatedAt: new Date(0) };
+  return row ?? { eventId, ...DEFAULT_SETTINGS, sweptAt: null, sweepStep: 0, updatedAt: new Date(0) };
 }
 
 export const settingsSchema = z.object({
@@ -383,7 +393,14 @@ function quotaError(e: unknown): never {
   throw e;
 }
 
-export type BeginResult = { mediaId: string; grant: UploadGrant } | { mediaId: string; done: true };
+export type BeginResult = { mediaId: string; grant: UploadGrant } | { mediaId: string; done: true; status: MediaItem["status"] };
+
+/** What finishing an upload can say instead of returning the item. */
+type FinishFailure = "missing" | "rejected" | "bad_type";
+
+function finishError(f: Exclude<FinishFailure, "missing">): never {
+  throw new GalleryError(f === "bad_type" ? "bad_type" : "too_large");
+}
 
 /**
  * Starts (or resumes) one upload: checks the uploader may add to that function, reserves quota
@@ -399,7 +416,7 @@ export async function beginUpload(db: Database, store: ObjectStore, eventId: str
   const kind = kindOf(input.mime)!;
   const ttlSeconds = kind === "video" ? 6 * 3600 : 30 * 60;
 
-  return db.transaction(async (tx) => {
+  const res = await db.transaction(async (tx): Promise<BeginResult | Exclude<FinishFailure, "missing">> => {
     // A retry of the same file: hand out a fresh grant for the same key, or report it's done.
     const [existing] = await tx
       .select()
@@ -408,7 +425,12 @@ export async function beginUpload(db: Database, store: ObjectStore, eventId: str
       .for("update");
     if (existing) {
       if (!sameUploader(existing, uploader)) throw new GalleryError("invalid");
-      if (existing.status !== "uploading") return { mediaId: existing.id, done: true as const };
+      if (existing.status !== "uploading") return { mediaId: existing.id, done: true as const, status: existing.status };
+      // The bytes may have arrived and only "complete" got lost: finish instead of a new grant
+      // (a grant never overwrites, so a retry would fail for ever otherwise).
+      const finished = await finishUpload(tx, store, existing);
+      if (finished === "rejected" || finished === "bad_type") return finished;
+      if (finished !== "missing") return { mediaId: finished.id, done: true as const, status: finished.status };
       const grant = await store.authorizeUpload({ key: existing.originalKey, maxBytes: existing.reservedBytes, contentTypes: [existing.mime], ttlSeconds });
       await tx.update(mediaItems).set({ uploadExpiresAt: new Date(grant.expiresAt) }).where(eq(mediaItems.id, existing.id));
       return { mediaId: existing.id, grant };
@@ -473,6 +495,8 @@ export async function beginUpload(db: Database, store: ObjectStore, eventId: str
     await ensureSettingsRow(tx, eventId);
     return { mediaId: id, grant };
   });
+  if (typeof res === "string") finishError(res);
+  return res;
 }
 
 async function lockOwnUpload(tx: Tx, eventId: string, uploader: Uploader, mediaId: string) {
@@ -486,21 +510,35 @@ async function lockOwnUpload(tx: Tx, eventId: string, uploader: Uploader, mediaI
   return row;
 }
 
-/** Turns an uploaded object into usage: confirms its real size, commits quota, queues renditions. */
-async function finishUpload(tx: Tx, store: ObjectStore, row: MediaItem): Promise<MediaItem | "missing" | "rejected"> {
+/** The real type of a stored object from its first bytes (null when unreadable or unknown). */
+export async function sniffStored(store: ObjectStore, key: string): Promise<string | null> {
+  const obj = await store.get(key);
+  if (!obj) return null;
+  return sniffMime(await readStreamHead(obj.stream));
+}
+
+/**
+ * Turns an uploaded object into usage: confirms its real size and its real type (from the first
+ * bytes, S1), commits quota and queues renditions. A forged or broken object is deleted and its
+ * reservation given back. A null `reservationId` means it was already given back (expired).
+ */
+async function finishUpload(tx: Tx, store: ObjectStore, row: MediaItem): Promise<MediaItem | FinishFailure> {
   const head = await store.head(row.originalKey);
   if (!head) return "missing";
-  if (head.size <= 0 || head.size > row.reservedBytes) {
-    // The store enforces the size, so this is a forged or broken object: drop it.
+  const drop = async (why: Exclude<FinishFailure, "missing">) => {
     await store.delete(row.originalKey).catch(() => undefined);
-    await release(tx, row.eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId ?? undefined });
+    await release(tx, row.eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId });
     await tx.delete(mediaItems).where(eq(mediaItems.id, row.id));
-    return "rejected";
-  }
-  await commit(tx, row.eventId, row.reservedBytes, head.size, { householdId: row.householdId, reservationId: row.reservationId ?? undefined });
+    return why;
+  };
+  // The store enforces the size, so this is a forged or broken object.
+  if (head.size <= 0 || head.size > row.reservedBytes) return drop("rejected");
+  const real = await sniffStored(store, row.originalKey);
+  if (!real || !sameFamily(row.mime, real) || maxBytesFor(row.uploaderKind === "household" ? "guest" : row.uploaderKind, real) == null) return drop("bad_type");
+  await commit(tx, row.eventId, row.reservedBytes, head.size, { householdId: row.householdId, reservationId: row.reservationId });
   const [u] = await tx
     .update(mediaItems)
-    .set({ status: "processing", originalBytes: head.size, reservedBytes: 0, reservationId: null, uploadExpiresAt: null })
+    .set({ status: "processing", mime: real, originalBytes: head.size, reservedBytes: 0, reservationId: null, uploadExpiresAt: null })
     .where(eq(mediaItems.id, row.id))
     .returning();
   return u;
@@ -514,7 +552,7 @@ export async function completeUpload(db: Database, store: ObjectStore, eventId: 
     return finishUpload(tx, store, row);
   });
   if (done === "missing") throw new GalleryError("not_uploaded");
-  if (done === "rejected") throw new GalleryError("too_large");
+  if (done === "rejected" || done === "bad_type") finishError(done);
   return done;
 }
 
@@ -523,7 +561,7 @@ export async function abortUpload(db: Database, store: ObjectStore, eventId: str
   const key = await db.transaction(async (tx) => {
     const row = await lockOwnUpload(tx, eventId, uploader, mediaId);
     if (row.status !== "uploading") return null;
-    await release(tx, eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId ?? undefined });
+    await release(tx, eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId });
     await tx.delete(mediaItems).where(eq(mediaItems.id, row.id));
     return row.originalKey;
   });
@@ -552,7 +590,7 @@ export async function sweepUploads(db: Database, store: ObjectStore, now = new D
       if (!row || row.status !== "uploading") return null;
       const done = await finishUpload(tx, store, row);
       if (done !== "missing") return null;
-      await release(tx, row.eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId ?? undefined });
+      await release(tx, row.eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId });
       await tx.delete(mediaItems).where(eq(mediaItems.id, row.id));
       return row.originalKey;
     });
@@ -566,26 +604,68 @@ export async function sweepUploads(db: Database, store: ObjectStore, now = new D
  * Daily: deletes gallery objects no row points at any more (their rows went with a cascaded
  * delete, e.g. a function or vendor). Objects younger than a day are left alone.
  */
-export async function sweepOrphanObjects(db: Database, store: ObjectStore, now = new Date(), opts: { limit?: number } = {}) {
+const HEX = "0123456789abcdef";
+/**
+ * The orphan sweep walks an event in steps: the 16 `gallery/<first hex digit>` prefixes, then the
+ * 16 `households/<first hex digit>` prefixes. Progress is saved after each step.
+ */
+export const SWEEP_STEPS = 32;
+const sweepPrefix = (eventId: string, step: number) => (step < 16 ? `events/${eventId}/gallery/${HEX[step]}` : `events/${eventId}/households/${HEX[step - 16]}`);
+const SWEEP_CHUNK = 500;
+
+/**
+ * Daily: deletes gallery objects no row points at any more (their rows went with a cascaded
+ * delete, e.g. a function or vendor). Objects younger than a day are left alone.
+ *
+ * Bounded by `budgetMs`: it works in steps (one key prefix each, see SWEEP_STEPS), checks ids
+ * against the database in chunks, and saves the step reached per event, so a big event is swept
+ * over several days without holding up later jobs. Events part-way through come first.
+ */
+export async function sweepOrphanObjects(db: Database, store: ObjectStore, now = new Date(), opts: { limit?: number; budgetMs?: number; clock?: () => number } = {}) {
+  const clock = opts.clock ?? Date.now;
+  const deadline = opts.budgetMs != null ? clock() + opts.budgetMs : Infinity;
   const due = await db
-    .select({ eventId: gallerySettings.eventId })
+    .select({ eventId: gallerySettings.eventId, step: gallerySettings.sweepStep })
     .from(gallerySettings)
-    .orderBy(sql`${gallerySettings.sweptAt} asc nulls first`)
+    .orderBy(desc(sql`${gallerySettings.sweepStep} > 0`), sql`${gallerySettings.sweptAt} asc nulls first`)
     .limit(opts.limit ?? 10);
   let deleted = 0;
   const ID = /\/gallery\/([0-9a-f-]{36})\//;
-  for (const { eventId } of due) {
-    const known = new Set((await db.select({ id: mediaItems.id }).from(mediaItems).where(eq(mediaItems.eventId, eventId))).map((r) => r.id));
-    for (const prefix of [`events/${eventId}/gallery/`, `events/${eventId}/households/`]) {
-      for await (const o of store.list(prefix)) {
-        const m = o.key.match(ID);
-        if (!m || known.has(m[1])) continue;
-        if (now.getTime() - o.uploadedAt.getTime() < 24 * 3600_000) continue;
-        await store.delete(o.key);
-        deleted++;
-      }
+  const dayAgo = now.getTime() - 24 * 3600_000;
+
+  const flush = async (eventId: string, batch: { key: string; id: string }[]) => {
+    if (batch.length === 0) return;
+    const ids = [...new Set(batch.map((b) => b.id))];
+    const known = new Set(
+      (await db.select({ id: mediaItems.id }).from(mediaItems).where(and(eq(mediaItems.eventId, eventId), inArray(mediaItems.id, ids)))).map((r) => r.id),
+    );
+    for (const b of batch) {
+      if (known.has(b.id)) continue;
+      await store.delete(b.key);
+      deleted++;
     }
-    await db.update(gallerySettings).set({ sweptAt: now }).where(eq(gallerySettings.eventId, eventId));
+  };
+
+  for (const { eventId, step: from } of due) {
+    let step = Math.min(Math.max(0, from), SWEEP_STEPS);
+    while (step < SWEEP_STEPS) {
+      if (clock() >= deadline) return deleted;
+      let batch: { key: string; id: string }[] = [];
+      for await (const o of store.list(sweepPrefix(eventId, step))) {
+        const m = o.key.match(ID);
+        if (!m || o.uploadedAt.getTime() > dayAgo) continue;
+        batch.push({ key: o.key, id: m[1] });
+        if (batch.length >= SWEEP_CHUNK) {
+          await flush(eventId, batch);
+          batch = [];
+          if (clock() >= deadline) return deleted; // this step is redone next time
+        }
+      }
+      await flush(eventId, batch);
+      step++;
+      await db.update(gallerySettings).set({ sweepStep: step }).where(eq(gallerySettings.eventId, eventId));
+    }
+    await db.update(gallerySettings).set({ sweptAt: now, sweepStep: 0 }).where(eq(gallerySettings.eventId, eventId));
   }
   return deleted;
 }
@@ -616,25 +696,52 @@ export const VARIANTS = ["thumb", "web", "original", "download"] as const;
 export type Variant = (typeof VARIANTS)[number];
 
 /**
- * Which file a variant serves for this viewer, or null. Guests get web resolution unless the
- * family allowed originals (GAL-06) or it's their own upload; "download" is the guest's
- * (watermarked, GAL-10) save-to-phone copy.
+ * A file to serve: `key` in the store; `watermark` = serve the watermarked copy of the web
+ * rendition instead (S4); `strip` = a JPEG original whose metadata must be stripped first (S2);
+ * `mime` = the type of what's served (for the extension, never the uploader's file name).
  */
-export function variantFor(viewer: Viewer, item: Pick<MediaItem, "kind" | "householdId" | "thumbKey" | "webKey" | "originalKey">, variant: Variant, settings: Pick<GallerySettings, "guestOriginals">): { key: string; watermark: boolean } | null {
-  const own = viewer.kind === "guest" && item.householdId === viewer.householdId;
-  const originalsOk = viewer.kind !== "guest" || settings.guestOriginals || own;
+export type VariantFile = { key: string; watermark: boolean; strip: boolean; mime: string };
+
+type VariantItem = Pick<MediaItem, "kind" | "mime" | "householdId" | "thumbKey" | "webKey" | "originalKey"> & Partial<Pick<MediaItem, "shareKey">>;
+
+/**
+ * What a guest gets instead of someone else's original (S2): JPEGs with their metadata stripped,
+ * other photos as the clean full-size JPEG made with the renditions, videos as they are (not
+ * re-muxed; ADR-0032). Null when there's no clean copy.
+ */
+function guestOriginal(item: VariantItem): VariantFile | null {
+  if (item.kind === "video") return { key: item.originalKey, watermark: false, strip: false, mime: item.mime };
+  if (item.mime === "image/jpeg") return { key: item.originalKey, watermark: false, strip: true, mime: "image/jpeg" };
+  return item.shareKey ? { key: item.shareKey, watermark: false, strip: false, mime: "image/jpeg" } : null;
+}
+
+/**
+ * Which file a variant serves for this viewer, or null.
+ * - The team and vendors get true originals; a family gets its own uploads as they are.
+ * - Other guests: web resolution (watermarked when the family set a watermark, GAL-10/S4).
+ *   Originals only when the family allowed them (GAL-06) and no watermark is set, and then
+ *   without location or camera metadata (S2). Never a file whose preview failed to decode.
+ */
+export function variantFor(viewer: Viewer, item: VariantItem, variant: Variant, settings: Pick<GallerySettings, "guestOriginals"> & Partial<Pick<GallerySettings, "watermarkText">>): VariantFile | null {
+  const plain = (key: string, mime: string): VariantFile => ({ key, watermark: false, strip: false, mime });
+  const web = item.webKey ? plain(item.webKey, "image/webp") : null;
+  if (variant === "thumb") return item.thumbKey ? plain(item.thumbKey, "image/webp") : null;
+  const trusted = viewer.kind !== "guest" || item.householdId === viewer.householdId;
+  if (trusted) {
+    if (variant === "web" && item.kind === "photo" && web) return web;
+    return plain(item.originalKey, item.mime);
+  }
+  const wm = !!settings.watermarkText;
+  const originals = settings.guestOriginals && !wm;
+  if (item.kind === "video") return variant === "original" && !originals ? null : plain(item.originalKey, item.mime);
+  const marked = web ? { ...web, watermark: wm, mime: wm ? "image/jpeg" : web.mime } : null;
   switch (variant) {
-    case "thumb":
-      return item.thumbKey ? { key: item.thumbKey, watermark: false } : null;
     case "web":
-      if (item.kind === "video") return { key: item.originalKey, watermark: false };
-      return item.webKey ? { key: item.webKey, watermark: false } : originalsOk ? { key: item.originalKey, watermark: false } : null;
+      return marked;
     case "original":
-      return originalsOk ? { key: item.originalKey, watermark: false } : null;
+      return originals ? guestOriginal(item) : null;
     case "download":
-      if (viewer.kind !== "guest" || item.kind === "video") return originalsOk || item.kind === "video" ? { key: item.originalKey, watermark: false } : null;
-      if (originalsOk) return { key: item.originalKey, watermark: false };
-      return item.webKey ? { key: item.webKey, watermark: true } : null;
+      return (originals ? guestOriginal(item) : null) ?? marked;
   }
 }
 
@@ -805,21 +912,32 @@ export async function moderate(db: Database, input: { eventId: string; actor: Ac
   });
 }
 
-/** Picks a photo for the public website (GAL-05). Only approved photos with a web rendition. */
-export async function setHighlight(db: Tx, input: { eventId: string; mediaId: string; on: boolean }) {
+/**
+ * What may be on the public website (GAL-05, S5): approved photos with a web copy, in a released
+ * album of a public function. Checked when picking and again whenever highlights are read.
+ */
+const highlightable = () =>
+  and(
+    eq(mediaItems.status, "approved"),
+    eq(mediaItems.kind, "photo"),
+    isNotNull(mediaItems.webKey),
+    sql`exists (select 1 from ${galleryAlbums} a join ${functions} f on f.id = a.function_id where a.id = ${mediaItems.albumId} and a.released_at is not null and f.is_public)`,
+  );
+
+/** Picks (or un-picks) a photo for the public website (GAL-05). Audited. */
+export async function setHighlight(db: Database, input: { eventId: string; actor: Actor; mediaId: string; on: boolean }) {
   if (!z.string().uuid().safeParse(input.mediaId).success) throw new GalleryError("not_found");
-  const rows = await db
-    .update(mediaItems)
-    .set({ highlight: input.on })
-    .where(
-      and(
-        eq(mediaItems.eventId, input.eventId),
-        eq(mediaItems.id, input.mediaId),
-        input.on ? and(eq(mediaItems.status, "approved"), eq(mediaItems.kind, "photo"), isNotNull(mediaItems.webKey)) : undefined,
-      ),
-    )
-    .returning({ id: mediaItems.id });
-  if (!rows.length) throw new GalleryError("not_ready");
+  await db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({ id: mediaItems.id, ok: sql<boolean>`${highlightable()!}` })
+      .from(mediaItems)
+      .where(and(eq(mediaItems.eventId, input.eventId), eq(mediaItems.id, input.mediaId)))
+      .for("update");
+    if (!item) throw new GalleryError("not_found");
+    if (input.on && !item.ok) throw new GalleryError("not_public");
+    await tx.update(mediaItems).set({ highlight: input.on }).where(eq(mediaItems.id, item.id));
+    await audit(tx, { eventId: input.eventId, actor: input.actor, action: input.on ? "gallery.highlight_added" : "gallery.highlight_removed", entityType: "media", entityId: item.id });
+  });
 }
 
 /** Highlighted photos, for the website's gallery section. */
@@ -827,17 +945,61 @@ export async function listHighlights(db: Tx, eventId: string, limit = 60) {
   return db
     .select({ id: mediaItems.id, width: mediaItems.width, height: mediaItems.height })
     .from(mediaItems)
-    .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.highlight, true), eq(mediaItems.status, "approved"), isNotNull(mediaItems.webKey)))
+    .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.highlight, true), highlightable()))
     .orderBy(asc(mediaItems.takenAt), asc(mediaItems.id))
     .limit(limit);
 }
 
+/** One highlighted photo's web copy key, if it may still be shown on the website. */
+export async function highlightWebKey(db: Tx, eventId: string, mediaId: string) {
+  if (!z.string().uuid().safeParse(mediaId).success) return null;
+  const [row] = await db
+    .select({ webKey: mediaItems.webKey })
+    .from(mediaItems)
+    .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.id, mediaId), eq(mediaItems.highlight, true), highlightable()));
+  return row?.webKey ?? null;
+}
+
+/** Clears highlights that may no longer be public (album withdrawn, function made private). */
+export async function clearHighlights(db: Tx, eventId: string, where: { albumId?: string; functionId?: string }) {
+  await db
+    .update(mediaItems)
+    .set({ highlight: false })
+    .where(
+      and(
+        eq(mediaItems.eventId, eventId),
+        eq(mediaItems.highlight, true),
+        where.albumId ? eq(mediaItems.albumId, where.albumId) : undefined,
+        where.functionId ? eq(mediaItems.functionId, where.functionId) : undefined,
+      ),
+    );
+}
+
 /** Deletes an item inside a transaction: frees its quota and queues its files for deletion. */
 async function deleteItemTx(tx: Tx, item: MediaItem) {
-  if (item.status === "uploading") await release(tx, item.eventId, item.reservedBytes, { householdId: item.householdId, reservationId: item.reservationId ?? undefined });
+  if (item.status === "uploading") await release(tx, item.eventId, item.reservedBytes, { householdId: item.householdId, reservationId: item.reservationId });
   else await free(tx, item.eventId, item.originalBytes, { householdId: item.householdId });
   await tx.delete(mediaItems).where(eq(mediaItems.id, item.id));
   return queueStorageDeletion(tx, mediaPrefix(item), "gallery_item");
+}
+
+/**
+ * Before a family is erased (EVT-09): gives back the space of its uploads (stored originals and
+ * uploads in flight) in the caller's transaction, so usage drops at once instead of waiting for
+ * the nightly reconcile. The rows, household counters and reservation rows then go by cascade;
+ * the files go with the household prefix.
+ */
+export async function releaseHouseholdMedia(tx: Tx, eventId: string, householdId: string) {
+  const rows = await tx
+    .select()
+    .from(mediaItems)
+    .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.householdId, householdId)))
+    .for("update");
+  for (const item of rows) {
+    if (item.status === "uploading") await release(tx, eventId, item.reservedBytes, { householdId, reservationId: item.reservationId });
+    else await free(tx, eventId, item.originalBytes, { householdId });
+  }
+  return rows.length;
 }
 
 /** Deletes items for good (members). Returns storage deletion ids to run right away. */
@@ -930,42 +1092,98 @@ export async function releaseAlbum(db: Database, input: { eventId: string; actor
       entityId: album.id,
       data: { title: album.title },
     });
-    if (!input.release || album.releasedAt || album.kind === "guest") return { album: u, notified: 0, quota: null };
-    const [{ n }] = await tx
-      .select({ n: count() })
-      .from(mediaItems)
-      .where(and(eq(mediaItems.albumId, album.id), eq(mediaItems.status, "approved")));
-    if (n === 0) return { album: u, notified: 0, quota: null };
+    // Withdrawn photos can't stay on the public website (S5).
+    if (!input.release) await clearHighlights(tx, input.eventId, { albumId: album.id });
+    if (!input.release || album.kind === "guest") return { album: u, notified: 0, quota: null };
+    const r = await notifyFunctionReady(tx, { eventId: input.eventId, functionId: album.functionId, appUrl: input.appUrl });
+    return { album: u, ...r };
+  });
+}
 
-    const hh = await invitedHouseholds(tx, input.eventId, album.functionId);
-    const contacts = await recipientsFor(tx, input.eventId, hh.map((h) => h.id));
-    const items: EnqueueItem[] = [];
-    for (const h of hh) {
-      const c = contacts.get(h.id)?.[0];
-      if (!c) continue;
-      items.push({
-        eventId: input.eventId,
-        purpose: "broadcast",
-        templateKey: "gallery_ready",
-        vars: { appUrl: input.appUrl, functionId: album.functionId },
-        recipient: {
-          householdId: h.id,
-          guestId: c.guestId,
-          addresses: { whatsapp: c.phone, sms: c.phone, email: c.email },
-          locale: h.locale,
-          preferred: h.preferred && CHANNEL_SET.has(h.preferred) ? (h.preferred as "whatsapp" | "email" | "sms") : null,
-        },
-        bulk: true,
-        key: `gal:${album.functionId}:${h.id}`,
-      });
+/**
+ * "Photos from <function> are ready" to every invited family (GAL-11), at most once per function:
+ * on release, and again when items of an already-released album finish processing (the release
+ * may have come first). Bulk and quota-checked through the outbox; the idempotency key is per
+ * (function, family). When the messaging limit refuses it, the function is marked `quota` so
+ * Hosts see a "Send now" button; `force` retries that. Nothing happens while the function has no
+ * approved items in a released (non-guest) album.
+ */
+export async function notifyFunctionReady(tx: Tx, input: { eventId: string; functionId: string; appUrl: string; force?: boolean }): Promise<{ notified: number; quota: string | null }> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`gallery-ready:${input.functionId}`}))`);
+  const [notice] = await tx.select().from(galleryReadyNotices).where(eq(galleryReadyNotices.functionId, input.functionId));
+  if (notice?.status === "sent" || (notice?.status === "quota" && !input.force)) return { notified: 0, quota: notice.status === "quota" ? notice.channel : null };
+  const [{ n }] = await tx
+    .select({ n: count() })
+    .from(mediaItems)
+    .innerJoin(galleryAlbums, eq(galleryAlbums.id, mediaItems.albumId))
+    .where(
+      and(
+        eq(mediaItems.eventId, input.eventId),
+        eq(mediaItems.functionId, input.functionId),
+        eq(mediaItems.status, "approved"),
+        isNotNull(galleryAlbums.releasedAt),
+        ne(galleryAlbums.kind, "guest"),
+      ),
+    );
+  if (n === 0) return { notified: 0, quota: null };
+
+  const hh = await invitedHouseholds(tx, input.eventId, input.functionId);
+  const contacts = await recipientsFor(tx, input.eventId, hh.map((h) => h.id));
+  const items: EnqueueItem[] = [];
+  for (const h of hh) {
+    const c = contacts.get(h.id)?.[0];
+    if (!c) continue;
+    items.push({
+      eventId: input.eventId,
+      purpose: "broadcast",
+      templateKey: "gallery_ready",
+      vars: { appUrl: input.appUrl, functionId: input.functionId },
+      recipient: {
+        householdId: h.id,
+        guestId: c.guestId,
+        addresses: { whatsapp: c.phone, sms: c.phone, email: c.email },
+        locale: h.locale,
+        preferred: h.preferred && CHANNEL_SET.has(h.preferred) ? (h.preferred as "whatsapp" | "email" | "sms") : null,
+      },
+      bulk: true,
+      key: `gal:${input.functionId}:${h.id}`,
+    });
+  }
+  if (items.length === 0) return { notified: 0, quota: null };
+  const mark = (status: "sent" | "quota", channel: string | null) =>
+    tx
+      .insert(galleryReadyNotices)
+      .values({ functionId: input.functionId, eventId: input.eventId, status, channel, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: galleryReadyNotices.functionId, set: { status, channel, updatedAt: new Date() } });
+  try {
+    const res = await enqueue(tx, items);
+    await mark("sent", null);
+    return { notified: res.queued, quota: null };
+  } catch (e) {
+    if (!(e instanceof QuotaError)) throw e;
+    await mark("quota", e.channel);
+    return { notified: 0, quota: e.channel };
+  }
+}
+
+/** A function's "photos are ready" state (album page: "Send now" when the limit refused it). */
+export async function readyNotice(db: Tx, eventId: string, functionId: string) {
+  const [row] = await db
+    .select()
+    .from(galleryReadyNotices)
+    .where(and(eq(galleryReadyNotices.functionId, functionId), eq(galleryReadyNotices.eventId, eventId)));
+  return row ?? null;
+}
+
+/** Hosts retry a "photos are ready" message the messaging limit refused (GAL-11). */
+export async function sendReadyNow(db: Database, input: { eventId: string; actor: Actor; albumId: string; appUrl: string }) {
+  return db.transaction(async (tx) => {
+    const album = await getAlbum(tx, input.eventId, input.albumId);
+    const r = await notifyFunctionReady(tx, { eventId: input.eventId, functionId: album.functionId, appUrl: input.appUrl, force: true });
+    if (r.notified > 0) {
+      await audit(tx, { eventId: input.eventId, actor: input.actor, action: "gallery.ready_sent", entityType: "gallery_album", entityId: album.id, data: { count: r.notified } });
     }
-    try {
-      const res = await enqueue(tx, items);
-      return { album: u, notified: res.queued, quota: null };
-    } catch (e) {
-      if (e instanceof QuotaError) return { album: u, notified: 0, quota: e.channel };
-      throw e;
-    }
+    return r;
   });
 }
 
@@ -1310,7 +1528,11 @@ export async function decideRemoval(db: Database, input: { eventId: string; acto
 // ZIP downloads (GAL-06) and archive parts (EVT-08)
 // ---------------------------------------------------------------------------
 
-export type ZipItem = Pick<MediaItem, "id" | "filename" | "originalKey" | "originalBytes" | "takenAt"> & { functionName: string; albumTitle: string; albumKind: GalleryAlbum["kind"] };
+export type ZipItem = Pick<MediaItem, "id" | "filename" | "originalKey" | "originalBytes" | "takenAt" | "kind" | "mime" | "householdId" | "shareKey" | "previewError"> & {
+  functionName: string;
+  albumTitle: string;
+  albumKind: GalleryAlbum["kind"];
+};
 
 /** Stored originals in a stable order (new uploads append), optionally one album/function. */
 export async function zipItems(db: Tx, eventId: string, opts: { albumId?: string; functionId?: string; guest?: Extract<Viewer, { kind: "guest" }> } = {}): Promise<ZipItem[]> {
@@ -1322,6 +1544,11 @@ export async function zipItems(db: Tx, eventId: string, opts: { albumId?: string
       originalKey: mediaItems.originalKey,
       originalBytes: mediaItems.originalBytes,
       takenAt: mediaItems.takenAt,
+      kind: mediaItems.kind,
+      mime: mediaItems.mime,
+      householdId: mediaItems.householdId,
+      shareKey: mediaItems.shareKey,
+      previewError: mediaItems.previewError,
       functionName: functions.name,
       albumTitle: galleryAlbums.title,
       albumKind: galleryAlbums.kind,
@@ -1346,13 +1573,16 @@ export async function zipItems(db: Tx, eventId: string, opts: { albumId?: string
     .orderBy(asc(mediaItems.createdAt), asc(mediaItems.id));
 }
 
-/** Splits items into parts of at most `maxBytes` each (a bigger single file gets its own part). */
-export function splitParts<T extends { originalBytes: number }>(items: T[], maxBytes = ZIP_PART_BYTES): T[][] {
+/**
+ * Splits items into parts of at most `maxBytes` and `maxFiles` each (a bigger single file gets its
+ * own part), so each part streams within one function's time limit.
+ */
+export function splitParts<T extends { originalBytes: number }>(items: T[], maxBytes = ZIP_PART_BYTES, maxFiles = ZIP_PART_FILES): T[][] {
   const parts: T[][] = [];
   let cur: T[] = [];
   let size = 0;
   for (const it of items) {
-    if (cur.length && size + it.originalBytes > maxBytes) {
+    if (cur.length && (size + it.originalBytes > maxBytes || cur.length >= maxFiles)) {
       parts.push(cur);
       cur = [];
       size = 0;
@@ -1371,15 +1601,73 @@ const safe = (s: string) =>
     .trim()
     .slice(-100) || "file";
 
-/** ZIP paths: `<function>/<album>/<date>-<id8>-<filename>` (unique by construction). */
-export function zipPath(it: ZipItem, albumLabel: (kind: GalleryAlbum["kind"]) => string) {
-  const album = it.albumTitle || albumLabel(it.albumKind);
-  return `${safe(it.functionName)}/${safe(album)}/${it.takenAt.toISOString().slice(0, 10)}-${it.id.slice(0, 8)}-${safe(it.filename)}`;
+/** `YYYY-MM-DD` of an instant in the event's timezone. */
+export function localDay(at: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
 }
 
-/** Records a full-gallery download; false once the event used its 5 for the day (§4.1). */
-export async function allowFullDownload(db: Tx, eventId: string, now = new Date()) {
-  return allowAttempt(db, "gallery-zip-full", eventId, FULL_DOWNLOADS_PER_DAY, 24 * 3600_000, now);
+/** The uploader's name without its extension (the extension comes from the verified type, S1). */
+export const baseName = (filename: string) => safe(filename.replace(/\.[^.]{1,8}$/, "")).slice(0, 80) || "file";
+
+/**
+ * ZIP paths: `<function>/<album>/<date>-<id8>-<name>.<ext>`, unique by construction. The date is
+ * the capture day in the event's timezone; the extension comes from the type actually served.
+ * For a guest (`forHousehold`), other families' file names are never shown (S6): `<date>-<id8>`.
+ */
+export function zipPath(it: ZipItem, albumLabel: (kind: GalleryAlbum["kind"]) => string, timeZone: string, opts: { mime?: string; forHousehold?: string } = {}) {
+  const album = it.albumTitle || albumLabel(it.albumKind);
+  const showName = opts.forHousehold === undefined || it.householdId === opts.forHousehold;
+  const stem = `${localDay(it.takenAt, timeZone)}-${it.id.slice(0, 8)}${showName ? `-${baseName(it.filename)}` : ""}`;
+  return `${safe(it.functionName)}/${safe(album)}/${stem}.${extFor(opts.mime ?? it.mime)}`;
+}
+
+/**
+ * The file a guest's ZIP holds for an item: their own uploads as they are; others' photos without
+ * metadata (S2: stripped JPEG, or the clean JPEG copy), never one whose preview failed; videos as
+ * they are. Null = leave it out.
+ */
+export function guestZipFile(it: ZipItem, householdId: string): { key: string; strip: boolean; mime: string } | null {
+  if (it.householdId === householdId) return { key: it.originalKey, strip: false, mime: it.mime };
+  if (it.kind === "video") return { key: it.originalKey, strip: false, mime: it.mime };
+  if (it.previewError) return null;
+  if (it.mime === "image/jpeg") return { key: it.originalKey, strip: true, mime: "image/jpeg" };
+  return it.shareKey ? { key: it.shareKey, strip: false, mime: "image/jpeg" } : null;
+}
+
+/** A guest's ZIP of one function, split into parts: each entry with the file the guest gets. */
+export async function guestZipParts(db: Tx, eventId: string, viewer: Extract<Viewer, { kind: "guest" }>, functionId: string) {
+  const files: { it: ZipItem; file: NonNullable<ReturnType<typeof guestZipFile>>; originalBytes: number }[] = [];
+  for (const it of await zipItems(db, eventId, { functionId, guest: viewer })) {
+    const file = guestZipFile(it, viewer.householdId);
+    if (file) files.push({ it, file, originalBytes: it.originalBytes });
+  }
+  return splitParts(files);
+}
+
+const DAY_MS = 24 * 3600_000;
+
+/**
+ * The family's full-gallery ZIP (§4.1: 5 full downloads per event per day). Every part counts
+ * when it starts, per event and part number, so restarting at part 2 or fetching parts in
+ * parallel doesn't get around the limit. False once that part was fetched 5 times today.
+ */
+export async function allowFullDownload(db: Tx, eventId: string, part: number, now = new Date()) {
+  return allowAttempt(db, "gallery-zip-full", `${eventId}:${part}`, FULL_DOWNLOADS_PER_DAY, DAY_MS, now);
+}
+
+/**
+ * A guest's ZIP part (S3): each part counts per family (GUEST_ZIP_PARTS_PER_DAY a day) and per
+ * event and (function, part), with the same 5-a-day cap as the family's full downloads.
+ */
+export async function allowGuestZipPart(db: Tx, input: { eventId: string; householdId: string; functionId: string; part: number }, now = new Date()) {
+  const eventKey = `${input.eventId}:${input.functionId}:${input.part}`;
+  const [{ n }] = await db
+    .select({ n: count() })
+    .from(rateEvents)
+    .where(and(eq(rateEvents.kind, "gallery-zip-guest-event"), eq(rateEvents.key, eventKey), gt(rateEvents.createdAt, new Date(now.getTime() - DAY_MS))));
+  if (n >= FULL_DOWNLOADS_PER_DAY) return false;
+  if (!(await allowAttempt(db, "gallery-zip-guest", input.householdId, GUEST_ZIP_PARTS_PER_DAY, DAY_MS, now))) return false;
+  return allowAttempt(db, "gallery-zip-guest-event", eventKey, FULL_DOWNLOADS_PER_DAY, DAY_MS, now);
 }
 
 /** Bytes as KB/MB/GB with the locale's digit grouping (units stay Latin, as people write them). */

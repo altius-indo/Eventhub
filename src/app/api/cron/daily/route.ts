@@ -64,7 +64,7 @@ export async function GET(req: Request) {
     { name: "galleryRenditions", run: async (left) => (await processRenditions(db, getStore(), { budgetMs: Math.min(10_000, left - 2_000) })).processed, minMs: 4_000 },
     { name: "storageDeletions", run: (left) => processStorageDeletions(db, getStore(), now, { budgetMs: Math.min(15_000, left - 2_000) }), minMs: 3_000 },
     { name: "storageReconcile", run: (left) => reconcileStorage(db, getStore(), now, { budgetMs: Math.min(10_000, left - 2_000) }), minMs: 3_000 },
-    { name: "galleryOrphans", run: () => sweepOrphanObjects(db, getStore(), now), minMs: 3_000 },
+    { name: "galleryOrphans", run: (left) => sweepOrphanObjects(db, getStore(), now, { budgetMs: Math.min(10_000, left - 2_000) }), minMs: 3_000 },
     { name: "oldNotifications", run: () => purgeOldNotifications(db, now) },
     // Notices queued by the retention purge (7-day final notice).
     { name: "outboxFinal", run: async (left) => (await processOutbox(db, { budgetMs: left - 1_000 })).processed, minMs: 2_000 },

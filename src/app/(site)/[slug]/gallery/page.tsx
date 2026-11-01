@@ -2,8 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { GalleryUploader } from "@/components/gallery-uploader";
 import { getDb } from "@/db";
-import { createTranslator, formatDay } from "@/i18n/core";
-import { decodeCursor, guestGalleryOverview, LIMITS, listGuestMedia } from "@/lib/gallery";
+import { createTranslator, formatDay, intlLocale } from "@/i18n/core";
+import { decodeCursor, formatBytes, guestGalleryOverview, guestZipParts, LIMITS, listGuestMedia } from "@/lib/gallery";
 import { isUuid } from "@/lib/ids";
 import { ACCEPT_GUEST, guestGallery, uploaderLabels } from "@/lib/server/gallery";
 import { getSiteContext, siteLocale } from "@/lib/server/site-context";
@@ -55,6 +55,8 @@ export default async function GuestGalleryPage({ params, searchParams }: PagePro
   const fnId = typeof sp.fn === "string" && isUuid(sp.fn) && g.viewer.functionIds.includes(sp.fn) ? sp.fn : null;
   const fn = fnId ? overview.find((f) => f.id === fnId) : null;
   const page = fnId ? await listGuestMedia(db, g.event.id, g.viewer, fnId, decodeCursor(sp.after), 48) : null;
+  // ZIPs only with originals allowed and no watermark (S4); parts sized for one request.
+  const zipParts = fnId && g.settings.guestOriginals && !g.settings.watermarkText ? await guestZipParts(db, g.event.id, g.viewer, fnId) : [];
 
   return (
     <div lang={locale} style={look.style} className={`min-h-dvh ${look.wrap}`}>
@@ -120,9 +122,9 @@ export default async function GuestGalleryPage({ params, searchParams }: PagePro
               <p className="opacity-80">{t("gallery.site.notYet")}</p>
             ) : (
               <ul className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
-                {page.items.map((m) => (
+                {page.items.map((m, i) => (
                   <li key={m.id} className="relative">
-                    <Link href={`${base}/photo/${m.id}`} className="block overflow-hidden rounded-lg bg-black/5" aria-label={m.filename}>
+                    <Link href={`${base}/photo/${m.id}`} className="block overflow-hidden rounded-lg bg-black/5" aria-label={m.householdId === g.viewer.householdId ? m.filename : t(m.kind === "video" ? "gallery.site.videoLabel" : "gallery.site.photoLabel", { n: i + 1 })}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={`${base}/media/${m.id}/thumb`} alt="" loading="lazy" decoding="async" className="aspect-square w-full object-cover" />
                       {m.kind === "video" && (
@@ -146,11 +148,11 @@ export default async function GuestGalleryPage({ params, searchParams }: PagePro
                   {t("gallery.loadMore")}
                 </Link>
               )}
-              {g.settings.guestOriginals && fn.visible > 0 && (
-                <a href={`${base}/download?fn=${fn.id}`} className={accentBtn} style={{ background: "var(--accent)" }}>
-                  {t("gallery.site.downloadAll")}
+              {zipParts.map((p, i) => (
+                <a key={i} href={`${base}/download?fn=${fn.id}&part=${i + 1}`} className={accentBtn} style={{ background: "var(--accent)" }}>
+                  {zipParts.length > 1 ? t("gallery.download.part", { n: i + 1, total: zipParts.length, size: formatBytes(intlLocale(locale), p.reduce((a, x) => a + x.originalBytes, 0)) }) : t("gallery.site.downloadAll")}
                 </a>
-              )}
+              ))}
             </div>
           </>
         )}

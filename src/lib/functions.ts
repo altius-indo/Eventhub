@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
-import { functionInvites, functions, guests, type EventFunction } from "@/db/schema";
+import { functionInvites, functions, guests, mediaItems, type EventFunction } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 
 export class NotFoundError extends Error {}
@@ -84,6 +84,13 @@ export async function updateFunction(db: Database, eventId: string, functionId: 
       .where(and(eq(functions.id, functionId), eq(functions.eventId, eventId)))
       .returning();
     if (!fn) throw new NotFoundError();
+    // A private function's photos can't stay on the public website (GAL-05).
+    if (!fn.isPublic) {
+      await tx
+        .update(mediaItems)
+        .set({ highlight: false })
+        .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.functionId, fn.id), eq(mediaItems.highlight, true)));
+    }
     await audit(tx, { eventId, actor, action: "function.updated", entityType: "function", entityId: fn.id, data: { name: fn.name } });
     return fn;
   });

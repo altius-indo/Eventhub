@@ -21,7 +21,7 @@ export default async function VendorGalleryPage({ params }: PageProps<"/vendor/[
   const [booked, albums, selections] = await Promise.all([photoBookings(db, eventId, { vendorId }), listAlbums(db, eventId, { vendorId }), listSelections(db, eventId, { vendorId })]);
   const fns = [...new Map(booked.map((b) => [b.functionId, b])).values()];
   const base = `/vendor/${vendorId}/gallery`;
-  const canWrite = ctx.can("portal.gallery");
+  const canWrite = ctx.can("portal.gallery") && !ctx.viaAdmin;
 
   return (
     <div className="space-y-5">
