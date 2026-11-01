@@ -1,0 +1,38 @@
+import { EventTabs } from "@/components/event-tabs";
+import { Alert, Badge } from "@/components/ui";
+import { getDb } from "@/db";
+import { countPendingApprovals } from "@/lib/approvals";
+import { getEventContext } from "@/lib/server/event-context";
+import { getTranslator } from "@/lib/server/session";
+
+export default async function EventLayout({ children, params }: LayoutProps<"/events/[eventId]">) {
+  const { eventId } = await params;
+  const ctx = await getEventContext(eventId);
+  const { t } = await getTranslator();
+  const pending = (await countPendingApprovals(getDb(), [eventId])).get(eventId) ?? 0;
+  const base = `/events/${eventId}`;
+  const tabs = [
+    { href: base, label: t("nav.dashboard") },
+    { href: `${base}/members`, label: t("nav.members") },
+    { href: `${base}/approvals`, label: t("nav.approvals"), badge: ctx.can("approvals.decide") ? pending : 0 },
+    ...(ctx.can("audit.view") ? [{ href: `${base}/audit`, label: t("nav.audit") }] : []),
+    { href: `${base}/settings`, label: t("nav.settings") },
+  ];
+
+  return (
+    <div>
+      {ctx.viaAdmin && (
+        <div className="mb-4">
+          <Alert tone="warning">{t("dashboard.adminBanner")}</Alert>
+        </div>
+      )}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h1 className="text-xl font-semibold sm:text-2xl">{ctx.event.name}</h1>
+        {ctx.membership && <Badge tone={ctx.membership.role === "host" ? "primary" : "neutral"}>{t(`roles.${ctx.membership.role}`)}</Badge>}
+        {ctx.viaAdmin && <Badge tone="warning">{t("admin.adminBadge")}</Badge>}
+      </div>
+      <EventTabs tabs={tabs} />
+      {children}
+    </div>
+  );
+}

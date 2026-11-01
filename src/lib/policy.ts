@@ -1,0 +1,101 @@
+import type { GiftAccess, MemberRole } from "@/db/schema";
+
+/**
+ * Permissions from the requirements' permission matrix (§2.1).
+ * "approval" means the action is allowed but must go through a Host's approval.
+ */
+export const permissions = [
+  // Event & team
+  "event.view",
+  "event.update",
+  "event.delete",
+  "members.view",
+  "members.manage",
+  "audit.view",
+  "approvals.view",
+  "approvals.decide",
+  "limits.request",
+  // Planning modules (built in later milestones)
+  "guests.edit",
+  "rsvp.edit",
+  "travel.edit",
+  "seating.edit",
+  "itinerary.edit",
+  "runsheet.edit",
+  "tasks.edit",
+  "services.edit",
+  "vendors.edit",
+  "bookings.create",
+  "contracts.edit",
+  "budget.edit",
+  "payments.record",
+  "messaging.send",
+  "reports.view",
+  "gifts.view",
+  "gifts.record",
+  "website.edit",
+  "website.publish",
+  "gallery.moderate",
+  // Platform
+  "platform.manage",
+] as const;
+
+export type Permission = (typeof permissions)[number];
+export type Decision = "allow" | "approval" | "deny";
+
+export type PolicySubject = {
+  isAppAdmin: boolean;
+  membership: { role: MemberRole; giftAccess: GiftAccess } | null;
+};
+
+const PLATFORM_ONLY: ReadonlySet<Permission> = new Set(["platform.manage"]);
+
+const PLANNER: Partial<Record<Permission, Decision>> = {
+  "event.view": "allow",
+  "members.view": "allow",
+  "approvals.view": "allow",
+  "guests.edit": "allow",
+  "rsvp.edit": "allow",
+  "travel.edit": "allow",
+  "seating.edit": "allow",
+  "itinerary.edit": "allow",
+  "runsheet.edit": "allow",
+  "tasks.edit": "allow",
+  "vendors.edit": "allow",
+  "contracts.edit": "allow",
+  "messaging.send": "allow",
+  "reports.view": "allow",
+  "website.edit": "allow",
+  "gallery.moderate": "allow",
+  // Changes Hosts must approve (SVC-10, BGT-04)
+  "services.edit": "approval",
+  "bookings.create": "approval",
+  "budget.edit": "approval",
+  "payments.record": "approval",
+};
+
+export function decide(subject: PolicySubject, permission: Permission): Decision {
+  if (subject.isAppAdmin) return "allow";
+  if (PLATFORM_ONLY.has(permission)) return "deny";
+  const m = subject.membership;
+  if (!m) return "deny";
+  if (m.role === "host") return "allow";
+
+  if (permission === "gifts.view") return m.giftAccess === "full" ? "allow" : "deny";
+  if (permission === "gifts.record") return m.giftAccess === "none" ? "deny" : "allow";
+  return PLANNER[permission] ?? "deny";
+}
+
+export function can(subject: PolicySubject, permission: Permission): boolean {
+  return decide(subject, permission) !== "deny";
+}
+
+export class ForbiddenError extends Error {
+  constructor(public permission?: Permission) {
+    super(permission ? `Not allowed: ${permission}` : "Not allowed");
+  }
+}
+
+export function assertCan(subject: PolicySubject, permission: Permission): void {
+  if (!can(subject, permission)) throw new ForbiddenError(permission);
+}

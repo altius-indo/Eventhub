@@ -31,7 +31,7 @@
 | Roles | **Three roles**: **App Admin** (runs the app, full access to all events), **Host** (event decision-makers) and **Planner** (does the planning; changes need Host approval). Vendors and guests use their own portal and links. No coordinator roles and no side/function scoping |
 | Tenancy | One account can own/collaborate on **multiple events**; events can be copied as templates |
 | Monetisation | Free / personal use; no billing in v1 |
-| Tech stack | Next.js (TypeScript) + PostgreSQL + Prisma + Tailwind |
+| Tech stack | Next.js (TypeScript) + PostgreSQL + Drizzle ORM + Tailwind |
 | Planning structure | **Event → Function → Service → Requirement**; vendors are booked to meet requirements (one or more vendors per requirement, with split). Planner changes go to **Hosts for approval** |
 | Quotes | Vendors quote **per service** or as a **combined quote across functions** (e.g. Catering for Mehendi + Sangeet + Reception); every line maps to a specific service's requirement |
 | Release scope | **All modules in Phase 1** (sequenced as internal milestones; see §9) |
@@ -465,8 +465,8 @@ Function ─< Service (type, owner, brief, payer allocation)
 ## 7. Technical Direction
 
 - **Frontend/Backend**: Next.js (App Router, TypeScript), React Server Components plus server actions/route handlers; Tailwind CSS with an accessible component library (e.g. shadcn/ui).
-- **Database**: PostgreSQL via Prisma. Every event-scoped table carries `event_id`; authorisation is centralised in a policy layer (App Admin / Host / Planner / Vendor / Guest) plus an approval engine for Planner changes.
-- **Auth**: passwordless OTP via phone (SMS through an Indian DLT-compliant provider such as MSG91 or Twilio Verify, plus WhatsApp authentication templates) or email. Implemented as a custom OTP provider on Auth.js, or a managed service. Database-backed sessions; signed, revocable tokens for guest household links.
+- **Database**: PostgreSQL via Drizzle ORM (pure TypeScript, SQL migrations in `drizzle/`; chosen over Prisma because it needs no native engine binaries). Every event-scoped table carries `event_id`; authorisation is centralised in a policy layer (App Admin / Host / Planner / Vendor / Guest) plus an approval engine for Planner changes.
+- **Auth**: passwordless OTP via phone (SMS through an Indian DLT-compliant provider such as MSG91 or Twilio Verify, plus WhatsApp authentication templates) or email. Implemented in-app (no auth library): OTPs stored as HMACs, database-backed sessions in an http-only cookie; signed, revocable tokens for guest household links.
 - **Background jobs**: Queue (e.g. BullMQ/Redis or pg-boss) for messaging, reminders, imports and exports.
 - **Integrations**: WhatsApp BSP, email provider (Resend/SES), SMS provider with DLT templates, object storage (S3-compatible) with a CDN and an image-processing pipeline (e.g. `sharp` workers for thumbnails/renditions, video transcoding via a managed service); tus/S3 multipart for resumable uploads.
 - **Realtime**: Chat and live check-in counts via WebSockets/SSE (e.g. Pusher/Ably or self-hosted).

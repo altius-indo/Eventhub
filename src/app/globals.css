@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+/*
+ * Neutral, themeable design tokens. Branding can later be applied by changing
+ * these values only (see requirements: "Name & branding").
+ */
+:root {
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --surface-muted: #f1f1ee;
+  --text: #1c1c1a;
+  --text-muted: #5e5e58;
+  --border: #e2e2dc;
+  --primary: #3d4f7c;
+  --primary-hover: #33436a;
+  --primary-contrast: #ffffff;
+  --primary-soft: #e8ecf6;
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+  --success: #1f7a4d;
+  --success-soft: #e7f5ee;
+  --warning: #8a5a00;
+  --warning-soft: #fdf3dc;
+  --focus: #6b83c4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413;
+    --surface: #1d1d1b;
+    --surface-muted: #262624;
+    --text: #ededea;
+    --text-muted: #a3a39c;
+    --border: #34342f;
+    --primary: #8fa3d9;
+    --primary-hover: #a4b5e3;
+    --primary-contrast: #11131a;
+    --primary-soft: #262c3d;
+    --danger: #f2877d;
+    --danger-soft: #3a1f1c;
+    --success: #6fcf9a;
+    --success-soft: #1a2e23;
+    --warning: #e8bd5c;
+    --warning-soft: #33290f;
+    --focus: #8fa3d9;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #141413;
+  --surface: #1d1d1b;
+  --surface-muted: #262624;
+  --text: #ededea;
+  --text-muted: #a3a39c;
+  --border: #34342f;
+  --primary: #8fa3d9;
+  --primary-hover: #a4b5e3;
+  --primary-contrast: #11131a;
+  --primary-soft: #262c3d;
+  --danger: #f2877d;
+  --danger-soft: #3a1f1c;
+  --success: #6fcf9a;
+  --success-soft: #1a2e23;
+  --warning: #e8bd5c;
+  --warning-soft: #33290f;
+  --focus: #8fa3d9;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-contrast: var(--primary-contrast);
+  --color-primary-soft: var(--primary-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", "Helvetica Neue", Arial, sans-serif;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
