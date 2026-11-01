@@ -42,6 +42,16 @@ A web app for planning large, multi-day Indian weddings: itinerary, guests and l
   - Link-preview image, a QR code for printed cards, and calendar files.
 - The family's personal page doubles as the guest portal: their functions (including private ones), replies, food, +1s, travel, an entry-pass QR code, and their own calendar file. It works even before the site is published.
 
+**Milestone 4 (Logistics and run sheet)** is built:
+
+- Arrivals and departures board by day and time window, with who still needs a pickup or drop.
+- Transfers: pickup, drop and shuttle runs (vehicle, driver, capacity, time). Assign guests from the board, see capacity warnings, and print a manifest with one contact number per family.
+- Hotels and room blocks (room type, rooms blocked, rate, dates). Assign guests to rooms with their own dates, see occupancy warnings per night, and download the rooming list in Excel (names, room, dates and a contact phone; no ID data).
+- Seating per function: add tables, seat whole families or move people, see unseated guests and warnings (over capacity, family split, seated but declined). Print the plan.
+- Check-in at the door: each family's entry pass (`/c/<token>`, separate from their personal link) is scanned with the phone camera, or the team searches by name or the last 4 digits of a phone number. Walk-ins can be added. Live arrived vs expected counts. Check-ins made while offline are saved on the phone and sent when the connection returns.
+- Run sheet per function: timed items with owner, place, notes and status. Fixed-time items (e.g. the muhurat) stay put when later items are moved. A live "now / next / running late" view for the day, and print pages for the run sheet and the full itinerary.
+- Families see their pickup, room and table on their personal page only if the event chooses to share them.
+
 ## Tech
 
 Next.js 16 (App Router, server actions) · TypeScript · PostgreSQL · Drizzle ORM · Tailwind CSS 4 · Vitest.
