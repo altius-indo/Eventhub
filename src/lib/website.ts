@@ -26,7 +26,7 @@ export class WebsiteError extends Error {
 
 /** First path segments the app uses; wedding sites can't take these. */
 export const RESERVED_SLUGS = new Set([
-  "events", "account", "admin", "login", "welcome", "step-up", "dev", "offline", "g", "api", "site-images",
+  "events", "account", "admin", "login", "welcome", "step-up", "dev", "offline", "g", "c", "api", "site-images",
   "manifest.webmanifest", "sw.js", "icons", "favicon.ico", "robots.txt", "sitemap.xml", "_next", "about", "help",
   "privacy", "terms", "support", "www", "app", "static",
 ]);

@@ -5,6 +5,7 @@ import {
   boolean,
   customType,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -13,6 +14,7 @@ import {
   text,
   time,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -112,6 +114,10 @@ export const events = pgTable("events", {
   timezone: text("timezone").notNull().default("Asia/Kolkata"),
   /** Guests can change RSVPs until the end of this day (event timezone). */
   rsvpDeadline: date("rsvp_deadline"),
+  /** Guest pages show logistics only once the team switches these on (ITN-04). */
+  shareTransfers: boolean("share_transfers").notNull().default(false),
+  shareRooms: boolean("share_rooms").notNull().default(false),
+  shareSeating: boolean("share_seating").notNull().default(false),
   currency: text("currency").notNull().default("INR"),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: createdAt(),
@@ -497,6 +503,238 @@ export const rateEvents = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Logistics — TRV-03..06 (transfers), TRV-04/05 (hotels & rooms)
+// Wall-clock times: `timestamp without time zone` holding event-local time (see travel.ts).
+// ---------------------------------------------------------------------------
+
+const wallClock = (name: string) => timestamp(name, { withTimezone: false });
+
+export const transferKind = pgEnum("transfer_kind", ["pickup", "drop", "shuttle"]);
+
+export const transferRuns = pgTable(
+  "transfer_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    kind: transferKind("kind").notNull(),
+    /** Shuttles (and venue drops) belong to a function; kept if the function is deleted. */
+    functionId: uuid("function_id").references(() => functions.id, { onDelete: "set null" }),
+    departsAt: wallClock("departs_at").notNull(),
+    fromPlace: text("from_place").notNull(),
+    toPlace: text("to_place").notNull(),
+    vehicle: text("vehicle"),
+    driverName: text("driver_name"),
+    driverPhone: text("driver_phone"),
+    capacity: integer("capacity").notNull(),
+    notes: text("notes"),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("transfer_runs_event_idx").on(t.eventId, t.departsAt)],
+);
+
+export const transferPassengers = pgTable(
+  "transfer_passengers",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => transferRuns.id, { onDelete: "cascade" }),
+    guestId: uuid("guest_id")
+      .notNull()
+      .references(() => guests.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("transfer_passengers_pk").on(t.runId, t.guestId), index("transfer_passengers_guest_idx").on(t.guestId)],
+);
+
+export const hotels = pgTable(
+  "hotels",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    address: text("address"),
+    phone: text("phone"),
+    mapUrl: text("map_url"),
+    notes: text("notes"),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("hotels_event_idx").on(t.eventId)],
+);
+
+export const roomBlocks = pgTable(
+  "room_blocks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    hotelId: uuid("hotel_id")
+      .notNull()
+      .references(() => hotels.id, { onDelete: "cascade" }),
+    roomType: text("room_type").notNull(),
+    maxOccupancy: integer("max_occupancy").notNull().default(2),
+    blockedCount: integer("blocked_count").notNull(),
+    /** Informational rate per night; the binding cost becomes a booking in M5. Never shown to guests. */
+    ratePaise: bigint("rate_paise", { mode: "number" }),
+    checkIn: date("check_in").notNull(),
+    checkOut: date("check_out").notNull(),
+    notes: text("notes"),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("room_blocks_hotel_idx").on(t.hotelId)],
+);
+
+/** Room slots materialised from a block's blockedCount; `label` is the hotel's room number once known. */
+export const rooms = pgTable(
+  "rooms",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    blockId: uuid("block_id")
+      .notNull()
+      .references(() => roomBlocks.id, { onDelete: "cascade" }),
+    label: text("label"),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (t) => [index("rooms_block_idx").on(t.blockId, t.sortOrder)],
+);
+
+/** Stays are half-open [checkIn, checkOut): leaving and arriving the same day doesn't overlap. */
+export const roomAssignments = pgTable(
+  "room_assignments",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    roomId: uuid("room_id")
+      .notNull()
+      .references(() => rooms.id, { onDelete: "cascade" }),
+    guestId: uuid("guest_id")
+      .notNull()
+      .references(() => guests.id, { onDelete: "cascade" }),
+    checkIn: date("check_in").notNull(),
+    checkOut: date("check_out").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("room_assignments_pk").on(t.roomId, t.guestId), index("room_assignments_guest_idx").on(t.guestId)],
+);
+
+// ---------------------------------------------------------------------------
+// Seating & check-in — SEAT-01..03
+// ---------------------------------------------------------------------------
+
+export const seatingTables = pgTable(
+  "seating_tables",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    capacity: integer("capacity").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  // A real unique constraint (not just an index) so seat_assignments can reference (id, function_id).
+  (t) => [unique("seating_tables_fn_uq").on(t.id, t.functionId), index("seating_tables_fn_idx").on(t.functionId, t.sortOrder)],
+);
+
+export const seatAssignments = pgTable(
+  "seat_assignments",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id").notNull(),
+    tableId: uuid("table_id").notNull(),
+    guestId: uuid("guest_id").notNull(),
+  },
+  (t) => [
+    uniqueIndex("seat_assignments_pk").on(t.functionId, t.guestId),
+    index("seat_assignments_table_idx").on(t.tableId),
+    // The table must belong to the same function.
+    foreignKey({ columns: [t.tableId, t.functionId], foreignColumns: [seatingTables.id, seatingTables.functionId], name: "seat_table_fk" }).onDelete("cascade"),
+    // Only invited guests can be seated; un-inviting removes the seat.
+    foreignKey({ columns: [t.functionId, t.guestId], foreignColumns: [functionInvites.functionId, functionInvites.guestId], name: "seat_invite_fk" }).onDelete("cascade"),
+  ],
+);
+
+export const checkinSource = pgEnum("checkin_source", ["scan", "manual", "walk_in"]);
+
+/** One row per guest per function; inserts use ON CONFLICT DO NOTHING so retries never double count. */
+export const checkIns = pgTable(
+  "check_ins",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    guestId: uuid("guest_id")
+      .notNull()
+      .references(() => guests.id, { onDelete: "cascade" }),
+    /** A real instant (timestamptz), unlike the wall-clock logistics times. */
+    checkedInAt: ts("checked_in_at").notNull(),
+    recordedAt: ts("recorded_at").notNull().defaultNow(),
+    checkedInBy: uuid("checked_in_by").references(() => users.id, { onDelete: "set null" }),
+    source: checkinSource("source").notNull(),
+    /** Checked in although not invited to this function (allowed with a warning). */
+    uninvited: boolean("uninvited").notNull().default(false),
+  },
+  (t) => [uniqueIndex("check_ins_pk").on(t.functionId, t.guestId), index("check_ins_event_idx").on(t.eventId, t.functionId)],
+);
+
+// ---------------------------------------------------------------------------
+// Run sheet — ITN-03
+// ---------------------------------------------------------------------------
+
+export const runItemStatus = pgEnum("run_item_status", ["pending", "in_progress", "done"]);
+
+export const runSheetItems = pgTable(
+  "run_sheet_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    startsAt: wallClock("starts_at").notNull(),
+    durationMin: integer("duration_min"),
+    title: text("title").notNull(),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** External contact (vendor, pandit, DJ…) until vendors exist in M5. */
+    ownerName: text("owner_name"),
+    ownerPhone: text("owner_phone"),
+    location: text("location"),
+    notes: text("notes"),
+    /** Fixed-time items (e.g. muhurat) don't move when later items are shifted. */
+    timeLocked: boolean("time_locked").notNull().default(false),
+    status: runItemStatus("status").notNull().default("pending"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("run_sheet_items_fn_idx").on(t.functionId, t.startsAt, t.sortOrder)],
+);
+
+// ---------------------------------------------------------------------------
 // Tasks — ITN-05
 // ---------------------------------------------------------------------------
 
@@ -572,3 +810,11 @@ export type TaskPriority = (typeof taskPriority.enumValues)[number];
 export type RsvpStatus = (typeof rsvpStatus.enumValues)[number];
 export type GuestTravel = typeof guestTravel.$inferSelect;
 export type Website = typeof websites.$inferSelect;
+export type TransferRun = typeof transferRuns.$inferSelect;
+export type TransferKind = (typeof transferKind.enumValues)[number];
+export type Hotel = typeof hotels.$inferSelect;
+export type RoomBlock = typeof roomBlocks.$inferSelect;
+export type Room = typeof rooms.$inferSelect;
+export type SeatingTable = typeof seatingTables.$inferSelect;
+export type RunSheetItem = typeof runSheetItems.$inferSelect;
+export type RunItemStatus = (typeof runItemStatus.enumValues)[number];

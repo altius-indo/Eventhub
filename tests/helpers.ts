@@ -10,7 +10,9 @@ export const db = () => getDb();
 export async function resetDb() {
   await db().execute(sql`
     TRUNCATE TABLE approval_decisions, approval_requests, audit_logs, event_invitations,
-      event_members, events, sessions, otp_challenges, user_identifiers, users, dev_outbox, rate_events
+      event_members, events, sessions, otp_challenges, user_identifiers, users, dev_outbox, rate_events,
+      check_ins, seat_assignments, seating_tables, room_assignments, rooms, room_blocks, hotels,
+      transfer_passengers, transfer_runs, run_sheet_items
     RESTART IDENTITY CASCADE
   `);
 }

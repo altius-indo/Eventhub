@@ -10,6 +10,8 @@ allowed-tools: Bash(npm run db:generate *) Bash(npm run db:migrate) Bash(npx tsx
 1. Edit `src/db/schema.ts` only. New event-owned tables: `eventId ... .references(() => events.id,
    { onDelete: "cascade" })`. Add indexes for lookups/filters. Export the `$inferSelect` types you need.
    A NOT NULL column added to an existing table needs a `.default(...)`.
+   A composite foreign key must reference a real `unique(...)` constraint, not a `uniqueIndex`:
+   drizzle-kit creates indexes after foreign keys, so the migration fails otherwise.
 2. Generate: `npm run db:generate -- --name $0` (snake_case, e.g. `seating_tables`).
 3. Read the generated `drizzle/NNNN_*.sql` and check it does what you expect, especially renames
    (drizzle may emit drop + add, losing data) and enum changes. If it's wrong, remove only the files

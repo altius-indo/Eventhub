@@ -23,10 +23,24 @@ function b64ToUuid(b64: string): string | null {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-const mac = (householdId: string, version: number) => hmac(`guest-link:${householdId}:${version}`).slice(0, 22);
+type TokenPurpose = "guest-link" | "checkin-pass";
+const mac = (householdId: string, version: number, purpose: TokenPurpose = "guest-link") =>
+  hmac(`${purpose}:${householdId}:${version}`).slice(0, 22);
 
 export function makeGuestToken(householdId: string, version: number): string {
   return uuidToB64(householdId) + mac(householdId, version);
+}
+
+/**
+ * Entry-pass token (ADR-0014): same household id and linkVersion, different HMAC purpose.
+ * It identifies the family to a signed-in team member at check-in and grants nothing else.
+ */
+export function makePassToken(householdId: string, version: number): string {
+  return uuidToB64(householdId) + mac(householdId, version, "checkin-pass");
+}
+
+export function passUrl(appUrl: string, household: Pick<Household, "id" | "linkVersion">): string {
+  return `${appUrl}/c/${makePassToken(household.id, household.linkVersion)}`;
 }
 
 export function guestLinkUrl(appUrl: string, household: Pick<Household, "id" | "linkVersion">): string {
@@ -34,7 +48,16 @@ export function guestLinkUrl(appUrl: string, household: Pick<Household, "id" | "
 }
 
 /** Returns the family and event for a valid, unrevoked link; null otherwise. */
-export async function resolveGuestToken(db: Tx, token: string): Promise<{ household: Household; event: Event } | null> {
+export function resolveGuestToken(db: Tx, token: string) {
+  return resolveToken(db, token, "guest-link");
+}
+
+/** Resolves an entry-pass token (from /c/<token>). */
+export function resolvePassToken(db: Tx, token: string) {
+  return resolveToken(db, token, "checkin-pass");
+}
+
+async function resolveToken(db: Tx, token: string, purpose: TokenPurpose): Promise<{ household: Household; event: Event } | null> {
   if (!/^[A-Za-z0-9_-]{44}$/.test(token)) return null;
   const householdId = b64ToUuid(token.slice(0, ID_LEN));
   if (!householdId) return null;
@@ -44,7 +67,7 @@ export async function resolveGuestToken(db: Tx, token: string): Promise<{ househ
     .innerJoin(events, eq(events.id, households.eventId))
     .where(and(eq(households.id, householdId), isNull(households.linkRevokedAt), isNull(events.deletedAt)));
   if (!row) return null;
-  return safeEqual(token.slice(ID_LEN), mac(householdId, row.household.linkVersion)) ? row : null;
+  return safeEqual(token.slice(ID_LEN), mac(householdId, row.household.linkVersion, purpose)) ? row : null;
 }
 
 export async function regenerateGuestLink(db: Tx, eventId: string, householdId: string) {

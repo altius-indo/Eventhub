@@ -22,6 +22,13 @@
       "when": 1793498162077,
       "tag": "0002_guest_experience",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793500559116,
+      "tag": "0003_logistics",
+      "breakpoints": true
     }
   ]
 }

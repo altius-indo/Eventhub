@@ -100,3 +100,28 @@ body {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+
+/* Print-optimised pages (ITN-07, ADR-0015): hide the app chrome, print on white. */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  header,
+  nav,
+  .print\:hidden {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+  .print-sheet {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+}

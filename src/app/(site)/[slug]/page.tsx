@@ -8,9 +8,10 @@ import { SubmitButton } from "@/components/submit-button";
 import { TravelFields } from "@/components/travel-fields";
 import { Field, Input, Select } from "@/components/ui";
 import { getDb } from "@/db";
-import type { EventFunction, SiteContent } from "@/db/schema";
+import type { Event, EventFunction, SiteContent } from "@/db/schema";
 import { createTranslator, formatDay, formatTime, type Locale, type Translator } from "@/i18n/core";
 import { listFunctions } from "@/lib/functions";
+import { passUrl } from "@/lib/guest-links";
 import { getPortalData, rsvpOpen, type PortalData } from "@/lib/rsvp";
 import { travelLabels, travelSummary } from "@/lib/server/m3-labels";
 import { appUrl } from "@/lib/server/session";
@@ -18,6 +19,7 @@ import { getSiteContext, siteLocale } from "@/lib/server/site-context";
 import { todayIn } from "@/lib/tasks";
 import { hasTravel, travelFor } from "@/lib/travel";
 import { defaultContent, pick } from "@/lib/website";
+import { GuestLogistics } from "./guest-logistics";
 import {
   addPlusOneAction,
   findInvitationAction,
@@ -278,7 +280,7 @@ export default async function WeddingSite(props: Props) {
         {s.welcome.visible && pick(s.welcome.message, locale) && <p className="mx-auto mt-5 max-w-xl whitespace-pre-line text-lg leading-relaxed">{pick(s.welcome.message, locale)}</p>}
       </section>
 
-      {portal && guest && <Personal slug={slug} portal={portal} t={t} locale={locale} theme={theme} event={event} token={guest.token} />}
+      {portal && guest && <Personal slug={slug} portal={portal} t={t} locale={locale} theme={theme} event={event} />}
 
       {content.order.map((key) => (
         <div key={key}>{sectionView[key]}</div>
@@ -312,20 +314,19 @@ async function Personal({
   locale,
   theme,
   event,
-  token,
 }: {
   slug: string;
   portal: PortalData;
   t: Translator;
   locale: Locale;
   theme: (typeof themes)[keyof typeof themes];
-  event: Parameters<typeof rsvpOpen>[0];
-  token: string;
+  event: Event;
 }) {
   const open = rsvpOpen(event);
   const travel = await travelFor(getDb(), portal.members.map((m) => m.id));
-  const passUrl = `${appUrl()}/g/${token}`;
-  const qr = await QRCode.toString(passUrl, { type: "svg", margin: 1, errorCorrectionLevel: "M" });
+  // Entry pass: identifies the family at check-in only; it is not their login link (ADR-0014).
+  const pass = passUrl(appUrl(), portal.household);
+  const qr = await QRCode.toString(pass, { type: "svg", margin: 1, errorCorrectionLevel: "M" });
   const remaining = portal.household.plusOnesAllowed - portal.plusOnesUsed;
   const head = portal.members.find((m) => m.isHead) ?? portal.members[0];
   const accentBtn = { background: "var(--accent)" };
@@ -470,12 +471,29 @@ async function Personal({
         </div>
       </Section>
 
+      <div className="mx-auto max-w-3xl px-4">
+        <GuestLogistics
+          event={event}
+          household={portal.household}
+          memberNames={new Map(portal.members.map((m) => [m.id, m.name]))}
+          t={t}
+          locale={locale}
+          cardClass={theme.card}
+          headingClass={theme.heading}
+        />
+      </div>
+
       <Section id="pass" title={t("portal.yourPass")} theme={theme}>
         <div className={`mx-auto max-w-xs rounded-2xl p-5 text-center ${theme.card}`}>
           <div className="mx-auto w-48 rounded-lg bg-white p-2" role="img" aria-label="QR code" dangerouslySetInnerHTML={{ __html: qr }} />
           <p className="mt-3 font-semibold">{portal.household.name}</p>
           <p className="text-sm opacity-70">{t("portal.passHelp")}</p>
         </div>
+        <p className="mt-4 text-center">
+          <a href={`/${slug}/itinerary`} className="text-sm underline" style={{ color: "var(--accent)" }}>
+            {t("itinerary.print")}
+          </a>
+        </p>
         {portal.functions.some((f) => f.date) && (
           <p className="mt-4 text-center">
             <a href={`/${slug}/calendar.ics`} className="text-sm underline" style={{ color: "var(--accent)" }}>

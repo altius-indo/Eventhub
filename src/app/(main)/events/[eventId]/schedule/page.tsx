@@ -22,6 +22,11 @@ export default async function SchedulePage({ params }: PageProps<"/events/[event
         title={t("schedule.title")}
         action={
           <div className="flex flex-wrap gap-2">
+            {fns.length > 0 && (
+              <Link href={`${base}/print`} className="inline-flex min-h-11 items-center rounded-lg px-3 text-sm text-primary hover:bg-primary-soft">
+                {t("schedule.printItinerary")}
+              </Link>
+            )}
             {fns.some((f) => f.date) && (
               <a href={`${base}/calendar.ics`} className="inline-flex min-h-11 items-center rounded-lg px-3 text-sm text-primary hover:bg-primary-soft">
                 {t("schedule.calendar")}
@@ -82,6 +87,12 @@ export default async function SchedulePage({ params }: PageProps<"/events/[event
                             {t("schedule.invitedCount", { guests: c.guests, households: c.households })}
                           </Link>
                           {c.guests > 0 && <span className="text-muted">{t("schedule.ageBreakdown", c)}</span>}
+                          <Link href={`${base}/${fn.id}/run-sheet`} className="text-primary hover:underline">
+                            {t("schedule.runSheet")}
+                          </Link>
+                          <Link href={`${base}/${fn.id}/seating`} className="text-primary hover:underline">
+                            {t("schedule.seating")}
+                          </Link>
                           {fn.mapUrl && (
                             <a href={fn.mapUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                               {t("schedule.map")} ↗

@@ -18,3 +18,5 @@ decisions with the `adr` skill (`.claude/skills/adr`) using [template.md](templa
 | [0011](0011-routing-and-public-pages.md) | App areas protected by prefix; wedding sites at the root | Accepted |
 | [0012](0012-message-delivery-providers.md) | Pluggable message delivery with a dev outbox | Accepted |
 | [0013](0013-retention-and-deletion.md) | Event deletion: soft delete, undo window, cascade purge | Accepted |
+| [0014](0014-checkin-pass-and-scanning.md) | Separate check-in pass, browser QR scanning, idempotent check-in | Accepted |
+| [0015](0015-printable-html-instead-of-pdf.md) | Printable HTML pages instead of server-generated PDFs | Accepted |

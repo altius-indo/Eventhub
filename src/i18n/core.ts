@@ -96,3 +96,8 @@ export function formatTime(locale: Locale, hhmm: string): string {
 export function formatDay(locale: Locale, isoDate: string, opts: Intl.DateTimeFormatOptions = { dateStyle: "medium" }): string {
   return new Intl.DateTimeFormat(intlLocale(locale), { ...opts, timeZone: "UTC" }).format(new Date(`${isoDate}T00:00:00Z`));
 }
+
+/** Formats a wall-clock Date (event-local time stored as UTC fields) without shifting it. */
+export function formatWallClock(locale: Locale, d: Date, opts: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" }): string {
+  return new Intl.DateTimeFormat(intlLocale(locale), { ...opts, timeZone: "UTC" }).format(d);
+}

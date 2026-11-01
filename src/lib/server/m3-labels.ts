@@ -1,6 +1,6 @@
 import "server-only";
 import type { TravelLabels } from "@/components/travel-fields";
-import type { Locale, Translator } from "@/i18n/core";
+import { formatWallClock, type Locale, type Translator } from "@/i18n/core";
 import type { GuestTravel } from "@/db/schema";
 
 export function travelLabels(t: Translator): TravelLabels {
@@ -23,10 +23,7 @@ export function travelLabels(t: Translator): TravelLabels {
   };
 }
 
-/** Travel times are wall-clock times stored as UTC, so format them in UTC. */
-export function formatWallClock(locale: Locale, d: Date) {
-  return new Intl.DateTimeFormat(locale === "hi" ? "hi-IN" : "en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(d);
-}
+export { formatWallClock } from "@/i18n/core";
 
 export function travelSummary(t: Translator, locale: Locale, travel: GuestTravel): string {
   const leg = (mode: GuestTravel["arrivalMode"], num: string | null, at: Date | null, point: string | null) =>
