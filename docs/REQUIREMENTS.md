@@ -20,6 +20,7 @@
 | Staff & vendor login | **Passwordless OTP** to phone (SMS / WhatsApp) **or** email; no passwords |
 | Guest access | Magic link per household, no account or password |
 | Payments | **Tracking only**; money moves outside the app |
+| Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to the receiving family |
 | Spend approvals | **Per-category thresholds**; a cost is approved by the family/families paying it, so **shared costs need both families** |
 | Region | India: INR (lakh/crore formatting), GST on invoices |
 | Access control | Role-based plus **side scoping** (bride/groom) and function scoping |
@@ -63,6 +64,7 @@
 | Invoices & payments | RW | RW (approve) | RW | R (own side's share, BGT-07) | – | Own (upload, view status) | – |
 | Messaging / broadcasts | RW | RW | RW | Own side | Own functions | Own threads | Receive / reply |
 | Reports | RW | R | R | Own side | Own functions | – | – |
+| Gifts / shagun & thank-yous | RW | RW (own family side) | – (grantable) | Record + view own entries | – | – | – |
 
 
 
@@ -98,7 +100,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **ITN-07 (M)** Export run sheet / itinerary to PDF.
 
 ### 3.3 Guest Management (`GST`)
-- **GST-01 (M)** **Households**: a household has a head and members (name, relation, age group adult/child/infant, phone, email, dietary preference, accessibility notes).
+- **GST-01 (M)** **Households**: a household has a head and members (name, relation, age group adult/child/infant, phone, email, dietary preference, accessibility notes). Optional **postal address** per household (for printed invites and thank-you cards).
 - **GST-02 (M)** Attributes: **side** (bride / groom / both-mutual), free-form **tags** (VIP, elders, kids, college friends, …).
 - **GST-03 (M)** **Per-function invitations** at household or member level.
 - **GST-04 (M)** Bulk **import from Excel/CSV** with column mapping, duplicate detection and validation report; export to Excel.
@@ -254,6 +256,28 @@ Event
 
 ---
 
+### 3.14 Gifts, Shagun & Thank-you Notes (`GFT`)
+- **GFT-01 (M)** **Gift register**: record gifts per household (or per guest). Fields:
+  - **Type**: cash shagun (envelope), UPI/bank transfer, cheque, gift item, gold/jewellery, voucher, other.
+  - **Value**: amount in INR, or an item description with an optional estimated value.
+  - **Context**: the function where it was received, received *for* (bride / groom / couple / parents / other family member), received *by* (which family member or coordinator logged it), date, notes and an optional photo of the item.
+- **GFT-02 (M)** **Day-of envelope mode**: a fast mobile entry screen for whoever is collecting shagun at a function.
+  - **Quick entry**: search the guest (or scan their check-in QR), enter the amount and envelope number, save, next.
+  - **Unknown givers**: allowed with a free-text name.
+  - **Offline**: works through poor connectivity (queued and synced, as for check-in).
+- **GFT-03 (M)** **Cash reconciliation**: per collector and function, compare the recorded total with the counted cash and record the hand-over (to whom, when), with any discrepancy flagged.
+- **GFT-04 (M)** **Bulk import** of post-event tally sheets from Excel, matched to households with a review step for unmatched names.
+- **GFT-05 (M)** **Summaries**: totals by function, family side, received-for and gift type; a list of households with no gift recorded (for follow-up or data-entry checks). Gifts are tracked **separately from the wedding budget** and are not offset against expenses.
+- **GFT-06 (S)** **Gift history across events (*vyavhar* / *lena-dena*)**: since one account can hold multiple events, show a household's gifts given and received across the family's events, to inform reciprocal gifting. Past gifts *given* can be entered manually.
+- **GFT-07 (M)** **Privacy**: gift data is visible only to the **Owner and Hosts of the receiving family side**. Side Coordinators can record gifts and see only their own entries. Planners have no access unless the Owner grants it. Guests and vendors never see gift data. Every edit is in the audit log.
+- **GFT-08 (M)** **Thank-you tracker**: per household, status *not started → drafted → sent* (plus *not needed*), channel, sent date and sent by. Households that attended but gave no gift can also be thanked.
+- **GFT-09 (M)** **Thank-you notes**:
+  - **Templates**: per language (English, Hindi, …) with merge fields such as guest name, functions attended, gift item and a personal line. **Amounts are never inserted** into messages.
+  - **Review before sending**: each note can be personalised individually; bulk send with per-household review.
+  - **Channels**: WhatsApp, email or SMS through the messaging module, with delivery status tracked.
+  - **Printed cards**: export names and postal addresses as Excel or a label PDF, then mark them sent manually.
+- **GFT-10 (S)** **Reminders**: nudge the family when households remain un-thanked N weeks after the event (default 4 weeks); dashboard shows the % thanked.
+
 ## 4. Non-Functional Requirements
 
 | Area | Requirement |
@@ -303,6 +327,9 @@ Function ─< Service (type, owner, brief, payer allocation)
       ─< Proposal (proposer, target: new Service|Requirement or change diff, status, decision by, comments)
       ─< Thread (team|vendor|function) ─< Message
       ─< Broadcast (segment, channels) ─< Delivery (status per recipient)
+      ─< Gift (household|free-text giver, type, amount|item, function, received_for, recorded_by, envelope_no, side)
+      ─< CashHandover (collector, function, recorded vs counted, handed_to)
+      ─< ThankYou (household, status, channel, template, sent_at, sent_by)
       ─< AuditLog
 ```
 
@@ -315,7 +342,8 @@ Function ─< Service (type, owner, brief, payer allocation)
 3. **Invite & RSVP**: Send WhatsApp invites with magic links → guests RSVP per function and member, enter travel → reminders go to non-responders.
 4. **Logistics**: Planner reviews the arrivals board → creates pickup runs → allocates rooms → exports rooming lists to hotels.
 5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → above the category threshold, the paying family approves (both families for shared costs) → vendor uploads invoice in the portal → payer records payment → vendor sees "Paid".
-6. **Day-of**: Coordinators open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests.
+6. **Day-of**: Coordinators open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests → shagun collectors log envelopes in envelope mode and reconcile cash after each function.
+7. **After the wedding**: Family reviews gift summaries → drafts personalised thank-you notes from templates → sends via WhatsApp/email or prints cards → tracker shows who is still to be thanked.
 
 ---
 
@@ -357,7 +385,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 | **M3 Guest Experience** | Magic links, RSVP, personalised itinerary, guest travel submission, Hindi guest pages |
 | **M4 Logistics** | Travel, transfers, hotels/room blocks, room allocation, seating plans, QR check-in |
 | **M5 Services, Vendors & Money** | Service catalogue, services & requirements per function, fulfilment/gap view, vendor directory, quotes per service and comparison, contracts, budget (categories/functions/payer), approvals, invoices with GST, payment schedules/status |
-| **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders |
+| **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders, gift register & envelope mode, thank-you notes |
 | **M7 Hardening** | Run sheet live mode, offline check-in, reports/exports, performance, security review, UAT on a real wedding dataset |
 
 **Lead-time risk:** WhatsApp Business API approval (Meta business verification, template approval) and SMS **DLT registration** take days to weeks. Start these during M1. **Phone OTP login depends on them**, so email OTP ships first in M1 and phone OTP switches on as soon as the DLT template is approved.
@@ -375,9 +403,8 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Gifts / shagun tracking and thank-you notes**: in scope?
-2. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
-3. **Photo sharing / gallery** after the event: in scope?
-4. **Data retention**: how long are guest and personal data kept after the event ends?
-5. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-6. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+1. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
+2. **Photo sharing / gallery** after the event: in scope?
+3. **Data retention**: how long are guest and personal data kept after the event ends?
+4. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+5. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
