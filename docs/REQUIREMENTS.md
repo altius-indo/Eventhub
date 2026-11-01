@@ -58,12 +58,11 @@
 | Services & requirements | RW | RW | RW + approve | R + propose | R + propose (own functions) | Services they're invited to quote for or booked on | – |
 | Vendors & quotes | RW | RW | RW | R | R (own functions) | Own | – |
 | Contracts & documents | RW | RW | RW | – | – | Own | – |
-| Budget | RW | RW (approve) | RW | R (own side payer)* | – | – | – |
-| Invoices & payments | RW | RW (approve) | RW | R (own side payer)* | – | Own (upload, view status) | – |
+| Budget | RW | RW (approve) | RW | R (own side's share, BGT-07) | – | – | – |
+| Invoices & payments | RW | RW (approve) | RW | R (own side's share, BGT-07) | – | Own (upload, view status) | – |
 | Messaging / broadcasts | RW | RW | RW | Own side | Own functions | Own threads | Receive / reply |
 | Reports | RW | R | R | Own side | Own functions | – | – |
 
-\* Open question; see §11.
 
 
 ---
@@ -205,13 +204,20 @@ Event
 - **BGT-04 (M)** **Approval workflow**: spend above a configurable threshold, or any increase above the planned amount, needs Host/Owner approval; approve/reject with comment.
 - **BGT-05 (M)** Budget dashboard: total vs planned, by category, function and payer; variance highlights.
 - **BGT-06 (M)** INR formatting with Indian grouping (₹12,34,567) and lakh/crore short form.
+- **BGT-07 (M)** **Side coordinator finance view** (read-only): a Side Coordinator sees the budget and payments **where their side is a payer**.
+  - **Fully paid by their side**: the full planned, committed and actual amounts.
+  - **Shared costs**: only their side's share (e.g. 50% of ₹8,00,000 = ₹4,00,000), with the split shown. The other side's paid status for the shared item is shown as paid / not paid, without its payment details.
+  - **Costs paid only by the other side**: not shown.
+  - **Payments**: the payment schedule, invoices, paid/due/overdue status and receipts for their side's share. They also get their own side's payables report and dashboard (BGT-05 and PAY-06, filtered to their side).
+  - **Bank details**: vendor bank details stay hidden (Owner/Host/Planner only).
+  - **No editing**: they can't edit budget lines, record payments or approve spend, but they can comment and propose changes through the proposal workflow (SVC-10).
 
 ### 3.10 Invoices & Payment Tracking (`PAY`)
 - **PAY-01 (M)** Invoices: vendor, number, date, line items, **GST** (CGST/SGST or IGST, rate, GSTIN), total, attachment; linked to a booking/budget line.
 - **PAY-02 (M)** **Payment schedule** per booking: advance / milestones / final, each with amount or %, due date and payer.
 - **PAY-03 (M)** Record payments: date, amount, mode (UPI, bank transfer, cheque, cash, card), reference no., payer, receipt upload.
 - **PAY-04 (M)** Status per milestone and invoice: **upcoming / due / overdue / partially paid / paid**; vendor sees the same status in the portal.
-- **PAY-05 (M)** Reminders for upcoming and overdue payments to the payer side.
+- **PAY-05 (M)** Reminders for upcoming and overdue payments go to the payer side. The recipients are Owner/Host/Planner plus that side's Side Coordinator(s), configurable per event.
 - **PAY-06 (M)** Payables report: what's due this week/month, by payer and vendor; export to Excel/PDF.
 - **PAY-07 (C)** In-app payment collection or payout via gateway (Razorpay); **out of scope for v1**.
 
@@ -352,12 +358,11 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Side coordinators and money**: can side coordinators see their side's budget and payables, or should finance stay Owner/Host/Planner only?
-2. **Approval threshold**: one global threshold, or per category/payer? Who approves when both families share a cost?
-3. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
-4. **Gifts / shagun tracking and thank-you notes**: in scope?
-5. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
-6. **Photo sharing / gallery** after the event: in scope?
-7. **Data retention**: how long are guest and personal data kept after the event ends?
-8. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-9. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+1. **Approval threshold**: one global threshold, or per category/payer? Who approves when both families share a cost?
+2. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
+3. **Gifts / shagun tracking and thank-you notes**: in scope?
+4. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
+5. **Photo sharing / gallery** after the event: in scope?
+6. **Data retention**: how long are guest and personal data kept after the event ends?
+7. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+8. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
