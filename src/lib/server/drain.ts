@@ -2,6 +2,7 @@ import "server-only";
 import { after } from "next/server";
 import { getDb } from "@/db";
 import { processOutbox } from "../outbox";
+import "../templates";
 import { appUrl } from "./session";
 
 /**

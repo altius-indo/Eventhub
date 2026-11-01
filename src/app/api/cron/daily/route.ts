@@ -5,6 +5,7 @@ import { safeEqual } from "@/lib/crypto";
 import { purgeDeletedEvents } from "@/lib/events";
 import { purgeOldNotifications } from "@/lib/notifications";
 import { processOutbox } from "@/lib/outbox";
+import "@/lib/templates";
 import { sendApprovalReminders, sendPaymentReminders } from "@/lib/payments";
 import { sendRsvpReminders } from "@/lib/rsvp";
 import { sendTaskReminders } from "@/lib/tasks";

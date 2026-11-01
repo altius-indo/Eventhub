@@ -21,6 +21,7 @@ import {
   GiftError,
   type GiftCtx,
 } from "@/lib/gifts";
+import { deleteDocument, isPlanningDocument, saveDocument } from "@/lib/documents";
 import { createHousehold, deleteHousehold, guestSchema } from "@/lib/guests";
 import { ForbiddenError, type PolicySubject } from "@/lib/policy";
 import { actorOf, db, makeUser, resetDb } from "./helpers";
@@ -108,6 +109,15 @@ describe("privacy (GFT-07)", () => {
     await expect(householdsWithoutGift(db(), s.R)).rejects.toBeInstanceOf(ForbiddenError);
     const full = planner(s.event.id, s.rec, "full");
     expect((await giftSummary(db(), full)).total.amountPaise).toBe(1600_00);
+  });
+
+  it("gift photos can't be deleted or treated as planning documents through the shared documents route", async () => {
+    const s = await setup();
+    const { gift } = await createGift(db(), s.H, { householdId: s.sharma.household.id, type: "item", itemDescription: "Lamp" });
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    const doc = await saveDocument(db(), s.event.id, s.H.actor, { owner: { giftId: gift.id }, kind: "other", filename: "lamp.png", data: Buffer.concat([png, Buffer.alloc(64)]) });
+    expect(isPlanningDocument(doc)).toBe(false);
+    await expect(deleteDocument(db(), s.event.id, s.H.actor, doc.id, { planningOnly: true })).rejects.toMatchObject({ code: "not_found" });
   });
 });
 

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
 import { bookings, documentBlobs, documents, gifts, invoices, messages, payments, quotes, services, vendors, type DocumentRow } from "@/db/schema";
 import { audit, type Actor } from "./audit";
@@ -131,9 +131,26 @@ export async function listDocuments(db: Tx, eventId: string, owner: DocumentOwne
     .orderBy(desc(documents.createdAt));
 }
 
-export async function deleteDocument(db: Database, eventId: string, actor: Actor, documentId: string) {
+/**
+ * Gift photos and chat attachments have their own access rules (gift access, thread audience),
+ * so the shared planning-documents route and action must not serve or delete them.
+ */
+export function isPlanningDocument(doc: Pick<DocumentRow, "giftId" | "messageId">) {
+  return !doc.giftId && !doc.messageId;
+}
+
+export async function deleteDocument(db: Database, eventId: string, actor: Actor, documentId: string, opts: { planningOnly?: boolean } = {}) {
   await db.transaction(async (tx) => {
-    const [doc] = await tx.delete(documents).where(and(eq(documents.id, documentId), eq(documents.eventId, eventId))).returning();
+    const [doc] = await tx
+      .delete(documents)
+      .where(
+        and(
+          eq(documents.id, documentId),
+          eq(documents.eventId, eventId),
+          opts.planningOnly ? and(isNull(documents.giftId), isNull(documents.messageId)) : undefined,
+        ),
+      )
+      .returning();
     if (!doc) throw new DocumentError("not_found");
     await audit(tx, { eventId, actor, action: "document.deleted", entityType: "document", entityId: doc.id, data: { name: doc.filename } });
   });

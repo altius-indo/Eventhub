@@ -2,6 +2,7 @@ import { after, NextResponse } from "next/server";
 import { getDb } from "@/db";
 import { safeEqual } from "@/lib/crypto";
 import { processOutbox } from "@/lib/outbox";
+import "@/lib/templates";
 
 export const maxDuration = 60;
 
