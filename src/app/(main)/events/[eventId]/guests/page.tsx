@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ListFilterBar } from "@/components/list-filter-bar";
+import { MobileCollapse } from "@/components/mobile-collapse";
 import { SimpleForm } from "@/components/simple-form";
 import { SubmitButton } from "@/components/submit-button";
 import { Alert, Badge, Card, Input, LinkButton, PageHeader, Select, buttonClass } from "@/components/ui";
@@ -81,6 +82,7 @@ export default async function GuestsPage({ params, searchParams }: PageProps<"/e
 
       {/* Filters */}
       <Card>
+        <MobileCollapse label={t("common.searchFilters")} activeLabel={t("common.filtersOn")} activeCount={Object.keys(filters).length}>
         <ListFilterBar
           values={filters as Record<string, string>}
           search={{ name: "q", label: t("guests.search"), placeholder: t("guests.search") }}
@@ -175,6 +177,7 @@ export default async function GuestsPage({ params, searchParams }: PageProps<"/e
             )}
           </div>
         )}
+        </MobileCollapse>
       </Card>
 
       {/* Bulk invite for everyone matching */}

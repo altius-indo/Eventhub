@@ -3,6 +3,8 @@ import type { Messages } from "./en";
 const hi: Messages = {
   app: { name: "EventHub", tagline: "बड़ी शादियों की पूरी योजना, एक ही जगह, सबके साथ।", splashLogo: "अन्नमहालक्ष्मी फ़ूड्स का लोगो" },
   common: {
+    searchFilters: "खोजें और फ़िल्टर",
+    filtersOn: "खोजें और फ़िल्टर ({count} चालू)",
     save: "सहेजें",
     cancel: "रद्द करें",
     back: "वापस",

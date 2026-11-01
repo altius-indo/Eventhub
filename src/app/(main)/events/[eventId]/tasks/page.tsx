@@ -2,6 +2,7 @@ import Link from "next/link";
 import { SimpleForm } from "@/components/simple-form";
 import { SubmitButton } from "@/components/submit-button";
 import { TaskFields } from "@/components/task-fields";
+import { MobileCollapse } from "@/components/mobile-collapse";
 import { TaskFilterBar } from "@/components/task-filter-bar";
 import { Alert, Badge, Card, CardTitle, PageHeader, buttonClass } from "@/components/ui";
 import { getDb } from "@/db";
@@ -67,6 +68,11 @@ export default async function TasksPage({ params, searchParams }: PageProps<"/ev
         <div className="space-y-4">
           {anyTasks > 0 && (
             <Card>
+              <MobileCollapse
+                label={t("common.searchFilters")}
+                activeLabel={t("common.filtersOn")}
+                activeCount={[q, rawAssignee, fn, due, highOnly].filter(Boolean).length}
+              >
               <TaskFilterBar
                 values={{ q, status, assignee: rawAssignee, fn: fn ?? "", due: due ?? "", high: highOnly }}
                 counts={counts}
@@ -92,6 +98,7 @@ export default async function TasksPage({ params, searchParams }: PageProps<"/ev
                   status: t("tasks.form.status"),
                 }}
               />
+              </MobileCollapse>
             </Card>
           )}
 

@@ -1,6 +1,8 @@
 const en = {
   app: { name: "EventHub", tagline: "Plan big weddings together, in one place.", splashLogo: "Annamahalakshmi Foods logo" },
   common: {
+    searchFilters: "Search & filters",
+    filtersOn: "Search & filters ({count} on)",
     save: "Save",
     cancel: "Cancel",
     back: "Back",
