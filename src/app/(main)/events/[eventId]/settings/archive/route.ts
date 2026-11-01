@@ -1,3 +1,4 @@
+import "@/lib/gallery-hooks";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { createTranslator } from "@/i18n/core";

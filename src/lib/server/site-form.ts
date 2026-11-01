@@ -34,7 +34,7 @@ export function parseSiteForm(fd: FormData, current: SiteContent): SiteContent {
       events: { visible: on(fd, "events.visible"), title: lt(fd, "events.title") },
       travel: { visible: on(fd, "travel.visible"), title: lt(fd, "travel.title"), body: lt(fd, "travel.body") },
       faqs: { visible: on(fd, "faqs.visible"), title: lt(fd, "faqs.title"), items: faqs.slice(0, 30) },
-      gallery: { visible: on(fd, "gallery.visible"), title: lt(fd, "gallery.title"), imageIds: s.gallery.imageIds },
+      gallery: { visible: on(fd, "gallery.visible"), title: lt(fd, "gallery.title"), imageIds: s.gallery.imageIds, highlights: on(fd, "gallery.highlights") },
       gifts: { visible: on(fd, "gifts.visible"), title: lt(fd, "gifts.title"), body: lt(fd, "gifts.body") },
       contact: { visible: on(fd, "contact.visible"), title: lt(fd, "contact.title"), people: people.slice(0, 10) },
     },

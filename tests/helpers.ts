@@ -20,7 +20,9 @@ export async function resetDb() {
       message_opt_outs, event_limit_overrides, platform_settings, message_usage, broadcasts, notification_prefs,
       notifications, thread_reads, messages, threads, vendor_contacts,
       storage_usage, storage_household_usage, storage_reservations, event_storage_overrides, storage_deletions, event_metrics,
-      retention_notices, guest_erasure_requests
+      retention_notices, guest_erasure_requests,
+      gallery_settings, gallery_albums, media_items, media_favourites, album_selections, album_selection_items,
+      media_likes, media_comments, media_removal_requests
     RESTART IDENTITY CASCADE
   `);
 }

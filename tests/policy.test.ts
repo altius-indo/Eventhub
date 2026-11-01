@@ -60,6 +60,17 @@ describe("policy", () => {
     expect(decide(full, "gifts.view")).toBe("allow");
   });
 
+  it("Hosts and Planners view, upload and moderate the gallery; vendors only through the portal (GAL-02/04)", () => {
+    for (const p of ["gallery.view", "gallery.upload", "gallery.moderate"] as const) {
+      expect(decide(host, p)).toBe("allow");
+      expect(decide(planner, p)).toBe("allow");
+      expect(decide({ isAppAdmin: false, membership: null, vendor: { vendorId: "v1" } }, p)).toBe("deny");
+      expect(decide(outsider, p)).toBe("deny");
+    }
+    expect(decide({ isAppAdmin: false, membership: null, vendor: { vendorId: "v1" } }, "portal.gallery")).toBe("allow");
+    expect(decide(planner, "portal.gallery")).toBe("deny");
+  });
+
   it("only Hosts and App Admins can download the full archive (EVT-08)", () => {
     expect(decide(host, "event.export")).toBe("allow");
     expect(decide(admin, "event.export")).toBe("allow");

@@ -1,3 +1,4 @@
+import "@/lib/gallery-hooks";
 import { EventForm } from "@/components/event-form";
 import { SimpleForm } from "@/components/simple-form";
 import { SubmitButton } from "@/components/submit-button";

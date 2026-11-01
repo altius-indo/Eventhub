@@ -1,6 +1,6 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Tx } from "@/db";
-import { documents } from "@/db/schema";
+import { documents, mediaItems } from "@/db/schema";
 
 /**
  * Usage sources: every kind of stored object that counts against an event's storage quota
@@ -43,6 +43,15 @@ registerUsageSource({
 });
 
 // [M7 gallery usage source]
-// The gallery registers its source(s) here, e.g.:
-//   registerUsageSource({ key: "gallery.vendor", measure: async (db, eventId) => sumOfMediaBytes(db, eventId, "vendor") });
-// with labels at `storage.sources["gallery.vendor"]` (en + hi).
+// Stored gallery originals by uploader type (GAL-02/03, ADR-0031). Uploads in flight are counted
+// as reservations, not here; renditions (thumb/web WebP, a few % of the originals) aren't counted.
+const galleryBytes = async (db: Tx, eventId: string, kind: "member" | "vendor" | "household") => {
+  const [r] = await db
+    .select({ n: sql<number>`coalesce(sum(${mediaItems.originalBytes}), 0)::bigint`.mapWith(Number) })
+    .from(mediaItems)
+    .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.uploaderKind, kind), ne(mediaItems.status, "uploading")));
+  return r?.n ?? 0;
+};
+registerUsageSource({ key: "gallery.member", measure: (db, eventId) => galleryBytes(db, eventId, "member") });
+registerUsageSource({ key: "gallery.vendor", measure: (db, eventId) => galleryBytes(db, eventId, "vendor") });
+registerUsageSource({ key: "gallery.guest", measure: (db, eventId) => galleryBytes(db, eventId, "household") });

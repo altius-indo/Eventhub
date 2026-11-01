@@ -1,0 +1,1397 @@
+import { randomUUID } from "node:crypto";
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { z } from "zod";
+import type { Database, Tx } from "@/db";
+import {
+  albumSelectionItems,
+  albumSelections,
+  bookings,
+  eventMembers,
+  functionInvites,
+  functions,
+  fulfilments,
+  galleryAlbums,
+  gallerySettings,
+  guests,
+  households,
+  mediaComments,
+  mediaFavourites,
+  mediaItems,
+  mediaLikes,
+  mediaRemovalRequests,
+  serviceTypes,
+  services,
+  type GalleryAlbum,
+  type GallerySettings,
+  type MediaItem,
+} from "@/db/schema";
+import { audit, type Actor } from "./audit";
+import { notify } from "./notifications";
+import { enqueue, QuotaError, type EnqueueItem } from "./outbox";
+import { recipientsFor } from "./broadcasts";
+import { eventKey, StorageError, type ObjectStore, type UploadGrant } from "./storage";
+import { queueStorageDeletion } from "./storage-gc";
+import { commit, free, release, reserve, StorageQuotaError } from "./storage-quota";
+import { vendorUserIds } from "./vendor-access";
+import { allowAttempt } from "./website";
+
+/**
+ * Post-event photo gallery (GAL-01..08, GAL-10, GAL-11).
+ *
+ * Uploads go straight from the browser to object storage (ADR-0031): `beginUpload` checks the
+ * uploader's right to add to that function, reserves quota and returns an upload grant;
+ * `completeUpload` confirms the object's real size, commits the quota and queues the item for
+ * renditions (`renditions.ts`, ADR-0032). Abandoned uploads are swept daily (`sweepUploads`).
+ *
+ * Who sees what (`canViewMedia`): members see everything; vendors their own deliveries and items
+ * in an album selection shared with them; guests their own family's uploads plus approved items
+ * in released albums of functions their family is invited to (so private functions stay private).
+ */
+
+export class GalleryError extends Error {
+  constructor(
+    public code:
+      | "not_found"
+      | "invalid"
+      | "bad_type"
+      | "too_large"
+      | "not_booked"
+      | "not_invited"
+      | "uploads_off"
+      | "rate_limited"
+      | "not_uploaded"
+      | "storage_full"
+      | "household_items"
+      | "household_bytes"
+      | "reactions_off"
+      | "already_requested"
+      | "not_ready"
+      | "album_released",
+  ) {
+    super(code);
+  }
+}
+
+const MB = 1024 * 1024;
+const GB = 1024 * MB;
+
+export const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const;
+export const VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/webm"] as const;
+/** Guests upload photos as JPEG (resized in the browser to 4096 px, §4.1) and videos. */
+export const GUEST_PHOTO_TYPES = ["image/jpeg"] as const;
+
+/** §4.1 single-upload limits. Members (the family) get the vendor video limit. */
+export const LIMITS = {
+  photo: 50 * MB,
+  videoVendor: 4 * GB,
+  videoMember: 4 * GB,
+  videoGuest: 500 * MB,
+} as const;
+
+/** Guest upload attempts per family per hour (on top of the 300 items / 5 GB cap). */
+export const GUEST_UPLOADS_PER_HOUR = 300;
+/** Full-gallery ZIP downloads per event per day (§4.1). */
+export const FULL_DOWNLOADS_PER_DAY = 5;
+/** Keep each ZIP part well under classic ZIP's 4 GB (and a 300 s function). */
+export const ZIP_PART_BYTES = 2 * GB;
+
+export const PHOTOGRAPHY_KEYS = ["photography", "videography"] as const;
+
+export type Uploader = { kind: "member"; userId: string } | { kind: "vendor"; vendorId: string; userId: string } | { kind: "guest"; householdId: string };
+
+export type Viewer = { kind: "member" } | { kind: "vendor"; vendorId: string } | { kind: "guest"; householdId: string; functionIds: string[] };
+
+export const DEFAULT_SETTINGS: Omit<GallerySettings, "eventId" | "updatedAt" | "sweptAt"> = {
+  guestUploads: false,
+  autoApprove: false,
+  guestOriginals: false,
+  reactions: true,
+  watermarkText: null,
+};
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export async function getGallerySettings(db: Tx, eventId: string): Promise<GallerySettings> {
+  const [row] = await db.select().from(gallerySettings).where(eq(gallerySettings.eventId, eventId));
+  return row ?? { eventId, ...DEFAULT_SETTINGS, sweptAt: null, updatedAt: new Date(0) };
+}
+
+export const settingsSchema = z.object({
+  guestUploads: z.boolean(),
+  autoApprove: z.boolean(),
+  guestOriginals: z.boolean(),
+  reactions: z.boolean(),
+  watermarkText: z
+    .string()
+    .trim()
+    .max(60)
+    .transform((s) => s || null)
+    .nullable(),
+});
+
+export async function updateGallerySettings(db: Database, eventId: string, actor: Actor, raw: z.input<typeof settingsSchema>) {
+  const parsed = settingsSchema.safeParse(raw);
+  if (!parsed.success) throw new GalleryError("invalid");
+  const v = parsed.data;
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(gallerySettings)
+      .values({ eventId, ...v, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: gallerySettings.eventId, set: { ...v, updatedAt: new Date() } })
+      .returning();
+    await audit(tx, { eventId, actor, action: "gallery.settings_changed", entityType: "event", entityId: eventId, data: { ...v } });
+    return row;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Albums
+// ---------------------------------------------------------------------------
+
+async function getFunction(db: Tx, eventId: string, functionId: string) {
+  if (!z.string().uuid().safeParse(functionId).success) throw new GalleryError("not_found");
+  const [fn] = await db
+    .select()
+    .from(functions)
+    .where(and(eq(functions.id, functionId), eq(functions.eventId, eventId)));
+  if (!fn) throw new GalleryError("not_found");
+  return fn;
+}
+
+export async function getAlbum(db: Tx, eventId: string, albumId: string) {
+  if (!z.string().uuid().safeParse(albumId).success) throw new GalleryError("not_found");
+  const [a] = await db
+    .select()
+    .from(galleryAlbums)
+    .where(and(eq(galleryAlbums.id, albumId), eq(galleryAlbums.eventId, eventId)));
+  if (!a) throw new GalleryError("not_found");
+  return a;
+}
+
+/** The function's family or guest album, created on first use (serialised per function). */
+async function defaultAlbum(tx: Tx, eventId: string, functionId: string, kind: "family" | "guest", userId: string | null, now: Date) {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`gallery-album:${functionId}:${kind}`}))`);
+  const [existing] = await tx
+    .select()
+    .from(galleryAlbums)
+    .where(and(eq(galleryAlbums.eventId, eventId), eq(galleryAlbums.functionId, functionId), eq(galleryAlbums.kind, kind)))
+    .orderBy(asc(galleryAlbums.createdAt))
+    .limit(1);
+  if (existing) return existing;
+  // Guest albums are "released" from the start: moderation (GAL-04) is their gate.
+  const [a] = await tx
+    .insert(galleryAlbums)
+    .values({ eventId, functionId, kind, title: "", sortOrder: kind === "guest" ? 1000 : 0, createdBy: userId, releasedAt: kind === "guest" ? now : null })
+    .returning();
+  return a;
+}
+
+const titleSchema = z.string().trim().min(1).max(80);
+
+export async function createAlbum(db: Database, input: { eventId: string; actor: Actor; functionId: string; title: string }) {
+  const title = titleSchema.safeParse(input.title);
+  if (!title.success) throw new GalleryError("invalid");
+  return db.transaction(async (tx) => {
+    await getFunction(tx, input.eventId, input.functionId);
+    const [a] = await tx.insert(galleryAlbums).values({ eventId: input.eventId, functionId: input.functionId, kind: "family", title: title.data, createdBy: input.actor.userId }).returning();
+    await audit(tx, { eventId: input.eventId, actor: input.actor, action: "gallery.album_created", entityType: "gallery_album", entityId: a.id, data: { title: a.title } });
+    return a;
+  });
+}
+
+/** Renames an album (members; vendors their own delivery albums). */
+export async function renameAlbum(db: Tx, input: { eventId: string; albumId: string; title: string; vendorId?: string }) {
+  const title = titleSchema.safeParse(input.title);
+  if (!title.success) throw new GalleryError("invalid");
+  const a = await getAlbum(db, input.eventId, input.albumId);
+  if (input.vendorId && a.vendorId !== input.vendorId) throw new GalleryError("not_found");
+  await db.update(galleryAlbums).set({ title: title.data }).where(eq(galleryAlbums.id, a.id));
+}
+
+/** Deletes an empty album (anything still in it must be deleted first). */
+export async function deleteAlbum(db: Database, input: { eventId: string; actor: Actor; albumId: string }) {
+  await db.transaction(async (tx) => {
+    const a = await getAlbum(tx, input.eventId, input.albumId);
+    const [{ n }] = await tx.select({ n: count() }).from(mediaItems).where(eq(mediaItems.albumId, a.id));
+    if (n > 0) throw new GalleryError("invalid");
+    await tx.delete(galleryAlbums).where(eq(galleryAlbums.id, a.id));
+    await audit(tx, { eventId: input.eventId, actor: input.actor, action: "gallery.album_deleted", entityType: "gallery_album", entityId: a.id, data: { title: a.title } });
+  });
+}
+
+export type AlbumSummary = GalleryAlbum & {
+  functionName: string;
+  functionDate: string | null;
+  approved: number;
+  pending: number;
+  hidden: number;
+  processing: number;
+  bytes: number;
+  coverId: string | null;
+};
+
+/** Every album with counts, grouped by function date (GAL-01). Optionally only one vendor's. */
+export async function listAlbums(db: Tx, eventId: string, opts: { vendorId?: string; functionId?: string } = {}): Promise<AlbumSummary[]> {
+  const rows = await db
+    .select({
+      album: galleryAlbums,
+      functionName: functions.name,
+      functionDate: functions.date,
+      approved: sql<number>`count(${mediaItems.id}) filter (where ${mediaItems.status} = 'approved')`.mapWith(Number),
+      pending: sql<number>`count(${mediaItems.id}) filter (where ${mediaItems.status} = 'pending')`.mapWith(Number),
+      hidden: sql<number>`count(${mediaItems.id}) filter (where ${mediaItems.status} = 'hidden')`.mapWith(Number),
+      processing: sql<number>`count(${mediaItems.id}) filter (where ${mediaItems.status} in ('processing', 'failed'))`.mapWith(Number),
+      bytes: sql<number>`coalesce(sum(${mediaItems.originalBytes}) filter (where ${mediaItems.status} <> 'uploading'), 0)::bigint`.mapWith(Number),
+      coverId: sql<string | null>`(array_agg(${mediaItems.id} order by ${mediaItems.takenAt}, ${mediaItems.id}) filter (where ${mediaItems.status} = 'approved' and ${mediaItems.thumbKey} is not null))[1]`,
+    })
+    .from(galleryAlbums)
+    .innerJoin(functions, eq(functions.id, galleryAlbums.functionId))
+    .leftJoin(mediaItems, eq(mediaItems.albumId, galleryAlbums.id))
+    .where(
+      and(
+        eq(galleryAlbums.eventId, eventId),
+        opts.vendorId ? eq(galleryAlbums.vendorId, opts.vendorId) : undefined,
+        opts.functionId ? eq(galleryAlbums.functionId, opts.functionId) : undefined,
+      ),
+    )
+    .groupBy(galleryAlbums.id, functions.id)
+    .orderBy(sql`${functions.date} asc nulls last`, asc(functions.startTime), asc(galleryAlbums.sortOrder), asc(galleryAlbums.createdAt));
+  return rows.map((r) => ({ ...r.album, functionName: r.functionName, functionDate: r.functionDate, approved: r.approved, pending: r.pending, hidden: r.hidden, processing: r.processing, bytes: r.bytes, coverId: r.coverId }));
+}
+
+// ---------------------------------------------------------------------------
+// Vendors: which functions a photographer/videographer may deliver to (GAL-02)
+// ---------------------------------------------------------------------------
+
+export type VendorGalleryFunction = { functionId: string; functionName: string; functionDate: string | null; bookingId: string; vendorId: string };
+
+/** Confirmed bookings on a Photography/Videography service, one row per (booking, function). */
+export async function photoBookings(db: Tx, eventId: string, opts: { vendorId?: string; functionId?: string; bookingId?: string } = {}): Promise<VendorGalleryFunction[]> {
+  const rows = await db
+    .selectDistinct({ functionId: functions.id, functionName: functions.name, functionDate: functions.date, bookingId: bookings.id, vendorId: bookings.vendorId })
+    .from(fulfilments)
+    .innerJoin(bookings, eq(bookings.id, fulfilments.bookingId))
+    .innerJoin(services, eq(services.id, fulfilments.serviceId))
+    .innerJoin(serviceTypes, eq(serviceTypes.id, services.serviceTypeId))
+    .innerJoin(functions, eq(functions.id, services.functionId))
+    .where(
+      and(
+        eq(bookings.eventId, eventId),
+        eq(bookings.status, "confirmed"),
+        isNull(fulfilments.cancelledAt),
+        isNull(services.cancelledAt),
+        inArray(serviceTypes.systemKey, [...PHOTOGRAPHY_KEYS]),
+        opts.vendorId ? eq(bookings.vendorId, opts.vendorId) : undefined,
+        opts.functionId ? eq(functions.id, opts.functionId) : undefined,
+        opts.bookingId ? eq(bookings.id, opts.bookingId) : undefined,
+      ),
+    );
+  return rows.sort((a, b) => (a.functionDate ?? "9999").localeCompare(b.functionDate ?? "9999") || a.functionName.localeCompare(b.functionName));
+}
+
+/** A vendor's delivery album for one of their booked functions (e.g. "Sneak peek", "Full delivery"). */
+export async function createVendorAlbum(db: Database, input: { eventId: string; vendorId: string; userId: string; functionId: string; title: string }) {
+  const title = titleSchema.safeParse(input.title);
+  if (!title.success) throw new GalleryError("invalid");
+  return db.transaction(async (tx) => {
+    const [booking] = await photoBookings(tx, input.eventId, { vendorId: input.vendorId, functionId: input.functionId });
+    if (!booking) throw new GalleryError("not_booked");
+    const [a] = await tx
+      .insert(galleryAlbums)
+      .values({ eventId: input.eventId, functionId: input.functionId, kind: "delivery", bookingId: booking.bookingId, vendorId: input.vendorId, title: title.data, createdBy: input.userId })
+      .returning();
+    await audit(tx, { eventId: input.eventId, actor: { userId: input.userId, isAppAdmin: false }, action: "gallery.delivery_album_created", entityType: "gallery_album", entityId: a.id, data: { title: a.title } });
+    return a;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Guests: which functions a family is invited to
+// ---------------------------------------------------------------------------
+
+export async function householdFunctionIds(db: Tx, eventId: string, householdId: string): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ id: functionInvites.functionId })
+    .from(functionInvites)
+    .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+    .where(and(eq(guests.householdId, householdId), eq(guests.eventId, eventId)));
+  return rows.map((r) => r.id);
+}
+
+// ---------------------------------------------------------------------------
+// Uploads (ADR-0031)
+// ---------------------------------------------------------------------------
+
+export const beginSchema = z.object({
+  functionId: z.string().uuid(),
+  albumId: z.string().uuid().nullish(),
+  clientKey: z.string().uuid(),
+  filename: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .transform((s) => s.replace(/[\u0000-\u001f\\/]/g, "_")),
+  mime: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .max(100),
+  size: z.number().int().positive(),
+});
+export type BeginInput = z.input<typeof beginSchema>;
+
+export function kindOf(mime: string): "photo" | "video" | null {
+  if ((PHOTO_TYPES as readonly string[]).includes(mime)) return "photo";
+  if ((VIDEO_TYPES as readonly string[]).includes(mime)) return "video";
+  return null;
+}
+
+/** The largest file an uploader may send of this type, or null when the type isn't allowed. */
+export function maxBytesFor(uploader: Uploader["kind"], mime: string): number | null {
+  const kind = kindOf(mime);
+  if (!kind) return null;
+  if (uploader === "guest" && kind === "photo" && !(GUEST_PHOTO_TYPES as readonly string[]).includes(mime)) return null;
+  if (kind === "photo") return LIMITS.photo;
+  return uploader === "vendor" ? LIMITS.videoVendor : uploader === "guest" ? LIMITS.videoGuest : LIMITS.videoMember;
+}
+
+const audienceOf = (u: Uploader) => (u.kind === "guest" ? "guest" : u.kind) as "member" | "vendor" | "guest";
+
+function sameUploader(row: MediaItem, u: Uploader) {
+  if (u.kind === "member") return row.uploaderKind === "member" && row.userId === u.userId;
+  if (u.kind === "vendor") return row.uploaderKind === "vendor" && row.vendorId === u.vendorId;
+  return row.uploaderKind === "household" && row.householdId === u.householdId;
+}
+
+export function originalKeyFor(eventId: string, mediaId: string, householdId: string | null) {
+  return householdId ? eventKey(eventId, "households", householdId, "gallery", mediaId, "original") : eventKey(eventId, "gallery", mediaId, "original");
+}
+
+/** The folder holding an item's original and renditions (deleted as one prefix). */
+export function mediaPrefix(item: Pick<MediaItem, "eventId" | "id" | "householdId">) {
+  const key = originalKeyFor(item.eventId, item.id, item.householdId);
+  return key.slice(0, key.length - "original".length);
+}
+
+function quotaError(e: unknown): never {
+  if (e instanceof StorageQuotaError) {
+    throw new GalleryError(e.code === "invalid" ? "invalid" : e.code);
+  }
+  throw e;
+}
+
+export type BeginResult = { mediaId: string; grant: UploadGrant } | { mediaId: string; done: true };
+
+/**
+ * Starts (or resumes) one upload: checks the uploader may add to that function, reserves quota
+ * and returns a grant for a direct browser upload. Retrying with the same `clientKey` resumes.
+ */
+export async function beginUpload(db: Database, store: ObjectStore, eventId: string, uploader: Uploader, raw: BeginInput, now = new Date()): Promise<BeginResult> {
+  const parsed = beginSchema.safeParse(raw);
+  if (!parsed.success) throw new GalleryError("invalid");
+  const input = parsed.data;
+  const max = maxBytesFor(uploader.kind, input.mime);
+  if (max == null) throw new GalleryError("bad_type");
+  if (input.size > max) throw new GalleryError("too_large");
+  const kind = kindOf(input.mime)!;
+  const ttlSeconds = kind === "video" ? 6 * 3600 : 30 * 60;
+
+  return db.transaction(async (tx) => {
+    // A retry of the same file: hand out a fresh grant for the same key, or report it's done.
+    const [existing] = await tx
+      .select()
+      .from(mediaItems)
+      .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.clientKey, input.clientKey)))
+      .for("update");
+    if (existing) {
+      if (!sameUploader(existing, uploader)) throw new GalleryError("invalid");
+      if (existing.status !== "uploading") return { mediaId: existing.id, done: true as const };
+      const grant = await store.authorizeUpload({ key: existing.originalKey, maxBytes: existing.reservedBytes, contentTypes: [existing.mime], ttlSeconds });
+      await tx.update(mediaItems).set({ uploadExpiresAt: new Date(grant.expiresAt) }).where(eq(mediaItems.id, existing.id));
+      return { mediaId: existing.id, grant };
+    }
+
+    const fn = await getFunction(tx, eventId, input.functionId);
+    let album: GalleryAlbum;
+    let householdId: string | null = null;
+    if (uploader.kind === "member") {
+      if (input.albumId) {
+        album = await getAlbum(tx, eventId, input.albumId);
+        if (album.functionId !== fn.id || album.kind === "guest") throw new GalleryError("invalid");
+      } else album = await defaultAlbum(tx, eventId, fn.id, "family", uploader.userId, now);
+    } else if (uploader.kind === "vendor") {
+      if (!input.albumId) throw new GalleryError("invalid");
+      album = await getAlbum(tx, eventId, input.albumId);
+      if (album.kind !== "delivery" || album.vendorId !== uploader.vendorId || album.functionId !== fn.id) throw new GalleryError("not_found");
+      // Deliveries stay private until the family releases them (GAL-02): no adding to a released album.
+      if (album.releasedAt) throw new GalleryError("album_released");
+      const [booking] = await photoBookings(tx, eventId, { vendorId: uploader.vendorId, functionId: fn.id });
+      if (!booking) throw new GalleryError("not_booked");
+    } else {
+      const settings = await getGallerySettings(tx, eventId);
+      if (!settings.guestUploads) throw new GalleryError("uploads_off");
+      const invited = await householdFunctionIds(tx, eventId, uploader.householdId);
+      if (!invited.includes(fn.id)) throw new GalleryError("not_invited");
+      if (!(await allowAttempt(tx, "gallery-upload", uploader.householdId, GUEST_UPLOADS_PER_HOUR, 3600_000, now))) throw new GalleryError("rate_limited");
+      householdId = uploader.householdId;
+      album = await defaultAlbum(tx, eventId, fn.id, "guest", null, now);
+    }
+
+    // The reservation outlives the grant by an hour; after that the daily job gives it back.
+    let reservationId: string;
+    try {
+      reservationId = (await reserve(tx, eventId, input.size, audienceOf(uploader), { householdId, ttlSeconds: ttlSeconds + 3600, now })).id;
+    } catch (e) {
+      quotaError(e);
+    }
+    const id = randomUUID();
+    const key = originalKeyFor(eventId, id, householdId);
+    const grant = await store.authorizeUpload({ key, maxBytes: input.size, contentTypes: [input.mime], ttlSeconds, multipart: input.size > 50 * MB });
+    await tx.insert(mediaItems).values({
+      id,
+      eventId,
+      albumId: album.id,
+      functionId: fn.id,
+      uploaderKind: uploader.kind === "guest" ? "household" : uploader.kind,
+      userId: uploader.kind === "guest" ? null : uploader.userId,
+      vendorId: uploader.kind === "vendor" ? uploader.vendorId : null,
+      householdId,
+      clientKey: input.clientKey,
+      kind,
+      mime: input.mime,
+      filename: input.filename,
+      originalKey: key,
+      reservedBytes: input.size,
+      reservationId,
+      takenAt: now,
+      status: "uploading",
+      uploadExpiresAt: new Date(grant.expiresAt),
+    });
+    await ensureSettingsRow(tx, eventId);
+    return { mediaId: id, grant };
+  });
+}
+
+async function lockOwnUpload(tx: Tx, eventId: string, uploader: Uploader, mediaId: string) {
+  if (!z.string().uuid().safeParse(mediaId).success) throw new GalleryError("not_found");
+  const [row] = await tx
+    .select()
+    .from(mediaItems)
+    .where(and(eq(mediaItems.id, mediaId), eq(mediaItems.eventId, eventId)))
+    .for("update");
+  if (!row || !sameUploader(row, uploader)) throw new GalleryError("not_found");
+  return row;
+}
+
+/** Turns an uploaded object into usage: confirms its real size, commits quota, queues renditions. */
+async function finishUpload(tx: Tx, store: ObjectStore, row: MediaItem): Promise<MediaItem | "missing" | "rejected"> {
+  const head = await store.head(row.originalKey);
+  if (!head) return "missing";
+  if (head.size <= 0 || head.size > row.reservedBytes) {
+    // The store enforces the size, so this is a forged or broken object: drop it.
+    await store.delete(row.originalKey).catch(() => undefined);
+    await release(tx, row.eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId ?? undefined });
+    await tx.delete(mediaItems).where(eq(mediaItems.id, row.id));
+    return "rejected";
+  }
+  await commit(tx, row.eventId, row.reservedBytes, head.size, { householdId: row.householdId, reservationId: row.reservationId ?? undefined });
+  const [u] = await tx
+    .update(mediaItems)
+    .set({ status: "processing", originalBytes: head.size, reservedBytes: 0, reservationId: null, uploadExpiresAt: null })
+    .where(eq(mediaItems.id, row.id))
+    .returning();
+  return u;
+}
+
+/** The browser says the upload finished: verify it in the store and queue renditions. */
+export async function completeUpload(db: Database, store: ObjectStore, eventId: string, uploader: Uploader, mediaId: string): Promise<MediaItem> {
+  const done = await db.transaction(async (tx) => {
+    const row = await lockOwnUpload(tx, eventId, uploader, mediaId);
+    if (row.status !== "uploading") return row;
+    return finishUpload(tx, store, row);
+  });
+  if (done === "missing") throw new GalleryError("not_uploaded");
+  if (done === "rejected") throw new GalleryError("too_large");
+  return done;
+}
+
+/** The browser gave up on a file: give the reservation back. */
+export async function abortUpload(db: Database, store: ObjectStore, eventId: string, uploader: Uploader, mediaId: string) {
+  const key = await db.transaction(async (tx) => {
+    const row = await lockOwnUpload(tx, eventId, uploader, mediaId);
+    if (row.status !== "uploading") return null;
+    await release(tx, eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId ?? undefined });
+    await tx.delete(mediaItems).where(eq(mediaItems.id, row.id));
+    return row.originalKey;
+  });
+  if (key) await store.delete(key).catch(() => undefined);
+}
+
+/** Grace after a grant expires before the sweep decides (a multipart upload may still be finishing). */
+const SWEEP_GRACE_MS = 15 * 60_000;
+
+/**
+ * Daily: uploads whose grant expired are finished if the object arrived (the browser closed
+ * before "complete"; if the reservation already expired the object counts as new usage), or
+ * dropped otherwise: the row goes (there's no file to show) and its reservation is released (a
+ * no-op if the daily reservation job already gave it back).
+ */
+export async function sweepUploads(db: Database, store: ObjectStore, now = new Date(), opts: { limit?: number } = {}) {
+  const due = await db
+    .select({ id: mediaItems.id })
+    .from(mediaItems)
+    .where(and(eq(mediaItems.status, "uploading"), lt(mediaItems.uploadExpiresAt, new Date(now.getTime() - SWEEP_GRACE_MS))))
+    .limit(opts.limit ?? 500);
+  let n = 0;
+  for (const { id } of due) {
+    const dropKey = await db.transaction(async (tx) => {
+      const [row] = await tx.select().from(mediaItems).where(eq(mediaItems.id, id)).for("update", { skipLocked: true });
+      if (!row || row.status !== "uploading") return null;
+      const done = await finishUpload(tx, store, row);
+      if (done !== "missing") return null;
+      await release(tx, row.eventId, row.reservedBytes, { householdId: row.householdId, reservationId: row.reservationId ?? undefined });
+      await tx.delete(mediaItems).where(eq(mediaItems.id, row.id));
+      return row.originalKey;
+    });
+    if (dropKey) await store.delete(dropKey).catch(() => undefined);
+    n++;
+  }
+  return n;
+}
+
+/**
+ * Daily: deletes gallery objects no row points at any more (their rows went with a cascaded
+ * delete, e.g. a function or vendor). Objects younger than a day are left alone.
+ */
+export async function sweepOrphanObjects(db: Database, store: ObjectStore, now = new Date(), opts: { limit?: number } = {}) {
+  const due = await db
+    .select({ eventId: gallerySettings.eventId })
+    .from(gallerySettings)
+    .orderBy(sql`${gallerySettings.sweptAt} asc nulls first`)
+    .limit(opts.limit ?? 10);
+  let deleted = 0;
+  const ID = /\/gallery\/([0-9a-f-]{36})\//;
+  for (const { eventId } of due) {
+    const known = new Set((await db.select({ id: mediaItems.id }).from(mediaItems).where(eq(mediaItems.eventId, eventId))).map((r) => r.id));
+    for (const prefix of [`events/${eventId}/gallery/`, `events/${eventId}/households/`]) {
+      for await (const o of store.list(prefix)) {
+        const m = o.key.match(ID);
+        if (!m || known.has(m[1])) continue;
+        if (now.getTime() - o.uploadedAt.getTime() < 24 * 3600_000) continue;
+        await store.delete(o.key);
+        deleted++;
+      }
+    }
+    await db.update(gallerySettings).set({ sweptAt: now }).where(eq(gallerySettings.eventId, eventId));
+  }
+  return deleted;
+}
+
+/** Every event with media gets a settings row, so the orphan sweep visits it. */
+export async function ensureSettingsRow(db: Tx, eventId: string) {
+  await db.insert(gallerySettings).values({ eventId }).onConflictDoNothing();
+}
+
+// ---------------------------------------------------------------------------
+// Access (GAL-05)
+// ---------------------------------------------------------------------------
+
+export type AccessItem = Pick<MediaItem, "status" | "uploaderKind" | "vendorId" | "householdId" | "functionId"> & { albumReleased: boolean; sharedWithVendorIds?: string[] };
+
+/** Can this viewer see this item at all? (Variants add their own rules, see `variantAllowed`.) */
+export function canViewMedia(viewer: Viewer, item: AccessItem): boolean {
+  if (item.status === "uploading") return false;
+  if (viewer.kind === "member") return true;
+  if (viewer.kind === "vendor") {
+    return (item.uploaderKind === "vendor" && item.vendorId === viewer.vendorId) || (item.sharedWithVendorIds ?? []).includes(viewer.vendorId);
+  }
+  if (item.householdId && item.householdId === viewer.householdId) return true;
+  return item.status === "approved" && item.albumReleased && viewer.functionIds.includes(item.functionId);
+}
+
+export const VARIANTS = ["thumb", "web", "original", "download"] as const;
+export type Variant = (typeof VARIANTS)[number];
+
+/**
+ * Which file a variant serves for this viewer, or null. Guests get web resolution unless the
+ * family allowed originals (GAL-06) or it's their own upload; "download" is the guest's
+ * (watermarked, GAL-10) save-to-phone copy.
+ */
+export function variantFor(viewer: Viewer, item: Pick<MediaItem, "kind" | "householdId" | "thumbKey" | "webKey" | "originalKey">, variant: Variant, settings: Pick<GallerySettings, "guestOriginals">): { key: string; watermark: boolean } | null {
+  const own = viewer.kind === "guest" && item.householdId === viewer.householdId;
+  const originalsOk = viewer.kind !== "guest" || settings.guestOriginals || own;
+  switch (variant) {
+    case "thumb":
+      return item.thumbKey ? { key: item.thumbKey, watermark: false } : null;
+    case "web":
+      if (item.kind === "video") return { key: item.originalKey, watermark: false };
+      return item.webKey ? { key: item.webKey, watermark: false } : originalsOk ? { key: item.originalKey, watermark: false } : null;
+    case "original":
+      return originalsOk ? { key: item.originalKey, watermark: false } : null;
+    case "download":
+      if (viewer.kind !== "guest" || item.kind === "video") return originalsOk || item.kind === "video" ? { key: item.originalKey, watermark: false } : null;
+      if (originalsOk) return { key: item.originalKey, watermark: false };
+      return item.webKey ? { key: item.webKey, watermark: true } : null;
+  }
+}
+
+export type LoadedMedia = MediaItem & { album: GalleryAlbum; functionName: string };
+
+/** Loads an item the viewer may see (null otherwise, so callers answer 404 either way). */
+export async function loadMediaForViewer(db: Tx, eventId: string, mediaId: string, viewer: Viewer): Promise<LoadedMedia | null> {
+  if (!z.string().uuid().safeParse(mediaId).success) return null;
+  const [row] = await db
+    .select({ item: mediaItems, album: galleryAlbums, functionName: functions.name })
+    .from(mediaItems)
+    .innerJoin(galleryAlbums, eq(galleryAlbums.id, mediaItems.albumId))
+    .innerJoin(functions, eq(functions.id, mediaItems.functionId))
+    .where(and(eq(mediaItems.id, mediaId), eq(mediaItems.eventId, eventId)));
+  if (!row) return null;
+  let shared: string[] = [];
+  if (viewer.kind === "vendor") {
+    const s = await db
+      .select({ vendorId: albumSelections.vendorId })
+      .from(albumSelectionItems)
+      .innerJoin(albumSelections, eq(albumSelections.id, albumSelectionItems.selectionId))
+      .where(and(eq(albumSelectionItems.mediaId, mediaId), eq(albumSelections.vendorId, viewer.vendorId), isNotNull(albumSelections.sharedAt)));
+    shared = s.map((x) => x.vendorId!).filter(Boolean);
+  }
+  const ok = canViewMedia(viewer, { ...row.item, albumReleased: !!row.album.releasedAt, sharedWithVendorIds: shared });
+  return ok ? { ...row.item, album: row.album, functionName: row.functionName } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Listing (keyset pages on (taken_at, id), GAL-01)
+// ---------------------------------------------------------------------------
+
+export const PAGE_SIZE = 60;
+
+export type Cursor = { t: Date; id: string };
+
+export function encodeCursor(item: Pick<MediaItem, "takenAt" | "id">) {
+  return `${item.takenAt.getTime()}_${item.id}`;
+}
+
+export function decodeCursor(raw: unknown): Cursor | null {
+  if (typeof raw !== "string") return null;
+  const m = raw.match(/^(\d{1,15})_([0-9a-f-]{36})$/);
+  return m ? { t: new Date(Number(m[1])), id: m[2] } : null;
+}
+
+const after = (c: Cursor | null): SQL | undefined => (c ? sql`(${mediaItems.takenAt}, ${mediaItems.id}) > (${c.t}, ${c.id})` : undefined);
+
+export type MediaPage = { items: MediaItem[]; next: string | null };
+
+async function page(db: Tx, where: SQL | undefined, cursor: Cursor | null, limit = PAGE_SIZE): Promise<MediaPage> {
+  const rows = await db
+    .select()
+    .from(mediaItems)
+    .where(and(where, after(cursor)))
+    .orderBy(asc(mediaItems.takenAt), asc(mediaItems.id))
+    .limit(limit + 1);
+  const items = rows.slice(0, limit);
+  return { items, next: rows.length > limit ? encodeCursor(items[items.length - 1]) : null };
+}
+
+/** An album's items for the team (or the delivering vendor), oldest capture first. */
+export async function listAlbumMedia(db: Tx, eventId: string, albumId: string, cursor: Cursor | null, opts: { limit?: number; vendorId?: string } = {}) {
+  return page(
+    db,
+    and(
+      eq(mediaItems.eventId, eventId),
+      eq(mediaItems.albumId, albumId),
+      ne(mediaItems.status, "uploading"),
+      opts.vendorId ? and(eq(mediaItems.vendorId, opts.vendorId), eq(mediaItems.uploaderKind, "vendor")) : undefined,
+    ),
+    cursor,
+    opts.limit,
+  );
+}
+
+/** What a family sees for one function: released, approved items plus their own uploads. */
+export async function listGuestMedia(db: Tx, eventId: string, viewer: Extract<Viewer, { kind: "guest" }>, functionId: string, cursor: Cursor | null, limit = PAGE_SIZE) {
+  if (!viewer.functionIds.includes(functionId)) return { items: [], next: null };
+  return page(
+    db,
+    and(
+      eq(mediaItems.eventId, eventId),
+      eq(mediaItems.functionId, functionId),
+      ne(mediaItems.status, "uploading"),
+      or(
+        eq(mediaItems.householdId, viewer.householdId),
+        and(
+          eq(mediaItems.status, "approved"),
+          sql`exists (select 1 from ${galleryAlbums} a where a.id = ${mediaItems.albumId} and a.released_at is not null)`,
+        ),
+      ),
+    ),
+    cursor,
+    limit,
+  );
+}
+
+/** A family's gallery overview: their invited functions with how many items they can see. */
+export async function guestGalleryOverview(db: Tx, eventId: string, viewer: Extract<Viewer, { kind: "guest" }>) {
+  if (viewer.functionIds.length === 0) return [];
+  const rows = await db
+    .select({
+      id: functions.id,
+      name: functions.name,
+      date: functions.date,
+      startTime: functions.startTime,
+      visible: sql<number>`count(${mediaItems.id}) filter (where ${mediaItems.status} = 'approved' and ${galleryAlbums.releasedAt} is not null)`.mapWith(Number),
+      own: sql<number>`count(${mediaItems.id}) filter (where ${mediaItems.householdId} = ${viewer.householdId} and ${mediaItems.status} <> 'uploading')`.mapWith(Number),
+      coverId: sql<string | null>`(array_agg(${mediaItems.id} order by ${mediaItems.takenAt}) filter (where ${mediaItems.status} = 'approved' and ${galleryAlbums.releasedAt} is not null and ${mediaItems.thumbKey} is not null))[1]`,
+    })
+    .from(functions)
+    .leftJoin(mediaItems, eq(mediaItems.functionId, functions.id))
+    .leftJoin(galleryAlbums, eq(galleryAlbums.id, mediaItems.albumId))
+    .where(and(eq(functions.eventId, eventId), inArray(functions.id, viewer.functionIds)))
+    .groupBy(functions.id)
+    .orderBy(sql`${functions.date} asc nulls last`, sql`${functions.startTime} asc nulls last`);
+  return rows;
+}
+
+/** Does the site have anything gallery-ish for this family (nav link)? */
+export async function guestHasGallery(db: Tx, eventId: string, viewer: Extract<Viewer, { kind: "guest" }>) {
+  const settings = await getGallerySettings(db, eventId);
+  if (settings.guestUploads && viewer.functionIds.length > 0) return true;
+  const overview = await guestGalleryOverview(db, eventId, viewer);
+  return overview.some((f) => f.visible > 0 || f.own > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Moderation, highlights, deletion (GAL-04, GAL-05)
+// ---------------------------------------------------------------------------
+
+/** The moderation queue: guest uploads waiting for a Host/Planner, oldest first. */
+export async function moderationQueue(db: Tx, eventId: string, cursor: Cursor | null, limit = PAGE_SIZE) {
+  return page(db, and(eq(mediaItems.eventId, eventId), eq(mediaItems.status, "pending")), cursor, limit);
+}
+
+export async function pendingCount(db: Tx, eventId: string) {
+  const [{ n }] = await db
+    .select({ n: count() })
+    .from(mediaItems)
+    .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.status, "pending")));
+  return n;
+}
+
+/** Approve or hide items (only ones that finished processing). Returns how many changed. */
+export async function moderate(db: Database, input: { eventId: string; actor: Actor; mediaIds: string[]; action: "approve" | "hide"; now?: Date }) {
+  const ids = input.mediaIds.filter((id) => z.string().uuid().safeParse(id).success).slice(0, 500);
+  if (ids.length === 0) return 0;
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .update(mediaItems)
+      .set(input.action === "approve" ? { status: "approved", approvedBy: input.actor.userId, approvedAt: now } : { status: "hidden", highlight: false })
+      .where(and(eq(mediaItems.eventId, input.eventId), inArray(mediaItems.id, ids), inArray(mediaItems.status, ["pending", "approved", "hidden"])))
+      .returning({ id: mediaItems.id });
+    if (rows.length) {
+      await audit(tx, {
+        eventId: input.eventId,
+        actor: input.actor,
+        action: input.action === "approve" ? "gallery.approved" : "gallery.hidden",
+        entityType: "media",
+        entityId: rows.length === 1 ? rows[0].id : undefined,
+        data: { count: rows.length },
+      });
+    }
+    return rows.length;
+  });
+}
+
+/** Picks a photo for the public website (GAL-05). Only approved photos with a web rendition. */
+export async function setHighlight(db: Tx, input: { eventId: string; mediaId: string; on: boolean }) {
+  if (!z.string().uuid().safeParse(input.mediaId).success) throw new GalleryError("not_found");
+  const rows = await db
+    .update(mediaItems)
+    .set({ highlight: input.on })
+    .where(
+      and(
+        eq(mediaItems.eventId, input.eventId),
+        eq(mediaItems.id, input.mediaId),
+        input.on ? and(eq(mediaItems.status, "approved"), eq(mediaItems.kind, "photo"), isNotNull(mediaItems.webKey)) : undefined,
+      ),
+    )
+    .returning({ id: mediaItems.id });
+  if (!rows.length) throw new GalleryError("not_ready");
+}
+
+/** Highlighted photos, for the website's gallery section. */
+export async function listHighlights(db: Tx, eventId: string, limit = 60) {
+  return db
+    .select({ id: mediaItems.id, width: mediaItems.width, height: mediaItems.height })
+    .from(mediaItems)
+    .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.highlight, true), eq(mediaItems.status, "approved"), isNotNull(mediaItems.webKey)))
+    .orderBy(asc(mediaItems.takenAt), asc(mediaItems.id))
+    .limit(limit);
+}
+
+/** Deletes an item inside a transaction: frees its quota and queues its files for deletion. */
+async function deleteItemTx(tx: Tx, item: MediaItem) {
+  if (item.status === "uploading") await release(tx, item.eventId, item.reservedBytes, { householdId: item.householdId, reservationId: item.reservationId ?? undefined });
+  else await free(tx, item.eventId, item.originalBytes, { householdId: item.householdId });
+  await tx.delete(mediaItems).where(eq(mediaItems.id, item.id));
+  return queueStorageDeletion(tx, mediaPrefix(item), "gallery_item");
+}
+
+/** Deletes items for good (members). Returns storage deletion ids to run right away. */
+export async function deleteMedia(db: Database, input: { eventId: string; actor: Actor; mediaIds: string[] }) {
+  const ids = input.mediaIds.filter((id) => z.string().uuid().safeParse(id).success).slice(0, 500);
+  if (ids.length === 0) return [];
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select()
+      .from(mediaItems)
+      .where(and(eq(mediaItems.eventId, input.eventId), inArray(mediaItems.id, ids)))
+      .for("update");
+    const out: number[] = [];
+    for (const r of rows) out.push(await deleteItemTx(tx, r));
+    if (rows.length) {
+      await audit(tx, { eventId: input.eventId, actor: input.actor, action: "gallery.deleted", entityType: "media", entityId: rows.length === 1 ? rows[0].id : undefined, data: { count: rows.length, filename: rows[0].filename } });
+    }
+    return out;
+  });
+}
+
+/** A family deletes one of its own uploads. */
+export async function deleteOwnUpload(db: Database, input: { eventId: string; householdId: string; mediaId: string }) {
+  if (!z.string().uuid().safeParse(input.mediaId).success) throw new GalleryError("not_found");
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(mediaItems)
+      .where(and(eq(mediaItems.eventId, input.eventId), eq(mediaItems.id, input.mediaId), eq(mediaItems.householdId, input.householdId)))
+      .for("update");
+    if (!row) throw new GalleryError("not_found");
+    return [await deleteItemTx(tx, row)];
+  });
+}
+
+/** A vendor deletes one of its own deliveries (e.g. a wrong file) before the album is released. */
+export async function deleteVendorUpload(db: Database, input: { eventId: string; vendorId: string; mediaId: string }) {
+  if (!z.string().uuid().safeParse(input.mediaId).success) throw new GalleryError("not_found");
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ item: mediaItems, releasedAt: galleryAlbums.releasedAt })
+      .from(mediaItems)
+      .innerJoin(galleryAlbums, eq(galleryAlbums.id, mediaItems.albumId))
+      .where(and(eq(mediaItems.eventId, input.eventId), eq(mediaItems.id, input.mediaId), eq(mediaItems.vendorId, input.vendorId), eq(mediaItems.uploaderKind, "vendor")))
+      .for("update", { of: mediaItems });
+    if (!row || row.releasedAt) throw new GalleryError("not_found");
+    return [await deleteItemTx(tx, row.item)];
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Release + "your photos are ready" (GAL-02, GAL-11)
+// ---------------------------------------------------------------------------
+
+export type ReleaseResult = { album: GalleryAlbum; notified: number; quota: string | null };
+
+/** The households to tell when a function's photos are ready: anyone invited to it. */
+async function invitedHouseholds(db: Tx, eventId: string, functionId: string) {
+  const rows = await db
+    .selectDistinct({ id: households.id, locale: households.locale, preferred: households.preferredChannel })
+    .from(functionInvites)
+    .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+    .innerJoin(households, eq(households.id, guests.householdId))
+    .where(and(eq(functionInvites.functionId, functionId), eq(households.eventId, eventId), isNull(households.linkRevokedAt)));
+  return rows;
+}
+
+const CHANNEL_SET = new Set(["whatsapp", "email", "sms"]);
+
+/**
+ * Releases (or withdraws) an album. The first release in a function sends invited families a
+ * "photos are ready" message (GAL-11) through the outbox, bulk and quota-checked; the idempotency
+ * key is per (function, family), so later albums and re-releases don't message again. If the
+ * messaging limit is reached the release still happens and `quota` names the channel.
+ */
+export async function releaseAlbum(db: Database, input: { eventId: string; actor: Actor; albumId: string; release: boolean; appUrl: string; now?: Date }): Promise<ReleaseResult> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const album = await getAlbum(tx, input.eventId, input.albumId);
+    const [u] = await tx
+      .update(galleryAlbums)
+      .set(input.release ? { releasedAt: album.releasedAt ?? now, releasedBy: album.releasedBy ?? input.actor.userId } : { releasedAt: null, releasedBy: null })
+      .where(eq(galleryAlbums.id, album.id))
+      .returning();
+    await audit(tx, {
+      eventId: input.eventId,
+      actor: input.actor,
+      action: input.release ? "gallery.album_released" : "gallery.album_withdrawn",
+      entityType: "gallery_album",
+      entityId: album.id,
+      data: { title: album.title },
+    });
+    if (!input.release || album.releasedAt || album.kind === "guest") return { album: u, notified: 0, quota: null };
+    const [{ n }] = await tx
+      .select({ n: count() })
+      .from(mediaItems)
+      .where(and(eq(mediaItems.albumId, album.id), eq(mediaItems.status, "approved")));
+    if (n === 0) return { album: u, notified: 0, quota: null };
+
+    const hh = await invitedHouseholds(tx, input.eventId, album.functionId);
+    const contacts = await recipientsFor(tx, input.eventId, hh.map((h) => h.id));
+    const items: EnqueueItem[] = [];
+    for (const h of hh) {
+      const c = contacts.get(h.id)?.[0];
+      if (!c) continue;
+      items.push({
+        eventId: input.eventId,
+        purpose: "broadcast",
+        templateKey: "gallery_ready",
+        vars: { appUrl: input.appUrl, functionId: album.functionId },
+        recipient: {
+          householdId: h.id,
+          guestId: c.guestId,
+          addresses: { whatsapp: c.phone, sms: c.phone, email: c.email },
+          locale: h.locale,
+          preferred: h.preferred && CHANNEL_SET.has(h.preferred) ? (h.preferred as "whatsapp" | "email" | "sms") : null,
+        },
+        bulk: true,
+        key: `gal:${album.functionId}:${h.id}`,
+      });
+    }
+    try {
+      const res = await enqueue(tx, items);
+      return { album: u, notified: res.queued, quota: null };
+    } catch (e) {
+      if (e instanceof QuotaError) return { album: u, notified: 0, quota: e.channel };
+      throw e;
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Favourites and album selection (GAL-07)
+// ---------------------------------------------------------------------------
+
+async function assertReady(db: Tx, eventId: string, mediaId: string) {
+  if (!z.string().uuid().safeParse(mediaId).success) throw new GalleryError("not_found");
+  const [row] = await db
+    .select({ id: mediaItems.id })
+    .from(mediaItems)
+    .where(and(eq(mediaItems.eventId, eventId), eq(mediaItems.id, mediaId), ne(mediaItems.status, "uploading")));
+  if (!row) throw new GalleryError("not_found");
+}
+
+export async function toggleFavourite(db: Tx, input: { eventId: string; userId: string; mediaId: string }) {
+  await assertReady(db, input.eventId, input.mediaId);
+  const removed = await db
+    .delete(mediaFavourites)
+    .where(and(eq(mediaFavourites.mediaId, input.mediaId), eq(mediaFavourites.userId, input.userId)))
+    .returning({ id: mediaFavourites.mediaId });
+  if (removed.length) return false;
+  await db.insert(mediaFavourites).values({ eventId: input.eventId, mediaId: input.mediaId, userId: input.userId }).onConflictDoNothing();
+  return true;
+}
+
+export async function isFavourite(db: Tx, mediaId: string, userId: string) {
+  const [r] = await db
+    .select({ id: mediaFavourites.mediaId })
+    .from(mediaFavourites)
+    .where(and(eq(mediaFavourites.mediaId, mediaId), eq(mediaFavourites.userId, userId)));
+  return !!r;
+}
+
+/** Favourites across the family (or one member's), newest first. */
+export async function listFavourites(db: Tx, eventId: string, opts: { userId?: string; limit?: number } = {}) {
+  return db
+    .select({ item: mediaItems, votes: sql<number>`count(*)`.mapWith(Number) })
+    .from(mediaFavourites)
+    .innerJoin(mediaItems, eq(mediaItems.id, mediaFavourites.mediaId))
+    .where(and(eq(mediaFavourites.eventId, eventId), opts.userId ? eq(mediaFavourites.userId, opts.userId) : undefined))
+    .groupBy(mediaItems.id)
+    .orderBy(desc(sql`max(${mediaFavourites.createdAt})`))
+    .limit(opts.limit ?? 500);
+}
+
+export const selectionSchema = z.object({
+  bookingId: z.string().uuid(),
+  title: titleSchema,
+  deadline: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable(),
+  note: z
+    .string()
+    .trim()
+    .max(1000)
+    .transform((s) => s || null)
+    .nullable(),
+});
+
+/** An album selection for a photographer/videographer's booking. */
+export async function createSelection(db: Database, eventId: string, actor: Actor, raw: z.input<typeof selectionSchema>) {
+  const parsed = selectionSchema.safeParse(raw);
+  if (!parsed.success) throw new GalleryError("invalid");
+  return db.transaction(async (tx) => {
+    const [b] = await photoBookings(tx, eventId, { bookingId: parsed.data.bookingId });
+    if (!b) throw new GalleryError("not_booked");
+    const [s] = await tx
+      .insert(albumSelections)
+      .values({ eventId, bookingId: b.bookingId, vendorId: b.vendorId, title: parsed.data.title, deadline: parsed.data.deadline, note: parsed.data.note, createdBy: actor.userId })
+      .returning();
+    await audit(tx, { eventId, actor, action: "gallery.selection_created", entityType: "album_selection", entityId: s.id, data: { title: s.title } });
+    return s;
+  });
+}
+
+export async function updateSelection(db: Tx, eventId: string, selectionId: string, raw: { title: string; deadline: string | null; note: string | null }) {
+  const parsed = selectionSchema.omit({ bookingId: true }).safeParse(raw);
+  if (!parsed.success) throw new GalleryError("invalid");
+  const s = await getSelection(db, eventId, selectionId);
+  await db.update(albumSelections).set(parsed.data).where(eq(albumSelections.id, s.id));
+}
+
+export async function getSelection(db: Tx, eventId: string, selectionId: string, opts: { vendorId?: string } = {}) {
+  if (!z.string().uuid().safeParse(selectionId).success) throw new GalleryError("not_found");
+  const [s] = await db
+    .select()
+    .from(albumSelections)
+    .where(
+      and(
+        eq(albumSelections.id, selectionId),
+        eq(albumSelections.eventId, eventId),
+        opts.vendorId ? and(eq(albumSelections.vendorId, opts.vendorId), isNotNull(albumSelections.sharedAt)) : undefined,
+      ),
+    );
+  if (!s) throw new GalleryError("not_found");
+  return s;
+}
+
+export async function listSelections(db: Tx, eventId: string, opts: { vendorId?: string } = {}) {
+  return db
+    .select({ selection: albumSelections, items: sql<number>`(select count(*) from ${albumSelectionItems} i where i.selection_id = ${albumSelections.id})`.mapWith(Number) })
+    .from(albumSelections)
+    .where(and(eq(albumSelections.eventId, eventId), opts.vendorId ? and(eq(albumSelections.vendorId, opts.vendorId), isNotNull(albumSelections.sharedAt)) : undefined))
+    .orderBy(desc(albumSelections.createdAt));
+}
+
+export async function selectionItems(db: Tx, eventId: string, selectionId: string) {
+  return db
+    .select({ item: mediaItems, functionName: functions.name })
+    .from(albumSelectionItems)
+    .innerJoin(mediaItems, eq(mediaItems.id, albumSelectionItems.mediaId))
+    .innerJoin(functions, eq(functions.id, mediaItems.functionId))
+    .where(and(eq(albumSelectionItems.selectionId, selectionId), eq(albumSelectionItems.eventId, eventId)))
+    .orderBy(asc(mediaItems.takenAt), asc(mediaItems.id));
+}
+
+/** Adds items (or every family favourite with `favourites: true`). Returns how many were new. */
+export async function addToSelection(db: Tx, input: { eventId: string; selectionId: string; mediaIds?: string[]; favourites?: boolean }) {
+  const s = await getSelection(db, input.eventId, input.selectionId);
+  let ids = (input.mediaIds ?? []).filter((id) => z.string().uuid().safeParse(id).success);
+  if (input.favourites) ids = [...ids, ...(await listFavourites(db, input.eventId)).map((f) => f.item.id)];
+  if (ids.length === 0) return 0;
+  const ok = await db
+    .select({ id: mediaItems.id })
+    .from(mediaItems)
+    .where(and(eq(mediaItems.eventId, input.eventId), inArray(mediaItems.id, [...new Set(ids)]), ne(mediaItems.status, "uploading")));
+  if (ok.length === 0) return 0;
+  const rows = await db
+    .insert(albumSelectionItems)
+    .values(ok.map((r) => ({ eventId: input.eventId, selectionId: s.id, mediaId: r.id })))
+    .onConflictDoNothing()
+    .returning({ id: albumSelectionItems.mediaId });
+  return rows.length;
+}
+
+export async function removeFromSelection(db: Tx, input: { eventId: string; selectionId: string; mediaId: string }) {
+  const s = await getSelection(db, input.eventId, input.selectionId);
+  await db.delete(albumSelectionItems).where(and(eq(albumSelectionItems.selectionId, s.id), eq(albumSelectionItems.mediaId, input.mediaId)));
+}
+
+export async function deleteSelection(db: Tx, input: { eventId: string; selectionId: string }) {
+  const s = await getSelection(db, input.eventId, input.selectionId);
+  await db.delete(albumSelections).where(eq(albumSelections.id, s.id));
+}
+
+/** Shares (or re-shares after changes) the selection with the photographer and notifies them. */
+export async function shareSelection(db: Database, input: { eventId: string; actor: Actor; selectionId: string; now?: Date }) {
+  return db.transaction(async (tx) => {
+    const s = await getSelection(tx, input.eventId, input.selectionId);
+    if (!s.vendorId) throw new GalleryError("not_booked");
+    const [{ n }] = await tx.select({ n: count() }).from(albumSelectionItems).where(eq(albumSelectionItems.selectionId, s.id));
+    if (n === 0) throw new GalleryError("invalid");
+    const [u] = await tx
+      .update(albumSelections)
+      .set({ sharedAt: input.now ?? new Date(), sharedBy: input.actor.userId })
+      .where(eq(albumSelections.id, s.id))
+      .returning();
+    await notify(tx, {
+      eventId: input.eventId,
+      userIds: await vendorUserIds(tx, [s.vendorId]),
+      kind: "vendor.gallery_selection",
+      data: { title: s.title, count: n, deadline: s.deadline ?? "" },
+      href: `/vendor/${s.vendorId}/gallery/selections/${s.id}`,
+    });
+    await audit(tx, { eventId: input.eventId, actor: input.actor, action: "gallery.selection_shared", entityType: "album_selection", entityId: s.id, data: { title: s.title, count: n } });
+    return u;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Likes and comments (GAL-08)
+// ---------------------------------------------------------------------------
+
+async function guestCanReact(db: Tx, eventId: string, viewer: Extract<Viewer, { kind: "guest" }>, mediaId: string) {
+  const settings = await getGallerySettings(db, eventId);
+  if (!settings.reactions) throw new GalleryError("reactions_off");
+  const item = await loadMediaForViewer(db, eventId, mediaId, viewer);
+  if (!item || item.status !== "approved") throw new GalleryError("not_found");
+  return item;
+}
+
+export async function toggleLike(db: Tx, eventId: string, viewer: Extract<Viewer, { kind: "guest" }>, mediaId: string) {
+  await guestCanReact(db, eventId, viewer, mediaId);
+  const removed = await db
+    .delete(mediaLikes)
+    .where(and(eq(mediaLikes.mediaId, mediaId), eq(mediaLikes.householdId, viewer.householdId)))
+    .returning({ id: mediaLikes.mediaId });
+  if (removed.length) return false;
+  await db.insert(mediaLikes).values({ eventId, mediaId, householdId: viewer.householdId }).onConflictDoNothing();
+  return true;
+}
+
+export const commentSchema = z.string().trim().min(1).max(500);
+
+export async function addComment(db: Tx, eventId: string, viewer: Extract<Viewer, { kind: "guest" }>, mediaId: string, body: string, now = new Date()) {
+  const text = commentSchema.safeParse(body);
+  if (!text.success) throw new GalleryError("invalid");
+  await guestCanReact(db, eventId, viewer, mediaId);
+  if (!(await allowAttempt(db, "gallery-comment", viewer.householdId, 30, 3600_000, now))) throw new GalleryError("rate_limited");
+  const [c] = await db.insert(mediaComments).values({ eventId, mediaId, householdId: viewer.householdId, body: text.data, createdAt: now }).returning();
+  return c;
+}
+
+export async function hideComment(db: Database, input: { eventId: string; actor: Actor; commentId: string; hidden: boolean }) {
+  if (!z.string().uuid().safeParse(input.commentId).success) throw new GalleryError("not_found");
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .update(mediaComments)
+      .set(input.hidden ? { hiddenAt: new Date(), hiddenBy: input.actor.userId } : { hiddenAt: null, hiddenBy: null })
+      .where(and(eq(mediaComments.id, input.commentId), eq(mediaComments.eventId, input.eventId)))
+      .returning();
+    if (!rows.length) throw new GalleryError("not_found");
+    if (input.hidden) await audit(tx, { eventId: input.eventId, actor: input.actor, action: "gallery.comment_hidden", entityType: "media_comment", entityId: rows[0].id });
+    return rows[0];
+  });
+}
+
+/**
+ * Likes and comments on an item. Guests never see other families' names (only "a guest");
+ * members see family names and hidden comments.
+ */
+export async function reactionsFor(db: Tx, mediaId: string, opts: { householdId?: string; member?: boolean }) {
+  const [{ likes }] = await db.select({ likes: count() }).from(mediaLikes).where(eq(mediaLikes.mediaId, mediaId));
+  const liked = opts.householdId
+    ? (await db.select({ id: mediaLikes.mediaId }).from(mediaLikes).where(and(eq(mediaLikes.mediaId, mediaId), eq(mediaLikes.householdId, opts.householdId)))).length > 0
+    : false;
+  const rows = await db
+    .select({ comment: mediaComments, family: households.name })
+    .from(mediaComments)
+    .innerJoin(households, eq(households.id, mediaComments.householdId))
+    .where(and(eq(mediaComments.mediaId, mediaId), opts.member ? undefined : isNull(mediaComments.hiddenAt)))
+    .orderBy(asc(mediaComments.createdAt))
+    .limit(200);
+  const comments = rows.map((r) => ({
+    id: r.comment.id,
+    body: r.comment.body,
+    createdAt: r.comment.createdAt,
+    hidden: !!r.comment.hiddenAt,
+    mine: !!opts.householdId && r.comment.householdId === opts.householdId,
+    family: opts.member ? r.family : null,
+  }));
+  return { likes, liked, comments };
+}
+
+// ---------------------------------------------------------------------------
+// Removal requests (GAL-04)
+// ---------------------------------------------------------------------------
+
+export const reasonSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .transform((s) => s || null);
+
+/** A family asks for a photo to be taken down; the team is notified. */
+export async function requestRemoval(db: Database, eventId: string, viewer: Extract<Viewer, { kind: "guest" }>, mediaId: string, reason: string) {
+  const r = reasonSchema.safeParse(reason);
+  if (!r.success) throw new GalleryError("invalid");
+  return db.transaction(async (tx) => {
+    const item = await loadMediaForViewer(tx, eventId, mediaId, viewer);
+    if (!item) throw new GalleryError("not_found");
+    if (!(await allowAttempt(tx, "gallery-removal", viewer.householdId, 20, 24 * 3600_000))) throw new GalleryError("rate_limited");
+    const [open] = await tx
+      .select({ id: mediaRemovalRequests.id })
+      .from(mediaRemovalRequests)
+      .where(and(eq(mediaRemovalRequests.mediaId, mediaId), eq(mediaRemovalRequests.householdId, viewer.householdId), eq(mediaRemovalRequests.status, "open")));
+    if (open) throw new GalleryError("already_requested");
+    const [req] = await tx.insert(mediaRemovalRequests).values({ eventId, mediaId, householdId: viewer.householdId, reason: r.data }).returning();
+    const [h] = await tx.select({ name: households.name }).from(households).where(eq(households.id, viewer.householdId));
+    const members = await tx.select({ userId: eventMembers.userId }).from(eventMembers).where(eq(eventMembers.eventId, eventId));
+    await notify(tx, {
+      eventId,
+      userIds: members.map((m) => m.userId),
+      kind: "gallery.removal_requested",
+      data: { family: h?.name ?? "", function: item.functionName },
+      href: `/events/${eventId}/gallery/removals`,
+    });
+    await audit(tx, { eventId, actor: null, action: "gallery.removal_requested", entityType: "media", entityId: mediaId, data: { family: h?.name ?? "" } });
+    return req;
+  });
+}
+
+export async function listRemovalRequests(db: Tx, eventId: string, status: "open" | "closed" = "open") {
+  return db
+    .select({ request: mediaRemovalRequests, family: households.name, item: mediaItems })
+    .from(mediaRemovalRequests)
+    .leftJoin(households, eq(households.id, mediaRemovalRequests.householdId))
+    .leftJoin(mediaItems, eq(mediaItems.id, mediaRemovalRequests.mediaId))
+    .where(and(eq(mediaRemovalRequests.eventId, eventId), status === "open" ? eq(mediaRemovalRequests.status, "open") : ne(mediaRemovalRequests.status, "open")))
+    .orderBy(desc(mediaRemovalRequests.createdAt))
+    .limit(200);
+}
+
+export async function openRemovalCount(db: Tx, eventId: string) {
+  const [{ n }] = await db
+    .select({ n: count() })
+    .from(mediaRemovalRequests)
+    .where(and(eq(mediaRemovalRequests.eventId, eventId), eq(mediaRemovalRequests.status, "open")));
+  return n;
+}
+
+/** Remove (delete the item, closing every open request for it) or keep it. */
+export async function decideRemoval(db: Database, input: { eventId: string; actor: Actor; requestId: string; decision: "remove" | "keep"; now?: Date }) {
+  if (!z.string().uuid().safeParse(input.requestId).success) throw new GalleryError("not_found");
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const [req] = await tx
+      .select()
+      .from(mediaRemovalRequests)
+      .where(and(eq(mediaRemovalRequests.id, input.requestId), eq(mediaRemovalRequests.eventId, input.eventId)))
+      .for("update");
+    if (!req || req.status !== "open") throw new GalleryError("not_found");
+    const deletions: number[] = [];
+    if (input.decision === "remove" && req.mediaId) {
+      await tx
+        .update(mediaRemovalRequests)
+        .set({ status: "removed", decidedBy: input.actor.userId, decidedAt: now })
+        .where(and(eq(mediaRemovalRequests.mediaId, req.mediaId), eq(mediaRemovalRequests.status, "open")));
+      const [item] = await tx.select().from(mediaItems).where(eq(mediaItems.id, req.mediaId)).for("update");
+      if (item) deletions.push(await deleteItemTx(tx, item));
+    } else {
+      await tx
+        .update(mediaRemovalRequests)
+        .set({ status: input.decision === "remove" ? "removed" : "kept", decidedBy: input.actor.userId, decidedAt: now })
+        .where(eq(mediaRemovalRequests.id, req.id));
+    }
+    await audit(tx, {
+      eventId: input.eventId,
+      actor: input.actor,
+      action: input.decision === "remove" ? "gallery.removal_done" : "gallery.removal_kept",
+      entityType: "media",
+      entityId: req.mediaId ?? undefined,
+    });
+    return deletions;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ZIP downloads (GAL-06) and archive parts (EVT-08)
+// ---------------------------------------------------------------------------
+
+export type ZipItem = Pick<MediaItem, "id" | "filename" | "originalKey" | "originalBytes" | "takenAt"> & { functionName: string; albumTitle: string; albumKind: GalleryAlbum["kind"] };
+
+/** Stored originals in a stable order (new uploads append), optionally one album/function. */
+export async function zipItems(db: Tx, eventId: string, opts: { albumId?: string; functionId?: string; guest?: Extract<Viewer, { kind: "guest" }> } = {}): Promise<ZipItem[]> {
+  const g = opts.guest;
+  return db
+    .select({
+      id: mediaItems.id,
+      filename: mediaItems.filename,
+      originalKey: mediaItems.originalKey,
+      originalBytes: mediaItems.originalBytes,
+      takenAt: mediaItems.takenAt,
+      functionName: functions.name,
+      albumTitle: galleryAlbums.title,
+      albumKind: galleryAlbums.kind,
+    })
+    .from(mediaItems)
+    .innerJoin(galleryAlbums, eq(galleryAlbums.id, mediaItems.albumId))
+    .innerJoin(functions, eq(functions.id, mediaItems.functionId))
+    .where(
+      and(
+        eq(mediaItems.eventId, eventId),
+        ne(mediaItems.status, "uploading"),
+        opts.albumId ? eq(mediaItems.albumId, opts.albumId) : undefined,
+        opts.functionId ? eq(mediaItems.functionId, opts.functionId) : undefined,
+        g
+          ? and(
+              inArray(mediaItems.functionId, g.functionIds.length ? g.functionIds : ["00000000-0000-0000-0000-000000000000"]),
+              or(eq(mediaItems.householdId, g.householdId), and(eq(mediaItems.status, "approved"), isNotNull(galleryAlbums.releasedAt))),
+            )
+          : undefined,
+      ),
+    )
+    .orderBy(asc(mediaItems.createdAt), asc(mediaItems.id));
+}
+
+/** Splits items into parts of at most `maxBytes` each (a bigger single file gets its own part). */
+export function splitParts<T extends { originalBytes: number }>(items: T[], maxBytes = ZIP_PART_BYTES): T[][] {
+  const parts: T[][] = [];
+  let cur: T[] = [];
+  let size = 0;
+  for (const it of items) {
+    if (cur.length && size + it.originalBytes > maxBytes) {
+      parts.push(cur);
+      cur = [];
+      size = 0;
+    }
+    cur.push(it);
+    size += it.originalBytes;
+  }
+  if (cur.length) parts.push(cur);
+  return parts;
+}
+
+const safe = (s: string) =>
+  s
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+    .replace(/^\.+/, "_")
+    .trim()
+    .slice(-100) || "file";
+
+/** ZIP paths: `<function>/<album>/<date>-<id8>-<filename>` (unique by construction). */
+export function zipPath(it: ZipItem, albumLabel: (kind: GalleryAlbum["kind"]) => string) {
+  const album = it.albumTitle || albumLabel(it.albumKind);
+  return `${safe(it.functionName)}/${safe(album)}/${it.takenAt.toISOString().slice(0, 10)}-${it.id.slice(0, 8)}-${safe(it.filename)}`;
+}
+
+/** Records a full-gallery download; false once the event used its 5 for the day (§4.1). */
+export async function allowFullDownload(db: Tx, eventId: string, now = new Date()) {
+  return allowAttempt(db, "gallery-zip-full", eventId, FULL_DOWNLOADS_PER_DAY, 24 * 3600_000, now);
+}
+
+/** Bytes as KB/MB/GB with the locale's digit grouping (units stay Latin, as people write them). */
+export function formatBytes(intlLocale: string, n: number) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${new Intl.NumberFormat(intlLocale, { maximumFractionDigits: v < 10 && i > 0 ? 1 : 0 }).format(v)} ${units[i]}`;
+}
+
+export { StorageError };

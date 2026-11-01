@@ -135,6 +135,9 @@ export default async function WebsiteEditorPage({ params, searchParams }: PagePr
           <>
             <Bilingual name="gallery.title" value={s.gallery.title} label={t("websiteEditor.sectionTitle")} t={t} />
             <Photos ids={s.gallery.imageIds} target="gallery" t={t} eventId={eventId} />
+            <label className="flex min-h-11 items-center gap-2 text-sm">
+              <input type="checkbox" name="gallery.highlights" defaultChecked={!!s.gallery.highlights} className="h-5 w-5" /> {t("websiteEditor.galleryHighlights")}
+            </label>
           </>
         );
       case "gifts":

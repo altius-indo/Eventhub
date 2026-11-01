@@ -100,7 +100,7 @@ export const siteContentSchema = z.object({
       title: ltSchema(80),
       items: z.array(z.object({ q: ltSchema(200), a: ltSchema(2000) })).max(30),
     }),
-    gallery: z.object({ visible: z.boolean(), title: ltSchema(80), imageIds }),
+    gallery: z.object({ visible: z.boolean(), title: ltSchema(80), imageIds, highlights: z.boolean().optional() }),
     gifts: z.object({ visible: z.boolean(), title: ltSchema(80), body: ltSchema(2000) }),
     contact: z.object({
       visible: z.boolean(),

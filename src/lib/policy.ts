@@ -47,11 +47,15 @@ export const permissions = [
   "portal.invoice",
   "portal.chat",
   "portal.headcount",
+  // Gallery deliveries (GAL-02/07): photographers/videographers booked for a function
+  "portal.gallery",
   "reports.view",
   "gifts.view",
   "gifts.record",
   "website.edit",
   "website.publish",
+  "gallery.view",
+  "gallery.upload",
   "gallery.moderate",
   // Platform
   "platform.manage",
@@ -68,7 +72,7 @@ export type PolicySubject = {
 };
 
 const PLATFORM_ONLY: ReadonlySet<Permission> = new Set(["platform.manage"]);
-const PORTAL: ReadonlySet<Permission> = new Set(["portal.view", "portal.quote", "portal.invoice", "portal.chat", "portal.headcount"]);
+const PORTAL: ReadonlySet<Permission> = new Set(["portal.view", "portal.quote", "portal.invoice", "portal.chat", "portal.headcount", "portal.gallery"]);
 
 const PLANNER: Partial<Record<Permission, Decision>> = {
   "event.view": "allow",
@@ -93,6 +97,8 @@ const PLANNER: Partial<Record<Permission, Decision>> = {
   "headcount.lock": "allow",
   "reports.view": "allow",
   "website.edit": "allow",
+  "gallery.view": "allow",
+  "gallery.upload": "allow",
   "gallery.moderate": "allow",
   // Changes Hosts must approve (SVC-10, BGT-04)
   "services.edit": "approval",
