@@ -20,6 +20,9 @@ import { documentLabels, eventToday, payerLabels, payerText, paymentLabels, payT
 import { getTranslator } from "@/lib/server/session";
 import { deletePaymentAction, recordPaymentAction } from "../../../budget/actions";
 import { addKeyDateAction, cancelBookingAction, contractAction, removeKeyDateAction, reviseBookingAction, scheduleAction } from "../../actions";
+import { bookingHeadcountLocks, localInput } from "@/lib/caterer-headcount";
+import { formatDate } from "@/i18n/core";
+import { clearLockAction, releaseCountAction, setLockAction } from "./actions";
 
 const WARNINGS = ["condition_dropped", "over_covered", "expired"] as const;
 function parseWarnings(raw: unknown): (typeof WARNINGS)[number][] {
@@ -45,6 +48,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
     listMembers(db, eventId),
     b.quote ? getQuote(db, eventId, b.quote.id) : Promise.resolve(null),
   ]);
+  const locks = await bookingHeadcountLocks(db, eventId, bookingId, ctx.event.timezone);
+  const when = (d: Date) => formatDate(locale, d, { dateStyle: "medium", timeStyle: "short", timeZone: ctx.event.timezone });
   const inr = (p: number) => formatInr(locale, p);
   const status = b.booking.status;
   const live = status !== "cancelled";
@@ -291,6 +296,66 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
           </SimpleForm>
         )}
       </Card>
+
+      {live && locks.length > 0 && (
+        <Card>
+          <CardTitle>{t("headcount.staff.title")}</CardTitle>
+          <p className="mb-3 text-sm text-muted">{t("headcount.staff.help")}</p>
+          <ul className="space-y-4">
+            {locks.map((l) => (
+              <li key={l.functionId} className="space-y-2 border-b border-border pb-4 last:border-0 last:pb-0">
+                <p className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-medium">{l.functionName}</span>
+                  {l.functionDate && <span className="text-muted">{formatDay(locale, l.functionDate)}</span>}
+                  <Badge>{t("headcount.staff.live", { total: l.liveTotal })}</Badge>
+                  {l.frozen && l.lockedTotal != null ? (
+                    <Badge tone="primary">{t("headcount.staff.locked", { total: l.lockedTotal })}</Badge>
+                  ) : (
+                    <Badge tone="neutral">{t("headcount.staff.notLocked")}</Badge>
+                  )}
+                </p>
+                {l.frozen && l.delta != null && l.delta !== 0 && (
+                  <Alert tone="warning">{t("headcount.staff.delta", { delta: l.delta > 0 ? `+${l.delta}` : String(l.delta) })}</Alert>
+                )}
+                {l.lockAt && !l.frozen && <p className="text-sm">{t("headcount.lockScheduled", { time: when(l.lockAt) })}</p>}
+                {l.releasedAt && <p className="text-sm text-muted">{t("headcount.releasedAt", { time: when(l.releasedAt) })}</p>}
+                {ctx.can("headcount.lock") && (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <SimpleForm action={setLockAction.bind(null, eventId, bookingId, l.functionId)} className="flex flex-wrap items-end gap-2">
+                      <Field
+                        label={t("headcount.staff.lockAt")}
+                        htmlFor={`lock-${l.functionId}`}
+                        hint={l.suggestedLockAt ? t("headcount.staff.suggested", { time: when(l.suggestedLockAt) }) : undefined}
+                      >
+                        <Input
+                          id={`lock-${l.functionId}`}
+                          name="lockAt"
+                          type="datetime-local"
+                          required
+                          defaultValue={l.lockAt ? localInput(l.lockAt, ctx.event.timezone) : l.suggestedLockAt ? localInput(l.suggestedLockAt, ctx.event.timezone) : ""}
+                        />
+                      </Field>
+                      <SubmitButton variant="secondary">{t("headcount.staff.save")}</SubmitButton>
+                    </SimpleForm>
+                    {l.lockAt && (
+                      <SimpleForm action={clearLockAction.bind(null, eventId, bookingId, l.functionId)} className="space-y-2">
+                        <SubmitButton variant="ghost">{t("headcount.staff.clear")}</SubmitButton>
+                      </SimpleForm>
+                    )}
+                    {l.frozen && (
+                      <SimpleForm action={releaseCountAction.bind(null, eventId, bookingId, l.functionId)} className="space-y-2">
+                        <ConfirmButton variant="primary" confirm={t("headcount.staff.releaseConfirm")}>
+                          {t("headcount.staff.release")}
+                        </ConfirmButton>
+                      </SimpleForm>
+                    )}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <DocumentsPanel eventId={eventId} owner="bookingId" ownerId={bookingId} docs={docs} canEdit={ctx.can("contracts.edit")} back={`/events/${eventId}/vendors/bookings/${bookingId}`} defaultKind="contract" labels={documentLabels(t, t("bookings.documents"), sp)} />
 

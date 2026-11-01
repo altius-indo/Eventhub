@@ -10,12 +10,17 @@ export function RunItemFields({
   members,
   idBase = "",
   defaultStart,
+  vendors = [],
+  vendorLabel,
 }: {
   labels: RunItemLabels;
   item?: RunSheetItem;
   members: { id: string; name: string | null }[];
   idBase?: string;
   defaultStart?: string;
+  /** Vendors from the directory who can own an item (shown in their portal, VND-10). */
+  vendors?: { id: string; name: string }[];
+  vendorLabel?: string;
 }) {
   const id = (k: string) => `${idBase}${k}`;
   return (
@@ -41,6 +46,18 @@ export function RunItemFields({
           ))}
         </Select>
       </Field>
+      {vendorLabel && (
+        <Field label={vendorLabel} htmlFor={id("ownerVendorId")}>
+          <Select id={id("ownerVendorId")} name="ownerVendorId" defaultValue={item?.ownerVendorId ?? ""}>
+            <option value="">{labels.none}</option>
+            {vendors.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
       <Field label={labels.location} htmlFor={id("location")}>
         <Input id={id("location")} name="location" maxLength={160} defaultValue={item?.location ?? ""} />
       </Field>

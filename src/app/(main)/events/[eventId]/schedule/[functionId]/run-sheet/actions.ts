@@ -22,6 +22,7 @@ const parse = (fd: FormData) =>
     durationMin: String(fd.get("durationMin") ?? ""),
     title: String(fd.get("title") ?? ""),
     ownerUserId: String(fd.get("ownerUserId") ?? ""),
+    ownerVendorId: String(fd.get("ownerVendorId") ?? ""),
     ownerName: String(fd.get("ownerName") ?? ""),
     ownerPhone: String(fd.get("ownerPhone") ?? ""),
     location: String(fd.get("location") ?? ""),

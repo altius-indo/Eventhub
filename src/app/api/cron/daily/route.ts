@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
+import { checkHeadcountAlerts, freezeAllDueLocks } from "@/lib/caterer-headcount";
 import { safeEqual } from "@/lib/crypto";
 import { purgeDeletedEvents } from "@/lib/events";
 import { purgeOldNotifications } from "@/lib/notifications";
@@ -34,6 +35,8 @@ export async function GET(req: Request) {
     ["outbox", async () => (await processOutbox(db, { budgetMs: 20_000 })).processed],
     ["oldNotifications", () => purgeOldNotifications(db, now)],
     // [vendor-portal daily jobs]
+    ["headcountLocks", () => freezeAllDueLocks(db, now)],
+    ["headcountAlerts", () => checkHeadcountAlerts(db, now)],
     // [gifts daily jobs]
   ];
   const result: Record<string, number | string> = {};
