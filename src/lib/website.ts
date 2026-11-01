@@ -90,6 +90,7 @@ export const siteContentSchema = z.object({
   accent: z.enum(SITE_ACCENTS),
   monogram: z.string().trim().max(12),
   coverImageId: z.string().uuid().nullable(),
+  coverAsHeader: z.boolean().optional(),
   sections: z.object({
     welcome: z.object({ visible: z.boolean(), headline: ltSchema(120), message: ltSchema(600) }),
     story: z.object({ visible: z.boolean(), title: ltSchema(80), body: ltSchema(5000), imageIds }),

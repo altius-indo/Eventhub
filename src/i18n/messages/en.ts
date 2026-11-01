@@ -897,6 +897,8 @@ const en = {
     accent: "Colour",
     monogram: "Monogram",
     cover: "Cover photo",
+    coverAsHeader: "Use the cover as the page header",
+    coverAsHeaderHelp: "Shows the whole picture at the top without cropping, for artwork that already has your names on it. The names aren't repeated underneath.",
     upload: "Upload",
     removePhoto: "Remove",
     sections: "Sections",

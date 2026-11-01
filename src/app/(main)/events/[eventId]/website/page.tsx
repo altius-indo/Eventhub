@@ -285,6 +285,13 @@ export default async function WebsiteEditorPage({ params, searchParams }: PagePr
           </div>
           <p className="mb-2 text-sm font-medium">{t("websiteEditor.cover")}</p>
           <Photos ids={c.coverImageId ? [c.coverImageId] : []} target="cover" t={t} eventId={eventId} single />
+          <label className="mt-3 flex min-h-11 items-start gap-2 text-sm">
+            <input type="checkbox" name="coverAsHeader" defaultChecked={!!c.coverAsHeader} className="mt-0.5 h-5 w-5" />
+            <span>
+              {t("websiteEditor.coverAsHeader")}
+              <span className="block text-muted">{t("websiteEditor.coverAsHeaderHelp")}</span>
+            </span>
+          </label>
         </Card>
 
         <h2 className="pt-2 text-lg font-semibold">{t("websiteEditor.sections")}</h2>

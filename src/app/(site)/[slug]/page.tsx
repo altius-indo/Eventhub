@@ -261,6 +261,7 @@ export default async function WeddingSite(props: Props) {
     ),
   };
 
+  const banner = !!(content.coverImageId && content.coverAsHeader);
   return (
     <div lang={locale} style={style} className={`min-h-dvh ${theme.wrap}`}>
       {preview && <div className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-900">{t("site.preview")}</div>}
@@ -274,11 +275,16 @@ export default async function WeddingSite(props: Props) {
 
       {/* Hero / welcome */}
       <section className={`relative mx-auto max-w-3xl px-4 pb-8 ${theme.hero}`}>
-        {content.coverImageId && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={`/site-images/${content.coverImageId}`} alt="" className="mb-6 aspect-[16/10] w-full rounded-3xl object-cover" />
-        )}
-        <h1 className={`text-4xl leading-tight sm:text-5xl ${theme.heading}`} style={{ color: "var(--accent)" }}>
+        {content.coverImageId &&
+          (banner ? (
+            // Artwork with the couple's names: shown whole, never cropped.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={`/site-images/${content.coverImageId}`} alt={names} className="mx-auto mb-4 h-auto w-full max-w-2xl [mask-image:radial-gradient(ellipse_at_center,black_72%,transparent_100%)]" fetchPriority="high" />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={`/site-images/${content.coverImageId}`} alt="" className="mb-6 aspect-[16/10] w-full rounded-3xl object-cover" />
+          ))}
+        <h1 className={banner ? "sr-only" : `text-4xl leading-tight sm:text-5xl ${theme.heading}`} style={banner ? undefined : { color: "var(--accent)" }}>
           {names}
         </h1>
         {(dates || event.city) && <p className="mt-3 text-lg opacity-80">{[dates, event.city].filter(Boolean).join(" · ")}</p>}

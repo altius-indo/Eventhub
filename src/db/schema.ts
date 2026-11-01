@@ -487,6 +487,8 @@ export type SiteContent = {
   accent: string;
   monogram: string;
   coverImageId: string | null;
+  /** Show the cover uncropped as the page header (artwork that already has the names); hides the duplicate names visually. */
+  coverAsHeader?: boolean;
   sections: {
     welcome: { visible: boolean; headline: LocalizedText; message: LocalizedText };
     story: { visible: boolean; title: LocalizedText; body: LocalizedText; imageIds: string[] };

@@ -28,6 +28,7 @@ export function parseSiteForm(fd: FormData, current: SiteContent): SiteContent {
     theme: (SITE_THEMES as readonly string[]).includes(theme) ? (theme as SiteContent["theme"]) : current.theme,
     accent: (SITE_ACCENTS as readonly string[]).includes(accent) ? accent : current.accent,
     monogram: str(fd, "monogram").trim().slice(0, 12),
+    coverAsHeader: on(fd, "coverAsHeader"),
     sections: {
       welcome: { visible: on(fd, "welcome.visible"), headline: lt(fd, "welcome.headline"), message: lt(fd, "welcome.message") },
       story: { visible: on(fd, "story.visible"), title: lt(fd, "story.title"), body: lt(fd, "story.body"), imageIds: s.story.imageIds },
