@@ -20,6 +20,7 @@
 | Staff & vendor login | **Passwordless OTP** to phone (SMS / WhatsApp) **or** email; no passwords |
 | Guest access | Magic link per household, no account or password |
 | Payments | **Tracking only**; money moves outside the app |
+| Spend approvals | **Per-category thresholds**; a cost is approved by the family/families paying it, so **shared costs need both families** |
 | Region | India: INR (lakh/crore formatting), GST on invoices |
 | Access control | Role-based plus **side scoping** (bride/groom) and function scoping |
 | Tenancy | One account can own/collaborate on **multiple events**; events can be copied as templates |
@@ -35,8 +36,8 @@
 
 | Role | Who | Access summary |
 |---|---|---|
-| **Owner** | Event creator (usually the couple or a parent) | Full access, manages members and roles, final approvals |
-| **Host** | Close family decision-makers | View everything, approve budgets/spend, edit within allowed modules |
+| **Owner** | Event creator (usually the couple or a parent) | Full access, manages members and roles; approves spend for their family side (or as a fallback) |
+| **Host** | Close family decision-makers, each tagged to the **bride's or groom's family** | View everything, approve spend **on behalf of their family**, edit within allowed modules |
 | **Planner** | Hired planner or staff | Full operational edit (guests, itinerary, vendors, budget); cannot delete the event or change owners |
 | **Side Coordinator** | Bride-side / groom-side family coordinators | Manage guests, RSVPs, travel and rooms **only for their side**; read the itinerary |
 | **Function Coordinator** | Person in charge of a function (e.g. sangeet) | Edit run sheet and tasks for **assigned functions** |
@@ -83,7 +84,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **EVT-01d (S)** **Step-up re-verification**: a fresh OTP is required for sensitive actions, such as changing the owner, viewing or editing vendor bank details, deleting an event or bulk-exporting guest data.
 - **EVT-02 (M)** Create an event: name, couple names, dates, primary city, cover image, default currency INR.
 - **EVT-03 (M)** A user can belong to multiple events with a different role in each; event switcher in the header.
-- **EVT-04 (M)** Invite members by email/phone with role and optional side/function scope; revoke access.
+- **EVT-04 (M)** Invite members by email/phone with role and optional side/function scope; revoke access. Owners and Hosts carry a **family side** (bride / groom), which decides whose approval they give (BGT-04).
 - **EVT-05 (S)** Duplicate an event as a template: functions, task checklist, budget categories, vendor categories, but no guests.
 - **EVT-06 (M)** Audit log of key changes (who changed what, when) for budget, payments, RSVP and permissions.
 
@@ -201,7 +202,20 @@ Event
   - **Actual**: invoiced and paid amounts.
 - **BGT-02 (M)** Cross-cutting views: by **service type** (e.g. total Catering across all functions), by **function**, by **vendor** and by **payer**. Extra costs not tied to a service (e.g. a gifts budget) can be added as standalone budget lines.
 - **BGT-03 (M)** Allocate services or requirements to a **payer/side**: bride's family / groom's family / shared (split % or fixed amounts).
-- **BGT-04 (M)** **Approval workflow**: spend above a configurable threshold, or any increase above the planned amount, needs Host/Owner approval; approve/reject with comment.
+- **BGT-04 (M)** **Spend approval workflow**:
+  - **Per-category thresholds**: each budget category has its own approval threshold, set by the Owner. Categories are the event's service types (Catering, Decor, …) plus categories for standalone budget lines. Example: Catering ₹2,00,000, Photography ₹75,000, Transport ₹50,000. Categories without a threshold use an event-wide default; a threshold of ₹0 means always approve.
+  - **What triggers approval**:
+    - a new booking/commitment (quote acceptance, VND-06) at or above the category threshold;
+    - an increase to an existing commitment (quote revision, approved change to a booked requirement, extra invoice amount) where the increase is at or above the threshold;
+    - any commitment that would push the category over its planned total.
+    For combined quotes, each included service is checked against its own category's threshold using its allocated amount. If any part needs approval, the whole booking waits for it.
+  - **Who approves, by payer**:
+    - **One family pays**: one approver from that family (a Host or the Owner tagged to that side).
+    - **Shared cost**: **both families must approve**, one approver from the bride's family and one from the groom's. The request shows each side's share.
+    - **Fallback**: if a side has no Host/Owner in the app, the Owner approves for that side, and this is recorded in the audit log.
+  - **Statuses**: pending → partially approved (awaiting the other family) → approved, or rejected. A rejection by either family rejects the request, with a mandatory comment; the requester can revise and resubmit, which restarts approvals.
+  - **Blocking**: until fully approved, a booking stays *pending approval*. Fulfilments are created as tentative, the vendor sees "awaiting confirmation", and no payment schedule is activated. The Planner cannot override.
+  - **Reminders**: approvers are notified (in-app plus their chosen channels) and reminded every 24 h. The approval queue shows what each family still has to approve. If payer allocation changes after approval (e.g. a cost becomes shared), the affected family must approve again.
 - **BGT-05 (M)** Budget dashboard: total vs planned, by category, function and payer; variance highlights.
 - **BGT-06 (M)** INR formatting with Indian grouping (₹12,34,567) and lakh/crore short form.
 - **BGT-07 (M)** **Side coordinator finance view** (read-only): a Side Coordinator sees the budget and payments **where their side is a payer**.
@@ -283,7 +297,9 @@ Function ─< Service (type, owner, brief, payer allocation)
                     ├─< PaymentMilestone ─< Payment
                     └─< Invoice ─< InvoiceLine (GST)
       ─< BudgetLine (standalone costs) ─ payer allocation
-      ─< ApprovalRequest (booking, revision, overspend)
+      ─< CategoryThreshold (category, amount)
+      ─< ApprovalRequest (booking | revision | overspend, amount, per-side shares, status)
+              └─< ApprovalDecision (side, approver, approve/reject, comment, at)
       ─< Proposal (proposer, target: new Service|Requirement or change diff, status, decision by, comments)
       ─< Thread (team|vendor|function) ─< Message
       ─< Broadcast (segment, channels) ─< Delivery (status per recipient)
@@ -298,7 +314,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 2. **Build the guest list**: Coordinators import Excel → map columns → fix duplicates → tag side and groups → set per-function invites.
 3. **Invite & RSVP**: Send WhatsApp invites with magic links → guests RSVP per function and member, enter travel → reminders go to non-responders.
 4. **Logistics**: Planner reviews the arrivals board → creates pickup runs → allocates rooms → exports rooming lists to hotels.
-5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → vendor uploads invoice in the portal → host approves → payer records payment → vendor sees "Paid".
+5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → above the category threshold, the paying family approves (both families for shared costs) → vendor uploads invoice in the portal → payer records payment → vendor sees "Paid".
 6. **Day-of**: Coordinators open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests.
 
 ---
@@ -358,11 +374,10 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Approval threshold**: one global threshold, or per category/payer? Who approves when both families share a cost?
-2. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
-3. **Gifts / shagun tracking and thank-you notes**: in scope?
-4. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
-5. **Photo sharing / gallery** after the event: in scope?
-6. **Data retention**: how long are guest and personal data kept after the event ends?
-7. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-8. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+1. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
+2. **Gifts / shagun tracking and thank-you notes**: in scope?
+3. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
+4. **Photo sharing / gallery** after the event: in scope?
+5. **Data retention**: how long are guest and personal data kept after the event ends?
+6. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+7. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
