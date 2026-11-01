@@ -22,7 +22,9 @@ import { getPortalData } from "@/lib/rsvp";
 import { hasTravel, travelFor } from "@/lib/travel";
 import { travelLabels, travelSummary } from "@/lib/server/m3-labels";
 import { appUrl } from "@/lib/server/session";
+import { householdOptOut } from "@/lib/broadcasts";
 import {
+  broadcastOptOutAction,
   familySettingsAction,
   recordRsvpAction,
   regenerateLinkAction,
@@ -73,6 +75,7 @@ export default async function HouseholdPage({ params, searchParams }: PageProps<
   ]);
   const canEdit = ctx.can("guests.edit");
   const labels = guestFieldLabels(t);
+  const optOut = await householdOptOut(db, eventId, householdId);
 
   return (
     <div className="space-y-4">
@@ -151,6 +154,32 @@ export default async function HouseholdPage({ params, searchParams }: PageProps<
             </Field>
             <SubmitButton variant="secondary">{t("common.save")}</SubmitButton>
           </SimpleForm>
+        )}
+      </Card>
+
+      {/* Broadcast opt-out (DPDP): a family that replied STOP or asked not to get updates */}
+      <Card>
+        <CardTitle>{t("household.broadcastsTitle")}</CardTitle>
+        {!optOut.hasContacts ? (
+          <p className="text-sm text-muted">{t("household.broadcastsNoContact")}</p>
+        ) : (
+          <>
+            {optOut.optedOut ? (
+              <Alert tone="warning">{t("household.broadcastsOff", { channels: optOut.channels.map((c) => t(`thankYous.channels.${c}`)).join(", ") })}</Alert>
+            ) : (
+              <p className="text-sm">{t("household.broadcastsOn")}</p>
+            )}
+            <p className="mt-2 text-sm text-muted">{t("household.broadcastsHelp")}</p>
+            {canEdit && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {optOut.optedOut ? (
+                  <ConfirmForm action={broadcastOptOutAction.bind(null, eventId, householdId, false)} label={t("household.resumeBroadcasts")} confirm={t("household.resumeBroadcastsConfirm")} />
+                ) : (
+                  <ConfirmForm action={broadcastOptOutAction.bind(null, eventId, householdId, true)} label={t("household.stopBroadcasts")} confirm={t("household.stopBroadcastsConfirm")} />
+                )}
+              </div>
+            )}
+          </>
         )}
       </Card>
 

@@ -17,7 +17,7 @@ import {
 } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 import { isUuid } from "./ids";
-import { notify } from "./notifications";
+import { notify, removeNotifications } from "./notifications";
 import { vendorLink, vendorUserIds } from "./vendor-access";
 
 /**
@@ -335,7 +335,7 @@ export async function postMessage(
 
     const text = snippet(body);
     for (const uid of mentions) {
-      await notify(tx, { userIds: [uid], eventId, kind: "mention", data: { author: authorName, thread: title, snippet: text }, href: hrefFor(uid) });
+      await notify(tx, { userIds: [uid], eventId, kind: "mention", data: { author: authorName, thread: title, snippet: text, messageId: msg.id }, href: hrefFor(uid) });
     }
     const others = [...audience].filter((id) => id !== viewer.userId && !mentions.includes(id));
     if (others.length) {
@@ -355,9 +355,9 @@ export async function postMessage(
       const memberTargets = others.filter((id) => members.includes(id) && !skip.has(id));
       const vendorTargets = others.filter((id) => !members.includes(id) && !skip.has(id));
       if (memberTargets.length)
-        await notify(tx, { userIds: memberTargets, eventId, kind: "chat.message", data: { author: authorName, thread: title }, href: memberHref });
+        await notify(tx, { userIds: memberTargets, eventId, kind: "chat.message", data: { author: authorName, thread: title, messageId: msg.id }, href: memberHref });
       if (vendorTargets.length && vendorHref)
-        await notify(tx, { userIds: vendorTargets, eventId, kind: "vendor.message", data: { author: authorName }, href: vendorHref });
+        await notify(tx, { userIds: vendorTargets, eventId, kind: "vendor.message", data: { author: authorName, messageId: msg.id }, href: vendorHref });
     }
     return { message: msg, thread };
   });
@@ -381,9 +381,19 @@ export async function deleteOwnMessage(db: Database, eventId: string, viewer: Ch
   });
 }
 
-/** Removes a just-posted message when its attachment couldn't be saved. */
-export async function discardMessage(db: Tx, eventId: string, messageId: string, userId: string) {
-  await db.delete(messages).where(and(eq(messages.id, messageId), eq(messages.eventId, eventId), eq(messages.authorUserId, userId)));
+/**
+ * Removes a just-posted message when its attachment couldn't be saved, with the notifications
+ * (and not-yet-sent notification emails) it created.
+ */
+export async function discardMessage(db: Database, eventId: string, messageId: string, userId: string) {
+  await db.transaction(async (tx) => {
+    const gone = await tx
+      .delete(messages)
+      .where(and(eq(messages.id, messageId), eq(messages.eventId, eventId), eq(messages.authorUserId, userId)))
+      .returning({ id: messages.id });
+    if (gone.length === 0) return;
+    await removeNotifications(tx, and(eq(notifications.eventId, eventId), sql`${notifications.data}->>'messageId' = ${messageId}`)!);
+  });
 }
 
 /**

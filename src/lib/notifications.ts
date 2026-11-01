@@ -1,8 +1,8 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { Tx } from "@/db";
-import { eventMembers, events, notificationPrefs, notifications, userIdentifiers, users, type NotificationRow } from "@/db/schema";
+import { eventMembers, events, notificationPrefs, notifications, userIdentifiers, users, vendorContacts, vendors, type NotificationRow } from "@/db/schema";
 import { isLocale, translateDynamic, type Locale } from "@/i18n/core";
-import { enqueue } from "./outbox";
+import { cancelQueued, enqueue } from "./outbox";
 
 /**
  * In-app notifications (MSG-05, ADR-0029). Rows hold a kind and ids/values; the text is
@@ -111,12 +111,26 @@ export async function notifyHosts(db: Tx, eventId: string, input: NotifyInput & 
   return notify(db, { ...input, eventId, userIds: hosts.map((h) => h.userId) });
 }
 
+/**
+ * Notifications outlive access only as long as it lasts: event rows show while the user is still
+ * a member, has a live vendor link to the event, or is an App Admin. Platform rows (no event) stay.
+ */
+const stillHasAccess = sql`(
+  ${notifications.eventId} is null
+  or exists (select 1 from ${eventMembers} em where em.event_id = ${notifications.eventId} and em.user_id = ${notifications.userId})
+  or exists (
+    select 1 from ${vendorContacts} vc join ${vendors} v on v.id = vc.vendor_id
+    where vc.event_id = ${notifications.eventId} and vc.user_id = ${notifications.userId} and vc.revoked_at is null and v.archived_at is null
+  )
+  or exists (select 1 from ${users} u where u.id = ${notifications.userId} and u.is_app_admin)
+)`;
+
 export async function listNotifications(db: Tx, userId: string, opts: { limit?: number } = {}) {
   return db
     .select({ n: notifications, eventName: events.name })
     .from(notifications)
     .leftJoin(events, eq(events.id, notifications.eventId))
-    .where(eq(notifications.userId, userId))
+    .where(and(eq(notifications.userId, userId), stillHasAccess))
     .orderBy(desc(notifications.createdAt))
     .limit(Math.min(opts.limit ?? 50, 200));
 }
@@ -125,8 +139,20 @@ export async function unreadCount(db: Tx, userId: string) {
   const [{ n }] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(notifications)
-    .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
+    .where(and(eq(notifications.userId, userId), isNull(notifications.readAt), stillHasAccess));
   return n;
+}
+
+/** Deletes notifications matching `where`, and cancels their emails that haven't gone out yet. */
+export async function removeNotifications(db: Tx, where: SQL) {
+  const gone = await db.delete(notifications).where(where).returning({ id: notifications.id });
+  if (gone.length) await cancelQueued(db, gone.map((n) => `n:${n.id}`));
+  return gone.length;
+}
+
+/** A user's notifications for one event (when they lose access to it). */
+export async function removeUserEventNotifications(db: Tx, userId: string, eventId: string) {
+  return removeNotifications(db, and(eq(notifications.userId, userId), eq(notifications.eventId, eventId))!);
 }
 
 export async function markRead(db: Tx, userId: string, ids: string[] | "all") {

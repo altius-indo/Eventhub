@@ -23,10 +23,12 @@ import {
   createDraft,
   deleteDraft,
   estimateBroadcast,
+  householdOptOut,
   makeUnsubscribeToken,
   readUnsubscribeToken,
   resolveSegment,
   sendBroadcast,
+  setHouseholdOptOut,
   unsubscribe,
   updateDraft,
   type BroadcastInput,
@@ -204,6 +206,33 @@ describe("estimate and sending", () => {
     expect(JSON.stringify(stored)).not.toContain("/g/");
     const stats = await broadcastStats(db(), ev.id, b.id);
     expect(stats.email.sent).toBe(2);
+  });
+});
+
+describe("staff opt-out for WhatsApp/SMS (DPDP)", () => {
+  it("WhatsApp/SMS broadcasts say how to stop; staff can stop and restart a family, audited", async () => {
+    const { ev, host, sharma } = await setup();
+    const b = await createDraft(db(), ev.id, actorOf(host), input({ channels: ["sms"], segment: { sides: ["bride"] } }));
+    await sendBroadcast(db(), ev.id, b.id, actorOf(host), APP);
+    await processOutbox(db());
+    const [sms] = (await db().select().from(devOutbox)).filter((m) => m.to === "+919800000001");
+    expect(sms.body).toContain("STOP लिखकर जवाब दें");
+
+    expect((await householdOptOut(db(), ev.id, sharma.id)).optedOut).toBe(false);
+    await setHouseholdOptOut(db(), { eventId: ev.id, householdId: sharma.id, actor: actorOf(host), optedOut: true });
+    const st = await householdOptOut(db(), ev.id, sharma.id);
+    expect(st.optedOut).toBe(true);
+    expect(st.channels.sort()).toEqual(["email", "sms", "whatsapp"]);
+    const b2 = await createDraft(db(), ev.id, actorOf(host), input({ channels: ["sms", "email"], segment: { sides: ["bride"] } }));
+    await expect(sendBroadcast(db(), ev.id, b2.id, actorOf(host), APP)).rejects.toMatchObject({ code: "no_recipients" });
+
+    await setHouseholdOptOut(db(), { eventId: ev.id, householdId: sharma.id, actor: actorOf(host), optedOut: false });
+    expect((await householdOptOut(db(), ev.id, sharma.id)).optedOut).toBe(false);
+    const actions = (await db().select().from(auditLogs).where(eq(auditLogs.eventId, ev.id))).map((a) => a.action);
+    expect(actions).toEqual(expect.arrayContaining(["household.broadcasts_stopped", "household.broadcasts_resumed"]));
+    // Another event's family can't be touched.
+    const other = await createEvent(db(), actorOf(host), { name: "Other" });
+    await expect(setHouseholdOptOut(db(), { eventId: other.id, householdId: sharma.id, actor: actorOf(host), optedOut: true })).rejects.toMatchObject({ code: "not_found" });
   });
 });
 

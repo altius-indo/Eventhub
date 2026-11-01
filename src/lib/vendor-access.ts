@@ -4,6 +4,7 @@ import { eventMembers, events, userIdentifiers, users, vendorContacts, vendors, 
 import { createTranslator, isLocale } from "@/i18n/core";
 import { audit, type Actor } from "./audit";
 import type { Identifier } from "./identifiers";
+import { removeUserEventNotifications } from "./notifications";
 import { enqueue, registerTemplate } from "./outbox";
 
 /**
@@ -103,6 +104,15 @@ export async function revokeVendorContact(db: Database, eventId: string, contact
       .where(and(eq(vendorContacts.id, contactId), eq(vendorContacts.eventId, eventId), isNull(vendorContacts.revokedAt)))
       .returning();
     if (!c) throw new VendorAccessError("not_found");
+    // Their notifications for this event go too, unless they still reach it through another vendor.
+    if (c.userId) {
+      const [other] = await tx
+        .select({ id: vendorContacts.id })
+        .from(vendorContacts)
+        .where(and(eq(vendorContacts.eventId, eventId), eq(vendorContacts.userId, c.userId), isNull(vendorContacts.revokedAt)))
+        .limit(1);
+      if (!other) await removeUserEventNotifications(tx, c.userId, eventId);
+    }
     await audit(tx, { eventId, actor, action: "vendor.portal_revoked", entityType: "vendor", entityId: c.vendorId });
   });
 }

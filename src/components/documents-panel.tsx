@@ -15,6 +15,8 @@ export type DocumentLabels = {
   kinds: Record<DocumentRow["kind"], string>;
   error?: string;
   saved?: string;
+  /** Who else sees these files (e.g. the vendor, on a booking). */
+  note?: string;
 };
 
 /** Files attached to a vendor, quote, booking, invoice, payment or service. */
@@ -41,6 +43,7 @@ export function DocumentsPanel({
   return (
     <Card>
       <CardTitle>{labels.title}</CardTitle>
+      {labels.note && <p className="mb-3 text-sm text-muted">{labels.note}</p>}
       {labels.error && (
         <div className="mb-3">
           <Alert tone="danger">{labels.error}</Alert>

@@ -8,6 +8,7 @@ import {
   createGift,
   createHandover,
   deleteGift,
+  envelopeDate,
   ERASED_GIVER,
   getGift,
   giftScope,
@@ -203,6 +204,29 @@ describe("cash reconciliation (GFT-03)", () => {
     expect(h.discrepancyPaise).toBe(0);
     expect(await db().select().from(notifications)).toHaveLength(0);
     await expect(createHandover(db(), s.R, { functionId: s.sangeet.id, collectorUserId: s.rec.id, countedPaise: 0, handedToName: "Papa" })).rejects.toMatchObject({ code: "nothing_to_hand_over" });
+  });
+
+  it("the collector must be a member of the event", async () => {
+    const s = await setup();
+    const outsider = await makeUser("outsider@example.com", "Stranger");
+    await expect(createHandover(db(), s.H, { functionId: s.sangeet.id, collectorUserId: outsider.id, countedPaise: 100_00, handedToName: "Papa" })).rejects.toMatchObject({ code: "bad_member" });
+  });
+});
+
+describe("envelope date (GFT-02)", () => {
+  it("uses the event-timezone date of the entry time, clamped against bad device clocks", async () => {
+    const now = new Date("2026-12-10T20:00:00Z"); // 01:30 on 11 Dec in Kolkata
+    expect(envelopeDate(undefined, now, "Asia/Kolkata")).toBe("2026-12-11");
+    // Recorded offline at 23:50 IST on the 10th, synced after midnight.
+    expect(envelopeDate("2026-12-10T18:20:00Z", now, "Asia/Kolkata")).toBe("2026-12-10");
+    // Ahead of the server by more than 5 minutes, or more than 7 days old: the sync time is used.
+    expect(envelopeDate("2026-12-12T10:00:00Z", now, "Asia/Kolkata")).toBe("2026-12-11");
+    expect(envelopeDate("2026-11-20T10:00:00Z", now, "Asia/Kolkata")).toBe("2026-12-11");
+
+    const s = await setup();
+    await recordEnvelopes(db(), s.R, s.sangeet.id, [{ clientKey: KEY(1), giverName: "Late night", amountPaise: 100_00, at: "2026-12-10T18:20:00Z" }], now);
+    const [row] = await db().select().from(gifts).where(eq(gifts.eventId, s.event.id));
+    expect(row.receivedOn).toBe("2026-12-10");
   });
 });
 

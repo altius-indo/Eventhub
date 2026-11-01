@@ -13,6 +13,7 @@ import {
 } from "@/db/schema";
 import { createTranslator, type Locale } from "@/i18n/core";
 import { audit, type Actor } from "./audit";
+import { removeUserEventNotifications } from "./notifications";
 import { findUserByIdentifier } from "./auth-core";
 import { DeliveryError, sendMessage } from "./delivery";
 import { formatIdentifier, type Identifier } from "./identifiers";
@@ -352,6 +353,7 @@ export async function removeMember(db: Database, eventId: string, memberUserId: 
     if (member.role === "host" && (await hostCount(tx, eventId)) <= 1) throw new EventError("last_host");
     const name = await memberName(tx, memberUserId);
     await tx.delete(eventMembers).where(eq(eventMembers.id, member.id));
+    await removeUserEventNotifications(tx, memberUserId, eventId);
     await audit(tx, {
       eventId,
       actor,

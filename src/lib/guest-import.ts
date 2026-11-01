@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
 import { functionInvites, guestImports, guests, households, type AgeGroup, type Diet, type Side } from "@/db/schema";
 import { audit, type Actor } from "./audit";
+import { freezeDueLocks } from "./caterer-headcount";
 import { listFunctions } from "./functions";
 import { normalizeEmail, normalizePhone, normalizeTags } from "./guests";
 
@@ -392,6 +393,8 @@ export async function commitImport(db: Database, eventId: string, importId: stri
       .for("update");
     if (!locked) throw new ImportError("not_found");
     if (locked.completedAt) throw new ImportError("already_done");
+    // New invitations change headcounts: freeze any due caterer lock first (RSV-07).
+    await freezeDueLocks(tx, eventId, null);
 
     const fns = await listFunctions(tx, eventId);
     const preview = buildPreview(locked.rows, mapping, await existingGuestsForDedup(tx, eventId), fns);

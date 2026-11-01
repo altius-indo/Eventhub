@@ -266,6 +266,18 @@ async function settle(db: Tx, row: OutboundMessage, outcome: "sent" | "released"
   if (outcome === "sent") await checkThresholds(db, row.eventId, row.channel);
 }
 
+/** Cancels queued (not yet claimed) messages by idempotency key, releasing their reservations. */
+export async function cancelQueued(db: Tx, keys: string[]) {
+  if (keys.length === 0) return 0;
+  const rows = await db
+    .update(outboundMessages)
+    .set({ status: "superseded", lockedUntil: null })
+    .where(and(inArray(outboundMessages.idempotencyKey, keys), eq(outboundMessages.status, "queued")))
+    .returning();
+  for (const row of rows) await settle(db, row, "released");
+  return rows.length;
+}
+
 /** LIM-03: warn Hosts once at 80% and once at 95% of a channel's limit. */
 async function checkThresholds(db: Tx, eventId: string, channel: MessageChannel) {
   const usage = await getUsage(db, eventId);
@@ -301,20 +313,27 @@ async function fallbackFrom(db: Tx, row: OutboundMessage) {
   }
   const to = addr[next];
   if (!to) return false;
-  await enqueue(db, [
-    {
-      eventId: row.eventId,
-      purpose: row.purpose,
-      templateKey: row.templateKey,
-      vars: Object.fromEntries(Object.entries(row.vars).filter(([k]) => !k.startsWith("_"))),
-      recipient: { householdId: row.householdId, guestId: row.guestId, userId: row.userId, addresses: { ...addr, [next]: to }, locale: row.locale, preferred: next },
-      channels: [next, ...more],
-      bulk: false,
-      key: `${row.idempotencyKey}>${next}`,
-      broadcastId: row.broadcastId,
-      thankYouId: row.thankYouId,
-    },
-  ]);
+  const item: EnqueueItem = {
+    eventId: row.eventId,
+    purpose: row.purpose,
+    templateKey: row.templateKey,
+    vars: Object.fromEntries(Object.entries(row.vars).filter(([k]) => !k.startsWith("_"))),
+    recipient: { householdId: row.householdId, guestId: row.guestId, userId: row.userId, addresses: { ...addr, [next]: to }, locale: row.locale, preferred: next },
+    channels: [next, ...more],
+    // A bulk send stays bulk on its fallback channel, so it can't get round that channel's limit (LIM-03).
+    bulk: row.bulk,
+    key: `${row.idempotencyKey}>${next}`,
+    broadcastId: row.broadcastId,
+    thankYouId: row.thankYouId,
+  };
+  try {
+    await enqueue(db, [item]);
+  } catch (err) {
+    if (!(err instanceof QuotaError)) throw err;
+    // Over the fallback channel's limit: this message ends here, with the reason on the row.
+    await db.update(outboundMessages).set({ status: "failed", lockedUntil: null, errorCode: `quota:${err.channel}` }).where(eq(outboundMessages.id, row.id));
+    return false;
+  }
   return true;
 }
 
@@ -375,6 +394,27 @@ async function sendOne(db: Database, row: OutboundMessage, now: Date) {
   });
 }
 
+/**
+ * An unexpected error (not a DeliveryError, e.g. a template bug) rolled back the send. In a fresh
+ * transaction: retry with the usual backoff, and after MAX_ATTEMPTS mark the row failed and release
+ * its quota reservation, so it never sits in `sending` for ever. `claim` already counted the attempt.
+ */
+async function failUnexpected(db: Database, row: OutboundMessage, now: Date, err: unknown) {
+  const errorCode = `error:${err instanceof Error ? err.message : String(err)}`.slice(0, 200);
+  await db.transaction(async (tx) => {
+    const mine = and(eq(outboundMessages.id, row.id), eq(outboundMessages.status, "sending"));
+    if (row.attempts >= MAX_ATTEMPTS) {
+      const res = await tx.update(outboundMessages).set({ status: "failed", lockedUntil: null, errorCode }).where(mine).returning({ id: outboundMessages.id });
+      if (res.length) await settle(tx, row, "released");
+    } else {
+      await tx
+        .update(outboundMessages)
+        .set({ status: "queued", lockedUntil: null, errorCode, nextAttemptAt: new Date(now.getTime() + BACKOFF_MS[Math.max(0, row.attempts - 1)]) })
+        .where(mine);
+    }
+  });
+}
+
 /** Marks broadcasts done once nothing of theirs is waiting. */
 async function finishBroadcasts(db: Database, ids: string[]) {
   if (ids.length === 0) return;
@@ -390,8 +430,23 @@ async function finishBroadcasts(db: Database, ids: string[]) {
       .where(and(inArray(broadcasts.id, done), inArray(broadcasts.status, ["queued", "sending"])));
 }
 
+/** Retries due within this window are picked up by a short follow-up drain instead of the daily cron. */
+export const RETRY_WINDOW_MS = 2 * 60_000;
+
 /**
- * Sends due messages until the time budget runs out. Returns counts and whether rows remain.
+ * How long a drainer should wait before draining again: 0 when rows are due now, the time until
+ * the next retry when it is within `RETRY_WINDOW_MS`, else null (the daily cron picks it up).
+ */
+export function nextDrainDelay(result: { remaining: number; nextDueAt: Date | null }, now: Date, windowMs = RETRY_WINDOW_MS): number | null {
+  if (result.remaining > 0) return 0;
+  if (!result.nextDueAt) return null;
+  const ms = result.nextDueAt.getTime() - now.getTime();
+  return ms <= windowMs ? Math.max(0, ms) : null;
+}
+
+/**
+ * Sends due messages until the time budget runs out. Returns counts, how many rows are due now
+ * (`remaining`) and when the next waiting row (retry or stale claim) becomes due (`nextDueAt`).
  */
 export async function processOutbox(db: Database, opts: { budgetMs?: number; concurrency?: number; now?: () => Date } = {}) {
   const started = Date.now();
@@ -409,8 +464,8 @@ export async function processOutbox(db: Database, opts: { budgetMs?: number; con
           try {
             await sendOne(db, row, clock());
           } catch (err) {
-            // Unexpected errors (e.g. a template bug) leave the row for retry after its lock expires.
             console.error("outbox send failed", row.id, err instanceof Error ? err.message : err);
+            await failUnexpected(db, row, clock(), err).catch((e) => console.error("outbox fail mark failed", row.id, e instanceof Error ? e.message : e));
           }
           if (row.broadcastId) touched.add(row.broadcastId);
           processed++;
@@ -423,5 +478,9 @@ export async function processOutbox(db: Database, opts: { budgetMs?: number; con
     .select({ n: sql<number>`count(*)::int` })
     .from(outboundMessages)
     .where(and(eq(outboundMessages.status, "queued"), lt(outboundMessages.nextAttemptAt, clock())));
-  return { processed, remaining: n };
+  const [{ next }] = await db
+    .select({ next: sql<string | null>`min(case when ${outboundMessages.status} = 'queued' then ${outboundMessages.nextAttemptAt} else ${outboundMessages.lockedUntil} end)` })
+    .from(outboundMessages)
+    .where(inArray(outboundMessages.status, ["queued", "sending"]));
+  return { processed, remaining: n, nextDueAt: next ? new Date(next) : null };
 }

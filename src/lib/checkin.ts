@@ -2,6 +2,7 @@ import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
 import { checkIns, functionInvites, functions, guests, households, rsvps, users, type Guest, type Household, type RsvpStatus } from "@/db/schema";
 import { audit, type Actor } from "./audit";
+import { freezeDueLocks } from "./caterer-headcount";
 import { resolveGuestToken, resolvePassToken } from "./guest-links";
 
 export class CheckInError extends Error {
@@ -201,6 +202,7 @@ export async function addWalkIn(
   if (!name) throw new CheckInError("not_found");
   const ids = await db.transaction(async (tx) => {
     await checkFunction(tx, eventId, functionId);
+    await freezeDueLocks(tx, eventId, [functionId]);
     const [h] = await tx.insert(households).values({ eventId, name, side: input.side, notes: "Walk-in" }).returning();
     const members = await tx
       .insert(guests)

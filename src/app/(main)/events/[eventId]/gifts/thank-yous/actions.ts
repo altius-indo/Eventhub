@@ -9,7 +9,7 @@ import { drainSoon } from "@/lib/server/drain";
 import { getEventContext } from "@/lib/server/event-context";
 import { dctx } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
-import { deleteTemplate, draftMany, listTracker, saveDraft, saveTemplate, sendThankYous, setStatus } from "@/lib/thank-yous";
+import { deleteTemplate, draftMany, listTracker, resendThankYou, saveDraft, saveTemplate, sendThankYous, setStatus } from "@/lib/thank-yous";
 import { giftErrorText } from "../shared";
 
 type State = { error?: string; info?: string };
@@ -88,6 +88,23 @@ export async function sendOneAction(eventId: string, householdId: string, thankY
   if (r.sent === 0) return { error: r.noAddress ? t("thankYous.noAddress") : t("thankYous.errors.not_drafted") };
   drainSoon();
   revalidatePath(path(eventId));
+  redirect(`${path(eventId)}/${householdId}?sent=1`);
+}
+
+/** A note that failed on every channel goes out again (after fixing the family's contacts). */
+export async function resendAction(eventId: string, householdId: string, _p: State): Promise<State> {
+  const { ctx, t, ok } = await guard(eventId);
+  if (!ok || !isUuid(householdId)) return { error: t("common.notAllowed") };
+  let r;
+  try {
+    r = await resendThankYou(getDb(), dctx(ctx), householdId);
+  } catch (e) {
+    return { error: giftErrorText(t, e) };
+  }
+  revalidatePath(path(eventId));
+  revalidatePath(`${path(eventId)}/${householdId}`);
+  if (r.sent === 0) return { error: t("thankYous.noAddress") };
+  drainSoon();
   redirect(`${path(eventId)}/${householdId}?sent=1`);
 }
 

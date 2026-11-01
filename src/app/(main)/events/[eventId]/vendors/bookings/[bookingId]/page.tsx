@@ -357,7 +357,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
         </Card>
       )}
 
-      <DocumentsPanel eventId={eventId} owner="bookingId" ownerId={bookingId} docs={docs} canEdit={ctx.can("contracts.edit")} back={`/events/${eventId}/vendors/bookings/${bookingId}`} defaultKind="contract" labels={documentLabels(t, t("bookings.documents"), sp)} />
+      <DocumentsPanel eventId={eventId} owner="bookingId" ownerId={bookingId} docs={docs} canEdit={ctx.can("contracts.edit")} back={`/events/${eventId}/vendors/bookings/${bookingId}`} defaultKind="contract" labels={{ ...documentLabels(t, t("bookings.documents"), sp), note: t("documents.vendorSees") }} />
 
       {canBook && latest && status === "confirmed" && reviseLines.length > 0 && (
         <Card>

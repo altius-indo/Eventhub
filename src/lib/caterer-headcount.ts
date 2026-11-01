@@ -360,12 +360,21 @@ export async function getCatererView(
   return db.transaction(async (tx) => {
     const pairs = await cateringPairs(tx, { eventId, vendorId, functionId });
     if (pairs.length === 0) throw new HeadcountError("not_found");
+    // Several bookings of this vendor can cover the function (e.g. a lunch and a dinner quote).
+    // The count is shown frozen when any of them is locked, using that booking's snapshot (the
+    // earliest-booked frozen one); the change-alert baseline is the first booking's state.
     const p = pairs[0];
     await freezeDueLocks(tx, eventId, [functionId], now);
     const live = snapshotFrom((await headcounts(tx, eventId)).get(functionId));
     let s = await ensureState(tx, eventId, p.bookingId, functionId);
-    const frozen = !!(s.frozenAt && s.lockedSnapshot);
-    const shown = frozen ? s.lockedSnapshot! : live;
+    let lockState = s;
+    for (const other of pairs.slice(1)) {
+      if (lockState.frozenAt && lockState.lockedSnapshot) break;
+      const os = await stateOf(tx, other.bookingId, functionId);
+      if (os?.frozenAt && os.lockedSnapshot) lockState = os;
+    }
+    const frozen = !!(lockState.frozenAt && lockState.lockedSnapshot);
+    const shown = frozen ? lockState.lockedSnapshot! : live;
     if (s.baselineTotal == null && opts.setBaseline !== false) {
       [s] = await tx
         .update(catererHeadcountState)
@@ -383,8 +392,8 @@ export async function getCatererView(
       snapshot: shown,
       total: snapshotTotal(shown),
       frozen,
-      lockAt: s.lockAt,
-      releasedAt: s.releasedAt,
+      lockAt: lockState.lockAt ?? s.lockAt,
+      releasedAt: lockState.releasedAt,
       baselineTotal: s.baselineTotal,
       change: frozen || s.baselineTotal == null ? 0 : snapshotTotal(shown) - s.baselineTotal,
       ackedAt: s.ackedAt,

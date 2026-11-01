@@ -9,9 +9,9 @@ import { isUuid } from "@/lib/ids";
 import { getEventContext } from "@/lib/server/event-context";
 import { dctx } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
-import { getThankYou, listTemplates, ThankYouError } from "@/lib/thank-yous";
+import { deliveryFailed, getThankYou, listTemplates, ThankYouError } from "@/lib/thank-yous";
 import { statusTone, typeLabel } from "../../shared";
-import { draftFromTemplateAction, saveTextAction, sendOneAction, setStatusAction } from "../actions";
+import { draftFromTemplateAction, resendAction, saveTextAction, sendOneAction, setStatusAction } from "../actions";
 
 /** One family's thank-you: draft from a template, personalise, send or mark thanked (GFT-08/09). */
 export default async function ThankYouHousehold({ params, searchParams }: PageProps<"/events/[eventId]/gifts/thank-yous/[householdId]">) {
@@ -41,6 +41,14 @@ export default async function ThankYouHousehold({ params, searchParams }: PagePr
       {sp.saved === "1" && <Alert tone="success">{t("common.saved")}</Alert>}
       {sp.sent === "1" && <Alert tone="success">{t("thankYous.sentOne")}</Alert>}
       {data.itemWarning && <Alert tone="warning">{t("thankYous.itemWarning")}</Alert>}
+      {status === "sent" && deliveryFailed(data.delivery?.status) && (
+        <Card>
+          <Alert tone="danger">{t("thankYous.deliveryFailedHelp")}</Alert>
+          <SimpleForm action={resendAction.bind(null, eventId, householdId)} className="mt-3 space-y-2">
+            <SubmitButton>{t("thankYous.resend")}</SubmitButton>
+          </SimpleForm>
+        </Card>
+      )}
 
       <Card>
         <CardTitle>{t("thankYous.context")}</CardTitle>

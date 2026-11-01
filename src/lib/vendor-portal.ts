@@ -17,6 +17,7 @@ import {
   serviceTypes,
   services,
   users,
+  vendorContacts,
   vendors,
   type BookingStatus,
   type DocumentRow,
@@ -362,7 +363,7 @@ export async function getPortalBooking(db: Tx, eventId: string, vendorId: string
   const docs = await db
     .select()
     .from(documents)
-    .where(and(eq(documents.eventId, eventId), eq(documents.bookingId, b.id)))
+    .where(and(eq(documents.eventId, eventId), eq(documents.bookingId, b.id), bookingDocVisible(vendorId)))
     .orderBy(desc(documents.createdAt));
   const fnIds = [...new Set(fs.map((f) => f.functionId))];
   const items = (await portalRunSheet(db, eventId, vendorId)).filter((i) => fnIds.includes(i.functionId));
@@ -484,7 +485,19 @@ export async function portalRunSheet(db: Tx, eventId: string, vendorId: string) 
     .orderBy(asc(runSheetItems.startsAt), asc(runSheetItems.sortOrder));
 }
 
-/** Files attached to this vendor, its quotes, bookings or invoices. */
+/**
+ * Of the files on a booking, the vendor sees contracts, invoices and receipts, plus what its own
+ * logins uploaded; other booking files (internal notes, negotiation copies) stay with the team.
+ */
+export const VENDOR_VISIBLE_KINDS = ["contract", "invoice", "receipt"] as const;
+function bookingDocVisible(vendorId: string) {
+  return or(
+    inArray(documents.kind, [...VENDOR_VISIBLE_KINDS]),
+    sql`exists (select 1 from ${vendorContacts} vc where vc.vendor_id = ${vendorId} and vc.user_id = ${documents.uploadedBy})`,
+  );
+}
+
+/** Files attached to this vendor, its quotes, bookings (see bookingDocVisible) or invoices. */
 export async function listPortalDocuments(db: Tx, eventId: string, vendorId: string, scope?: PortalScope): Promise<DocumentRow[]> {
   const s = scope ?? (await portalScope(db, eventId, vendorId));
   const ids = (set: Set<string>) => (set.size ? [...set] : null);
@@ -500,7 +513,7 @@ export async function listPortalDocuments(db: Tx, eventId: string, vendorId: str
         or(
           eq(documents.vendorId, vendorId),
           q ? inArray(documents.quoteId, q) : undefined,
-          b ? inArray(documents.bookingId, b) : undefined,
+          b ? and(inArray(documents.bookingId, b), bookingDocVisible(vendorId)) : undefined,
           i ? inArray(documents.invoiceId, i) : undefined,
         ),
       ),
@@ -514,7 +527,10 @@ export async function portalDocumentAllowed(db: Tx, eventId: string, vendorId: s
   if (!d) return false;
   if (d.vendorId === vendorId) return true;
   const s = await portalScope(db, eventId, vendorId);
-  return (!!d.quoteId && s.quoteIds.has(d.quoteId)) || (!!d.bookingId && s.bookingIds.has(d.bookingId)) || (!!d.invoiceId && s.invoiceIds.has(d.invoiceId));
+  if ((!!d.quoteId && s.quoteIds.has(d.quoteId)) || (!!d.invoiceId && s.invoiceIds.has(d.invoiceId))) return true;
+  if (!d.bookingId || !s.bookingIds.has(d.bookingId)) return false;
+  const [visible] = await db.select({ id: documents.id }).from(documents).where(and(eq(documents.id, d.id), bookingDocVisible(vendorId)));
+  return !!visible;
 }
 
 /** Whether an invoice is the vendor's own (to attach files to it). */

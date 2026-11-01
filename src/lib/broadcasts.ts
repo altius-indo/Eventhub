@@ -24,7 +24,7 @@ import { audit, type Actor } from "./audit";
 import { hmac, safeEqual } from "./crypto";
 import { guestLinkUrl } from "./guest-links";
 import { isUuid } from "./ids";
-import { CHANNELS, enqueue, estimate, normalizeAddress, optOut, QuotaError, registerTemplate, type EnqueueItem, type Estimate } from "./outbox";
+import { CHANNELS, enqueue, estimate, isOptedOut, normalizeAddress, optIn, optOut, QuotaError, registerTemplate, type EnqueueItem, type Estimate } from "./outbox";
 
 /**
  * Guest broadcasts (MSG-02) with a pre-send estimate (LIM-02). A broadcast is a draft until sent;
@@ -256,6 +256,54 @@ export async function unsubscribe(db: Tx, token: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Staff opt-out (DPDP): a family replied STOP or asked the team to stop broadcasts
+// ---------------------------------------------------------------------------
+
+/** Every (channel, address) of a family's members that broadcasts could go to. */
+async function familyAddresses(db: Tx, eventId: string, householdId: string) {
+  const [h] = await db.select({ id: households.id, name: households.name }).from(households).where(and(eq(households.id, householdId), eq(households.eventId, eventId)));
+  if (!h) throw new BroadcastError("not_found");
+  const members = await db.select({ phone: guests.phone, email: guests.email }).from(guests).where(eq(guests.householdId, householdId));
+  const out: { channel: MessageChannel; address: string }[] = [];
+  for (const m of members) {
+    if (m.phone) out.push({ channel: "whatsapp", address: m.phone }, { channel: "sms", address: m.phone });
+    if (m.email) out.push({ channel: "email", address: m.email });
+  }
+  return { household: h, addresses: out };
+}
+
+/** Whether broadcasts to this family are stopped: any of its contacts opted out, and which. */
+export async function householdOptOut(db: Tx, eventId: string, householdId: string) {
+  const { addresses } = await familyAddresses(db, eventId, householdId);
+  const out: { channel: MessageChannel; address: string }[] = [];
+  for (const a of addresses) if (await isOptedOut(db, eventId, a.channel, a.address)) out.push(a);
+  return { optedOut: out.length > 0, channels: [...new Set(out.map((a) => a.channel))], hasContacts: addresses.length > 0 };
+}
+
+/**
+ * Staff stop (or restart) broadcasts and thank-you notes to a family on every channel, e.g. when
+ * they replied STOP on WhatsApp/SMS or asked in person. One-to-one messages (guest link) still go.
+ */
+export async function setHouseholdOptOut(db: Database, input: { eventId: string; householdId: string; actor: Actor; optedOut: boolean }) {
+  return db.transaction(async (tx) => {
+    const { household, addresses } = await familyAddresses(tx, input.eventId, input.householdId);
+    for (const a of addresses) {
+      if (input.optedOut) await optOut(tx, input.eventId, a.channel, a.address, "staff");
+      else await optIn(tx, input.eventId, a.channel, a.address);
+    }
+    await audit(tx, {
+      eventId: input.eventId,
+      actor: input.actor,
+      action: input.optedOut ? "household.broadcasts_stopped" : "household.broadcasts_resumed",
+      entityType: "household",
+      entityId: household.id,
+      data: { name: household.name },
+    });
+    return addresses.length;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Rendering (at send time)
 // ---------------------------------------------------------------------------
 
@@ -270,6 +318,8 @@ registerTemplate("broadcast", async (vars, locale, { db, row }) => {
   if (!b) throw new Error("broadcast missing");
   const appUrl = String(vars.appUrl ?? process.env.APP_URL ?? "").replace(/\/$/, "");
   const lines = [b.title, "", bodyFor(b, locale)];
+  // WhatsApp/SMS have no unsubscribe link: tell people how to stop (DPDP); staff record it.
+  if (row.channel === "whatsapp" || row.channel === "sms") lines.push("", t("broadcasts.stopLine"));
   if (row.householdId) {
     const [h] = await db.select().from(households).where(and(eq(households.id, row.householdId), eq(households.eventId, b.eventId)));
     if (h && !h.linkRevokedAt) lines.push("", t("broadcasts.yourLink", { link: guestLinkUrl(appUrl, h) }));

@@ -16,6 +16,7 @@ import {
   zonedInstant,
 } from "@/lib/caterer-headcount";
 import { createEvent } from "@/lib/events";
+import { bulkInvite, deleteHousehold, guestSchema, removeGuest, updateGuest, updateHousehold } from "@/lib/guests";
 import { createFunction } from "@/lib/functions";
 import type { PolicySubject } from "@/lib/policy";
 import { createQuoteRequests, getQuote, saveQuote } from "@/lib/quotes";
@@ -44,10 +45,12 @@ async function setup() {
   ).requirement;
 
   /** Books `vendorName` for `quantity` plates of the Mehendi lunch (a Host booking applies directly). */
-  async function bookCaterer(vendorName: string, contact: string, quantity: number | null) {
-    const vendor = await createVendor(db(), event.id, actorOf(host), { name: vendorName, contactName: null, phone: null, email: null, gstin: null, notes: null, serviceTypeIds: [catering.id] });
-    await inviteVendorContact(db(), { eventId: event.id, vendorId: vendor.id, identifier: { type: "email", value: contact }, actor: actorOf(host), appUrl: "" });
-    const user = await makeUser(contact, vendorName);
+  async function bookCaterer(vendorName: string, contact: string, quantity: number | null, existing?: { vendor: { id: string }; user: Awaited<ReturnType<typeof makeUser>> }) {
+    const vendor =
+      existing?.vendor ??
+      (await createVendor(db(), event.id, actorOf(host), { name: vendorName, contactName: null, phone: null, email: null, gstin: null, notes: null, serviceTypeIds: [catering.id] }));
+    if (!existing) await inviteVendorContact(db(), { eventId: event.id, vendorId: vendor.id, identifier: { type: "email", value: contact }, actor: actorOf(host), appUrl: "" });
+    const user = existing?.user ?? (await makeUser(contact, vendorName));
     const [requestId] = await createQuoteRequests(db(), event.id, actorOf(host), { vendorIds: [vendor.id], serviceIds: [svc.id], dueDate: null, message: null });
     const q = await saveQuote(db(), event.id, actorOf(host), { requestId }, {
       vendorRef: null,
@@ -215,5 +218,54 @@ describe("final headcount lock (RSV-07)", () => {
     expect((await getCatererView(db(), s.event.id, vendor.id, s.mehendi.id)).frozen).toBe(true);
     await setHeadcountLock(db(), { eventId: s.event.id, actor: actorOf(s.host), bookingId: booking.id, functionId: s.mehendi.id, lockAt: null });
     expect((await getCatererView(db(), s.event.id, vendor.id, s.mehendi.id)).frozen).toBe(false);
+  });
+
+  it("freezes a due lock before guest, household and invitation changes (not only RSVPs)", async () => {
+    const s = await setup();
+    const { booking } = await s.bookCaterer("Spice", "chef@spice.in", null);
+    const a = await s.family("A", 3, [s.mehendi.id]);
+    const b = await s.family("B", 2, [s.mehendi.id]);
+    await s.answer(a, s.mehendi.id, "attending");
+    await s.answer(b, s.mehendi.id, "attending");
+    const H = actorOf(s.host);
+    /** Re-arms the lock: due a minute ago but not frozen yet, as between daily-job runs. */
+    const arm = () =>
+      setHeadcountLock(db(), { eventId: s.event.id, actor: H, bookingId: booking.id, functionId: s.mehendi.id, lockAt: new Date(Date.now() - 60_000), now: new Date(Date.now() - 120_000) });
+    const locked = async () => (await db().select().from(catererHeadcountState).where(eq(catererHeadcountState.bookingId, booking.id)))[0];
+
+    const cases: [string, () => Promise<unknown>, number][] = [
+      ["updateGuest (age group)", () => updateGuest(db(), s.event.id, a.guests[0].id, guestSchema.parse({ name: "A 1", ageGroup: "child" })), 5],
+      ["updateHousehold (side)", () => updateHousehold(db(), s.event.id, a.household.id, { name: "A", side: "groom", address: null, city: null, postalCode: null, notes: null }), 5],
+      ["bulkInvite (uninvite)", () => bulkInvite(db(), s.event.id, [b.guests[0].id], s.mehendi.id, false), 5],
+      ["removeGuest", () => removeGuest(db(), s.event.id, a.guests[1].id), 4],
+      ["deleteHousehold", () => deleteHousehold(db(), s.event.id, b.household.id, H), 3],
+    ];
+    for (const [name, change, before] of cases) {
+      await arm();
+      expect((await locked()).frozenAt, name).toBeNull();
+      await change();
+      const st = await locked();
+      expect(st.frozenAt, name).not.toBeNull();
+      expect(st.lockedSnapshot?.confirmed, name).toBe(before);
+    }
+    // The first change was frozen with three adults, before the age group moved.
+    await arm();
+    await updateGuest(db(), s.event.id, a.guests[0].id, guestSchema.parse({ name: "A 1", ageGroup: "adult" }));
+    expect((await locked()).lockedSnapshot?.children).toBe(1);
+  });
+
+  it("several bookings of one caterer on a function: shown frozen when any of them is locked", async () => {
+    const s = await setup();
+    const first = await s.bookCaterer("Spice", "chef@spice.in", 200);
+    const second = await s.bookCaterer("Spice", "chef@spice.in", 200, first);
+    const a = await s.family("A", 4, [s.mehendi.id]);
+    await s.answer(a, s.mehendi.id, "attending");
+    await setHeadcountLock(db(), { eventId: s.event.id, actor: actorOf(s.host), bookingId: second.booking.id, functionId: s.mehendi.id, lockAt: new Date("2026-01-01T00:00:00Z") });
+    const more = await s.family("More", 2, [s.mehendi.id]);
+    await s.answer(more, s.mehendi.id, "attending");
+    const view = await getCatererView(db(), s.event.id, first.vendor.id, s.mehendi.id);
+    expect(view.frozen).toBe(true);
+    expect(view.total).toBe(4);
+    expect(view.share).toEqual({ quantity: 400, of: 800 });
   });
 });

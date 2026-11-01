@@ -1,11 +1,12 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
-import { cashHandovers, eventMembers, functions, gifts, guests, households, thankYous, users, type Gift } from "@/db/schema";
+import { cashHandovers, eventMembers, events, functions, gifts, guests, households, thankYous, users, type Gift } from "@/db/schema";
 import { formatInr } from "@/i18n/core";
 import { audit, type Actor } from "./audit";
 import { notifyHosts } from "./notifications";
 import { assertCan, can, ForbiddenError, type PolicySubject } from "./policy";
+import { todayIn } from "./tasks";
 
 /**
  * Gift register, envelope mode and cash reconciliation (GFT-01..05, GFT-07).
@@ -321,6 +322,17 @@ export const envelopeItem = z.object({
   at: z.string().datetime().optional(),
 });
 export type EnvelopeItem = z.input<typeof envelopeItem>;
+
+/**
+ * The day an envelope was received, in the event's timezone: the device's `at` (entries queued
+ * offline sync later), unless it is more than 5 minutes ahead of the server or older than 7 days
+ * (a wrong device clock), in which case the sync time is used.
+ */
+export function envelopeDate(at: string | undefined, now: Date, timeZone: string): string {
+  const t = at ? new Date(at) : null;
+  const ok = t && !Number.isNaN(t.getTime()) && t.getTime() <= now.getTime() + 5 * 60_000 && t.getTime() >= now.getTime() - 7 * 86_400_000;
+  return todayIn(timeZone, ok ? t : now);
+}
 export type EnvelopeRejectCode = "invalid" | "no_giver" | "no_value" | "bad_household" | "bad_guest";
 export type EnvelopeResult = {
   created: string[];
@@ -342,7 +354,8 @@ export async function recordEnvelopes(db: Database, c: GiftCtx, functionId: stri
     const [fn] = await tx.select({ name: functions.name }).from(functions).where(and(eq(functions.id, functionId), eq(functions.eventId, c.eventId)));
     if (!fn) throw new GiftError("bad_function");
     const seen = new Set<string>();
-    const receivedOn = now.toISOString().slice(0, 10);
+    const [ev] = await tx.select({ timezone: events.timezone }).from(events).where(eq(events.id, c.eventId));
+    const timeZone = ev?.timezone ?? "Asia/Kolkata";
     for (const raw of items) {
       const parsed = envelopeItem.safeParse(raw);
       const key = typeof (raw as { clientKey?: unknown }).clientKey === "string" ? (raw as { clientKey: string }).clientKey : "";
@@ -386,7 +399,7 @@ export async function recordEnvelopes(db: Database, c: GiftCtx, functionId: stri
           functionId,
           receivedFor: it.receivedFor,
           envelopeNo: it.envelopeNo,
-          receivedOn,
+          receivedOn: envelopeDate(it.at, now, timeZone),
           recordedBy: c.actor.userId,
           source: "envelope",
           clientKey: it.clientKey,
@@ -563,6 +576,9 @@ export async function createHandover(db: Database, c: GiftCtx, input: HandoverIn
       if (!f) throw new GiftError("bad_function");
       functionName = f.name;
     }
+    // The collector must be on the team of this event, like the person it's handed to.
+    const [collector] = await tx.select({ id: eventMembers.id }).from(eventMembers).where(and(eq(eventMembers.eventId, c.eventId), eq(eventMembers.userId, v.collectorUserId)));
+    if (!collector) throw new GiftError("bad_member");
     if (v.handedToUserId) {
       const [m] = await tx.select({ id: eventMembers.id }).from(eventMembers).where(and(eq(eventMembers.eventId, c.eventId), eq(eventMembers.userId, v.handedToUserId)));
       if (!m) throw new GiftError("bad_member");

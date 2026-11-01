@@ -7,6 +7,7 @@ import { proposeBooking } from "@/lib/bookings";
 import { listServiceTypes } from "@/lib/catalogue";
 import { catererFunctions, getCatererView } from "@/lib/caterer-headcount";
 import { saveDocument } from "@/lib/documents";
+import { signInWithIdentifier } from "@/lib/auth-core";
 import { createEvent } from "@/lib/events";
 import { createFunction } from "@/lib/functions";
 import type { PolicySubject } from "@/lib/policy";
@@ -189,6 +190,27 @@ describe("vendor quotes, bookings and invoices (VND-10)", () => {
     expect(reads).not.toContain("estimate");
     expect(reads).not.toContain("payer");
     expect(reads).toContain("Jain counter");
+  });
+
+  it("shows the vendor only contracts, invoices and receipts on a booking, plus its own uploads", async () => {
+    const a = await eventWithVendor("a@example.com", "Spice", "chef@spice.in");
+    const { user: chef } = await db().transaction((tx) => signInWithIdentifier(tx, { type: "email", value: "chef@spice.in" }));
+    const q = await submitPortalQuote(db(), { eventId: a.event.id, vendorId: a.vendor.id, actor: actorOf(chef), requestId: a.requestId, reviseQuoteId: null, quote: quoteFor(a.req) });
+    const { getQuote } = await import("@/lib/quotes");
+    const v = await getQuote(db(), a.event.id, q.id);
+    const b = await proposeBooking(db(), a.H, { quoteId: q.id, lineIds: [v.lines[0].id], today: TODAY });
+    const owner = { bookingId: b.booking.id };
+    const contract = await saveDocument(db(), a.event.id, actorOf(a.host), { owner, kind: "contract", filename: "contract.pdf", data: PDF });
+    const receipt = await saveDocument(db(), a.event.id, actorOf(a.host), { owner, kind: "receipt", filename: "receipt.pdf", data: PDF });
+    const internal = await saveDocument(db(), a.event.id, actorOf(a.host), { owner, kind: "other", filename: "negotiation-notes.pdf", data: PDF });
+    const theirs = await saveDocument(db(), a.event.id, actorOf(chef), { owner, kind: "other", filename: "menu.pdf", data: PDF });
+
+    const visible = [contract.id, receipt.id, theirs.id].sort();
+    expect((await getPortalBooking(db(), a.event.id, a.vendor.id, b.booking.id, TODAY)).documents.map((d) => d.id).sort()).toEqual(visible);
+    expect((await listPortalDocuments(db(), a.event.id, a.vendor.id)).map((d) => d.id).sort()).toEqual(visible);
+    expect(await portalDocumentAllowed(db(), a.event.id, a.vendor.id, internal.id)).toBe(false);
+    expect(await portalDocumentAllowed(db(), a.event.id, a.vendor.id, contract.id)).toBe(true);
+    expect(await portalDocumentAllowed(db(), a.event.id, a.vendor.id, theirs.id)).toBe(true);
   });
 
   it("a pending booking shows awaiting confirmation and no headcount until a Host approves", async () => {

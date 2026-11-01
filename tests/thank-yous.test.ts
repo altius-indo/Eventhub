@@ -9,7 +9,9 @@ import { processOutbox } from "@/lib/outbox";
 import { ForbiddenError } from "@/lib/policy";
 import {
   containsAmount,
+  deliveryFailed,
   draftMany,
+  resendThankYou,
   estimateSend,
   listTracker,
   renderNote,
@@ -110,6 +112,38 @@ describe("sending (GFT-08/09)", () => {
     const tracker = await listTracker(db(), s.H);
     expect(Object.fromEntries(tracker.map((t) => [t.householdName, t.status]))).toEqual({ Gupta: "drafted", "Sharma family": "sent", Verma: "not_needed" });
     expect(tracker.find((t) => t.householdName === "Sharma family")?.delivery).toBe("sent");
+  });
+
+  it("sends the note as it was when sent; a sent note can't be redrafted", async () => {
+    const s = await setup();
+    await saveDraft(db(), s.H, s.sharma.household.id, { text: "Original note" });
+    const [row] = await db().select().from(thankYous).where(eq(thankYous.householdId, s.sharma.household.id));
+    await sendThankYous(db(), s.H, [row.id], { bulk: false });
+    await expect(saveDraft(db(), s.H, s.sharma.household.id, { text: "Changed note" })).rejects.toMatchObject({ code: "already_sent" });
+    // Even if the stored text changes before the queue drains, the snapshot goes out.
+    await db().update(thankYous).set({ draftText: "Changed behind the queue" }).where(eq(thankYous.id, row.id));
+    await processOutbox(db());
+    const mail = (await db().select().from(devOutbox)).find((m) => m.to === "rajesh@example.com");
+    expect(mail?.body).toBe("Original note");
+  });
+
+  it("shows a note that failed on every channel and lets the team send it again", async () => {
+    const s = await setup();
+    await saveDraft(db(), s.H, s.sharma.household.id, { text: "Thank you!" });
+    const [row] = await db().select().from(thankYous).where(eq(thankYous.householdId, s.sharma.household.id));
+    await sendThankYous(db(), s.H, [row.id], { bulk: false });
+    await expect(resendThankYou(db(), s.H, s.sharma.household.id)).rejects.toMatchObject({ code: "not_failed" });
+    // The only channel (email) gave up after its retries.
+    await db().update(outboundMessages).set({ status: "failed", errorCode: "bounced" }).where(eq(outboundMessages.thankYouId, row.id));
+    const tracker = await listTracker(db(), s.H);
+    const sharma = tracker.find((t) => t.householdName === "Sharma family")!;
+    expect([sharma.status, sharma.delivery, deliveryFailed(sharma.delivery)]).toEqual(["sent", "failed", true]);
+    const r = await resendThankYou(db(), s.H, s.sharma.household.id);
+    expect(r.sent).toBe(1);
+    await processOutbox(db());
+    const tracker2 = await listTracker(db(), s.H);
+    expect(tracker2.find((t) => t.householdName === "Sharma family")?.delivery).toBe("sent");
+    expect((await db().select().from(devOutbox)).filter((m) => m.to === "rajesh@example.com")).toHaveLength(1);
   });
 
   it("% thanked counts sent over families that need thanks", async () => {

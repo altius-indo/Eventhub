@@ -30,7 +30,7 @@ import { todayIn } from "./tasks";
  */
 
 export class ThankYouError extends Error {
-  constructor(public code: "not_found" | "invalid" | "stale" | "unknown_field" | "contains_amount" | "not_drafted" | "no_template") {
+  constructor(public code: "not_found" | "invalid" | "stale" | "unknown_field" | "contains_amount" | "not_drafted" | "no_template" | "already_sent" | "not_failed") {
     super(code);
   }
 }
@@ -151,6 +151,10 @@ export type TrackerRow = {
   delivery: string | null;
 };
 
+/** Outbound statuses meaning the note didn't reach the family (the latest attempt, after fallbacks). */
+export const FAILED_DELIVERY = new Set(["failed", "skipped_optout", "skipped_quota", "skipped_unavailable"]);
+export const deliveryFailed = (status: string | null | undefined) => !!status && FAILED_DELIVERY.has(status);
+
 export const trackerFilterKeys = ["status", "gift", "attended", "q"] as const;
 export type TrackerFilters = Partial<Record<(typeof trackerFilterKeys)[number], string>>;
 
@@ -239,7 +243,8 @@ async function lockRow(tx: Tx, eventId: string, householdId: string) {
 
 /**
  * Saves a family's draft: from a template (with a personal line) or edited text. The stored
- * text never contains an amount. Status becomes "drafted" unless it was already sent.
+ * text never contains an amount. A note already sent can't be changed (reopen it first, or use
+ * "send again" when its delivery failed).
  */
 export async function saveDraft(
   db: Database,
@@ -250,6 +255,7 @@ export async function saveDraft(
   assertCan(c.subject, "gifts.manage");
   return db.transaction(async (tx) => {
     const row = await lockRow(tx, c.eventId, householdId);
+    if (row?.status === "sent") throw new ThankYouError("already_sent");
     if (input.version !== undefined && (row?.version ?? 0) !== input.version) throw new ThankYouError("stale");
     let text: string;
     let templateId: string | null = row?.templateId ?? null;
@@ -266,7 +272,7 @@ export async function saveDraft(
       text = renderNote(tpl.body, vars);
       templateId = tpl.id;
     }
-    const status = row?.status === "sent" ? "sent" : "drafted";
+    const status = "drafted";
     if (row) {
       const [r] = await tx.update(thankYous).set({ draftText: text, templateId, status, version: row.version + 1, updatedAt: new Date() }).where(eq(thankYous.id, row.id)).returning();
       return r;
@@ -319,6 +325,8 @@ export async function setStatus(
 // ---------------------------------------------------------------------------
 
 registerTemplate("thank_you", async (vars, _locale, { db, row }) => {
+  // The note as it was when sent (snapshotted at enqueue); rows queued before that read the draft.
+  if (vars.text != null) return { subject: vars.subject == null ? undefined : String(vars.subject), text: scrubAmounts(String(vars.text)) };
   if (!row.thankYouId) throw new DeliveryError("no thank-you");
   const [ty] = await db.select({ text: thankYous.draftText }).from(thankYous).where(eq(thankYous.id, row.thankYouId));
   if (!ty?.text) throw new DeliveryError("no draft");
@@ -357,7 +365,8 @@ async function messagesFor(tx: Tx, eventId: string, ids: string[], bulk: boolean
         eventId,
         purpose: "thank_you",
         templateKey: "thank_you",
-        vars: { subject: ev?.coupleNames || ev?.name || "" },
+        // The text is snapshotted here, so editing the note later never changes what goes out.
+        vars: { subject: ev?.coupleNames || ev?.name || "", text: scrubAmounts(r.ty.draftText!) },
         recipient: { householdId: r.household.id, addresses: { whatsapp: phone, sms: phone, email }, locale: r.household.locale, preferred: pref && ["whatsapp", "email", "sms"].includes(pref) ? pref : null },
         channels: ["whatsapp", "email", "sms"],
         bulk,
@@ -406,6 +415,35 @@ export async function sendThankYous(db: Database, c: GiftCtx, thankYouIds: strin
     if (sendable.length) await audit(tx, { eventId: c.eventId, actor: c.actor, action: "thank_you.sent_messages", entityType: "event", entityId: c.eventId, data: { count: sendable.length } });
     return { sent: sendable.length, noAddress: msgs.length - sendable.length, notDrafted: ids.length - msgs.length, queued: res.queued };
   });
+}
+
+/** The latest delivery attempt of a thank-you (after any channel fallbacks). */
+async function latestDelivery(db: Tx, thankYouId: string) {
+  const [d] = await db
+    .select({ status: outboundMessages.status, channel: outboundMessages.channel })
+    .from(outboundMessages)
+    .where(eq(outboundMessages.thankYouId, thankYouId))
+    .orderBy(desc(outboundMessages.createdAt))
+    .limit(1);
+  return d ?? null;
+}
+
+/**
+ * A note whose delivery failed on every channel goes back to "drafted" and is sent again (the
+ * team may first fix the family's contact details). Families without a usable contact stay
+ * drafted, so the note can be edited or marked thanked another way.
+ */
+export async function resendThankYou(db: Database, c: GiftCtx, householdId: string) {
+  assertCan(c.subject, "gifts.manage");
+  const id = await db.transaction(async (tx) => {
+    const row = await lockRow(tx, c.eventId, householdId);
+    if (!row || row.status !== "sent") throw new ThankYouError("not_failed");
+    const d = await latestDelivery(tx, row.id);
+    if (!deliveryFailed(d?.status)) throw new ThankYouError("not_failed");
+    await tx.update(thankYous).set({ status: "drafted", version: row.version + 1, updatedAt: new Date() }).where(eq(thankYous.id, row.id));
+    return row.id;
+  });
+  return sendThankYous(db, c, [id], { bulk: false });
 }
 
 // ---------------------------------------------------------------------------
@@ -498,9 +536,7 @@ export async function getThankYou(db: Tx, c: GiftCtx, householdId: string) {
     .from(gifts)
     .leftJoin(functions, eq(functions.id, gifts.functionId))
     .where(and(eq(gifts.eventId, c.eventId), eq(gifts.householdId, householdId)));
-  const [delivery] = row
-    ? await db.select({ status: outboundMessages.status, channel: outboundMessages.channel }).from(outboundMessages).where(eq(outboundMessages.thankYouId, row.id)).orderBy(desc(outboundMessages.createdAt)).limit(1)
-    : [];
+  const delivery = row ? await latestDelivery(db, row.id) : null;
   const { vars, itemWarning } = await noteVarsFor(db, c.eventId, householdId);
-  return { household: h, row: row ?? null, gifts: giftList, vars, itemWarning, delivery: delivery ?? null };
+  return { household: h, row: row ?? null, gifts: giftList, vars, itemWarning, delivery };
 }

@@ -9,7 +9,7 @@ import { thankedStats } from "@/lib/gifts";
 import { getEventContext } from "@/lib/server/event-context";
 import { dctx } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
-import { listTemplates, listTracker, trackerFilterKeys, type TrackerFilters } from "@/lib/thank-yous";
+import { deliveryFailed, listTemplates, listTracker, trackerFilterKeys, type TrackerFilters } from "@/lib/thank-yous";
 import { statusTone } from "../shared";
 import { draftManyAction } from "./actions";
 
@@ -113,7 +113,11 @@ export default async function ThankYousPage({ params, searchParams }: PageProps<
                   <Badge tone={statusTone[r.status]}>{t(`thankYous.statuses.${r.status}`)}</Badge>
                   {r.giftCount > 0 && <Badge tone="primary">{t("thankYous.gifts", { count: r.giftCount })}</Badge>}
                   {r.attended && <Badge>{t("gifts.attended")}</Badge>}
-                  {r.delivery && r.delivery !== "sent" && <Badge tone={r.delivery === "failed" ? "danger" : "neutral"}>{t(`thankYous.delivery.${r.delivery}` as MessageKey)}</Badge>}
+                  {r.status === "sent" && deliveryFailed(r.delivery) ? (
+                    <Badge tone="danger">{t("thankYous.deliveryFailed")}</Badge>
+                  ) : (
+                    r.delivery && r.delivery !== "sent" && r.delivery !== "delivered" && <Badge tone={deliveryFailed(r.delivery) ? "danger" : "neutral"}>{t(`thankYous.delivery.${r.delivery}` as MessageKey)}</Badge>
+                  )}
                   {r.sentAt && (
                     <span className="ml-auto text-xs text-muted">
                       {[r.channel && t(`thankYous.channels.${r.channel}`), formatDateTime(locale, r.sentAt), r.sentByName].filter(Boolean).join(" · ")}

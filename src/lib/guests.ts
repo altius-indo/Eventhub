@@ -14,6 +14,7 @@ import {
   type Household,
 } from "@/db/schema";
 import { audit, type Actor } from "./audit";
+import { freezeDueLocks } from "./caterer-headcount";
 import { anonymiseGiftsOfHousehold } from "./gifts";
 import { assertFunctionsInEvent, NotFoundError } from "./functions";
 import { isUuid } from "./ids";
@@ -148,6 +149,7 @@ export async function createHousehold(
   if (input.members.length === 0) throw new GuestError("last_member");
   return db.transaction(async (tx) => {
     const functionIds = await assertFunctionsInEvent(tx, eventId, input.functionIds ?? []);
+    await freezeDueLocks(tx, eventId, functionIds);
     const [household] = await tx.insert(households).values({ eventId, ...input.household }).returning();
     const members = await tx
       .insert(guests)
@@ -171,19 +173,24 @@ export async function createHousehold(
 }
 
 export async function updateHousehold(db: Database, eventId: string, householdId: string, input: HouseholdInput) {
-  const [h] = await db
-    .update(households)
-    .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(households.id, householdId), eq(households.eventId, eventId)))
-    .returning();
-  if (!h) throw new GuestError("not_found");
-  return h;
+  return db.transaction(async (tx) => {
+    // The side feeds the headcount: a due caterer lock freezes before this change (RSV-07).
+    await freezeDueLocks(tx, eventId, null);
+    const [h] = await tx
+      .update(households)
+      .set({ ...input, updatedAt: new Date() })
+      .where(and(eq(households.id, householdId), eq(households.eventId, eventId)))
+      .returning();
+    if (!h) throw new GuestError("not_found");
+    return h;
+  });
 }
 
 export async function deleteHousehold(db: Database, eventId: string, householdId: string, actor: Actor) {
   await db.transaction(async (tx) => {
     // Erasure (EVT-09): their gifts stay for reconciliation, without the name or link.
     await anonymiseGiftsOfHousehold(tx, eventId, householdId);
+    await freezeDueLocks(tx, eventId, null);
     const [h] = await tx
       .delete(households)
       .where(and(eq(households.id, householdId), eq(households.eventId, eventId)))
@@ -197,6 +204,7 @@ export async function deleteHousehold(db: Database, eventId: string, householdId
 export async function addGuest(db: Database, eventId: string, householdId: string, input: GuestInput) {
   return db.transaction(async (tx) => {
     await getHousehold(tx, eventId, householdId);
+    await freezeDueLocks(tx, eventId, null);
     const [{ n }] = await tx.select({ n: count() }).from(guests).where(eq(guests.householdId, householdId));
     const [guest] = await tx
       .insert(guests)
@@ -219,13 +227,17 @@ export async function addGuest(db: Database, eventId: string, householdId: strin
 }
 
 export async function updateGuest(db: Database, eventId: string, guestId: string, input: GuestInput) {
-  const [g] = await db
-    .update(guests)
-    .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(guests.id, guestId), eq(guests.eventId, eventId)))
-    .returning();
-  if (!g) throw new GuestError("not_found");
-  return g;
+  return db.transaction(async (tx) => {
+    // Age group and diet feed the headcount: a due caterer lock freezes first (RSV-07).
+    await freezeDueLocks(tx, eventId, null);
+    const [g] = await tx
+      .update(guests)
+      .set({ ...input, updatedAt: new Date() })
+      .where(and(eq(guests.id, guestId), eq(guests.eventId, eventId)))
+      .returning();
+    if (!g) throw new GuestError("not_found");
+    return g;
+  });
 }
 
 /** Removes a member. The last member can't be removed; delete the household instead. */
@@ -235,6 +247,7 @@ export async function removeGuest(db: Database, eventId: string, guestId: string
     await tx.select({ id: households.id }).from(households).where(eq(households.id, guest.householdId)).for("update");
     const [{ n }] = await tx.select({ n: count() }).from(guests).where(eq(guests.householdId, guest.householdId));
     if (n <= 1) throw new GuestError("last_member");
+    await freezeDueLocks(tx, eventId, null);
     await tx.delete(guests).where(eq(guests.id, guestId));
     if (guest.isHead) {
       const [next] = await tx
@@ -261,6 +274,7 @@ export async function setGuestInvites(db: Database, eventId: string, guestId: st
   await db.transaction(async (tx) => {
     await getGuest(tx, eventId, guestId);
     const ids = await assertFunctionsInEvent(tx, eventId, functionIds);
+    await freezeDueLocks(tx, eventId, null);
     await tx.delete(functionInvites).where(eq(functionInvites.guestId, guestId));
     await inviteGuests(tx, [guestId], ids);
   });
@@ -279,6 +293,7 @@ export async function setHouseholdInvites(
     const memberIds = new Set(members.map((m) => m.id));
     const all = await assertFunctionsInEvent(tx, eventId, Object.values(invites).flat());
     const allowed = new Set(all);
+    await freezeDueLocks(tx, eventId, null);
     if (memberIds.size) await tx.delete(functionInvites).where(inArray(functionInvites.guestId, [...memberIds]));
     for (const [guestId, fnIds] of Object.entries(invites)) {
       if (!memberIds.has(guestId)) throw new GuestError("not_found");
@@ -303,6 +318,7 @@ export async function bulkInvite(db: Database, eventId: string, guestIds: string
       : [];
     const ids = owned.map((g) => g.id);
     if (ids.length === 0) return;
+    await freezeDueLocks(tx, eventId, [functionId]);
     if (invite) await inviteGuests(tx, ids, [functionId]);
     else await tx.delete(functionInvites).where(and(eq(functionInvites.functionId, functionId), inArray(functionInvites.guestId, ids)));
   });

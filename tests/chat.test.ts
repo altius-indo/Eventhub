@@ -1,10 +1,12 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { eventMembers, functions, messages, notifications, threads, vendors } from "@/db/schema";
+import { eventMembers, functions, messages, notifications, outboundMessages, threads, vendors } from "@/db/schema";
+import { getUsage } from "@/lib/outbox";
 import { signInWithIdentifier } from "@/lib/auth-core";
 import {
   attachmentForViewer,
   deleteOwnMessage,
+  discardMessage,
   latestMessages,
   listThreadsForMember,
   markRead,
@@ -188,6 +190,21 @@ describe("deleting and attachments", () => {
     expect(row.body).toBe("");
     const r = await messagesAfter(db(), thread, plannerV, message.seq, message.seq);
     expect(r.deleted).toEqual([message.id]);
+  });
+
+  it("a message discarded after a failed attachment takes its notifications and queued emails with it", async () => {
+    const { ev, hostV, planner } = await setup();
+    const { message } = await postMessage(db(), ev.id, { kind: "team" }, hostV, { body: "", mentions: [planner.id], withAttachment: true });
+    const before = await db().select().from(notifications).where(eq(notifications.userId, planner.id));
+    expect(before.map((n) => n.kind)).toEqual(["mention"]);
+    const emails = await db().select().from(outboundMessages).where(eq(outboundMessages.idempotencyKey, `n:${before[0].id}`));
+    expect(emails.map((e) => e.status)).toEqual(["queued"]);
+    const reserved = (await getUsage(db(), ev.id)).email.reserved;
+    await discardMessage(db(), ev.id, message.id, hostV.userId);
+    expect(await db().select().from(notifications).where(eq(notifications.userId, planner.id))).toHaveLength(0);
+    const [email] = await db().select().from(outboundMessages).where(eq(outboundMessages.id, emails[0].id));
+    expect(email.status).toBe("superseded");
+    expect((await getUsage(db(), ev.id)).email.reserved).toBe(reserved - 1);
   });
 
   it("vendors can download attachments only from their own thread", async () => {

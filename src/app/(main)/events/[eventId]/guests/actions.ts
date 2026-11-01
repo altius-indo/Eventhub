@@ -6,6 +6,8 @@ import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { guests, households, type RsvpStatus } from "@/db/schema";
 import { audit } from "@/lib/audit";
+import { BroadcastError, setHouseholdOptOut } from "@/lib/broadcasts";
+import { isUuid } from "@/lib/ids";
 import { DeliveryError } from "@/lib/delivery";
 import { regenerateGuestLink, revokeGuestLink, sendGuestLink } from "@/lib/guest-links";
 import { RsvpError, saveRsvps } from "@/lib/rsvp";
@@ -237,6 +239,19 @@ export async function revokeLinkAction(eventId: string, householdId: string) {
   const h = await revokeGuestLink(getDb(), eventId, householdId);
   if (h) await audit(getDb(), { eventId, actor: ctx.actor, action: "guest_link.revoked", entityType: "household", entityId: h.id, data: { name: h.name } });
   refresh(eventId);
+}
+
+/** Stops or restarts broadcasts to a family on all channels (they replied STOP or asked), audited. */
+export async function broadcastOptOutAction(eventId: string, householdId: string, optedOut: boolean) {
+  const { ctx, allowed } = await editor(eventId);
+  if (!allowed || !isUuid(householdId)) return;
+  try {
+    await setHouseholdOptOut(getDb(), { eventId, householdId, actor: ctx.actor, optedOut });
+  } catch (e) {
+    if (e instanceof BroadcastError) return;
+    throw e;
+  }
+  revalidatePath(`/events/${eventId}/guests/${householdId}`);
 }
 
 export async function familySettingsAction(eventId: string, householdId: string, _prev: State, formData: FormData): Promise<State> {

@@ -186,6 +186,7 @@ export async function addPlusOne(
     const [h] = await tx.select().from(households).where(eq(households.id, input.household.id)).for("update");
     const members = await tx.select().from(guests).where(eq(guests.householdId, h.id));
     if (members.filter((m) => m.addedByGuest).length >= h.plusOnesAllowed) throw new RsvpError("no_allowance");
+    await freezeDueLocks(tx, h.eventId, null);
     const host = members.find((m) => m.id === input.invitedWithId);
     if (!host) throw new RsvpError("not_found");
     const [guest] = await tx
@@ -207,11 +208,14 @@ export async function addPlusOne(
 
 export async function removePlusOne(db: Database, input: { household: Household; event: Pick<Event, "rsvpDeadline" | "timezone">; guestId: string; byGuest: boolean }) {
   if (input.byGuest && !rsvpOpen(input.event)) throw new RsvpError("closed");
-  const res = await db
-    .delete(guests)
-    .where(and(eq(guests.id, input.guestId), eq(guests.householdId, input.household.id), eq(guests.addedByGuest, true)))
-    .returning();
-  if (res.length === 0) throw new RsvpError("not_found");
+  await db.transaction(async (tx) => {
+    await freezeDueLocks(tx, input.household.eventId, null);
+    const res = await tx
+      .delete(guests)
+      .where(and(eq(guests.id, input.guestId), eq(guests.householdId, input.household.id), eq(guests.addedByGuest, true)))
+      .returning();
+    if (res.length === 0) throw new RsvpError("not_found");
+  });
 }
 
 // ---------------------------------------------------------------------------
