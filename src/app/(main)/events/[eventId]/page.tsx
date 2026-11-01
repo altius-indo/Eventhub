@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getDb } from "@/db";
 import { Card, CardTitle, LinkButton } from "@/components/ui";
-import { formatDay, formatInrShort, formatTime, type MessageKey } from "@/i18n/core";
+import { formatDay, formatInrShort, formatTime } from "@/i18n/core";
 import { budgetFacts, sumFacts } from "@/lib/budget";
 import { payables } from "@/lib/payments";
 import { gapView } from "@/lib/services";
@@ -9,6 +9,8 @@ import { countPendingApprovals } from "@/lib/approvals";
 import { memberCounts } from "@/lib/events";
 import { invitedCounts, listFunctions } from "@/lib/functions";
 import { guestStats } from "@/lib/guests";
+import { headcounts } from "@/lib/rsvp";
+import { arrivalsBoard } from "@/lib/transfers";
 import { taskSummary, todayIn } from "@/lib/tasks";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
@@ -18,7 +20,7 @@ function daysUntil(isoDate: string, today: string): number {
   return Math.round((Date.parse(isoDate) - Date.parse(today)) / 86_400_000);
 }
 
-const upcoming: MessageKey[] = ["dashboard.modules.messaging"];
+const FUNNEL = ["invited", "responded", "attending", "maybe", "declined", "pending"] as const;
 
 export default async function EventDashboard({ params }: PageProps<"/events/[eventId]">) {
   const { eventId } = await params;
@@ -27,7 +29,8 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
   const db = getDb();
   const { event } = ctx;
   const today = todayIn(event.timezone);
-  const [counts, pendingMap, stats, fns, invited, tasks, facts, due, gaps] = await Promise.all([
+  // RPT-01: every card's data in one round of parallel queries.
+  const [counts, pendingMap, stats, fns, invited, tasks, facts, due, gaps, heads, arrivals] = await Promise.all([
     memberCounts(db, eventId),
     countPendingApprovals(db, [eventId]),
     guestStats(db, eventId),
@@ -37,7 +40,23 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
     budgetFacts(db, eventId),
     payables(db, eventId, today, new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86_400_000).toISOString().slice(0, 10)),
     gapView(db, eventId, today),
+    headcounts(db, eventId),
+    // Travel times are wall-clock in the event's timezone, so "today" there is the right day.
+    arrivalsBoard(db, eventId, { date: today, windowMinutes: 24 * 60, direction: "arrival" }),
   ]);
+  const funnel = { invited: 0, responded: 0, attending: 0, maybe: 0, declined: 0, pending: 0 };
+  for (const h of heads.values()) {
+    funnel.invited += h.invited;
+    funnel.attending += h.attending;
+    funnel.maybe += h.maybe;
+    funnel.declined += h.declined;
+    funnel.pending += h.pending;
+  }
+  funnel.responded = funnel.attending + funnel.maybe + funnel.declined;
+  const arriving = arrivals.flatMap((w) => w.entries);
+  const needPickup = arriving.filter((a) => a.needs);
+  const onRun = needPickup.filter((a) => a.runIds.length > 0).length;
+  const invitedFns = fns.filter((f) => heads.has(f.id));
   const money = sumFacts(facts);
   const overdue = due.filter((d) => d.status === "overdue").length;
   const pending = pendingMap.get(eventId) ?? 0;
@@ -138,15 +157,79 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
         <p className="text-sm text-muted">{t("dashboard.paymentsSummary", { overdue, amount: formatInrShort(locale, due.reduce((a, d) => a + d.remaining, 0)) })}</p>
       </Card>
 
-      <Card className="sm:col-span-2 lg:col-span-1">
-        <CardTitle>{t("dashboard.comingNext")}</CardTitle>
-        <ul className="grid gap-2">
-          {upcoming.map((key) => (
-            <li key={key} className="rounded-lg border border-dashed border-border px-3 py-3 text-sm text-muted">
-              {t(key)}
-            </li>
-          ))}
-        </ul>
+      <Card>
+        <CardTitle action={<Link href={`${base}/rsvp`} className="text-sm text-primary" aria-label={t("nav.rsvp")}>→</Link>}>
+          {t("dashboard.rsvpCard")}
+        </CardTitle>
+        {funnel.invited > 0 ? (
+          <>
+            <dl className="space-y-1.5">
+              {FUNNEL.map((key) => {
+                const n = funnel[key];
+                const pct = Math.round((n / funnel.invited) * 100);
+                return (
+                  <div key={key}>
+                    <div className="flex justify-between text-sm">
+                      <dt>{t(`dashboard.funnel.${key}`)}</dt>
+                      <dd className="font-medium tabular-nums">{key === "invited" ? n : `${n} · ${pct}%`}</dd>
+                    </div>
+                    <div className="mt-0.5 h-1.5 rounded-full bg-surface-muted" aria-hidden>
+                      <div className={`h-1.5 rounded-full ${key === "declined" ? "bg-danger" : key === "pending" ? "bg-warning" : "bg-primary"}`} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </dl>
+            <p className="mt-2 text-xs text-muted">{t("dashboard.rsvpHelp")}</p>
+          </>
+        ) : (
+          <p className="text-sm text-muted">{t("dashboard.noInvites")}</p>
+        )}
+      </Card>
+
+      <Card>
+        <CardTitle action={<Link href={`${base}/rsvp`} className="text-sm text-primary" aria-label={t("rsvp.headcountTitle")}>→</Link>}>
+          {t("dashboard.headcountCard")}
+        </CardTitle>
+        {invitedFns.length > 0 ? (
+          <ul className="divide-y divide-border">
+            {invitedFns.map((f) => {
+              const h = heads.get(f.id)!;
+              return (
+                <li key={f.id}>
+                  <Link href={`${base}/rsvp#fn-${f.id}`} className="flex min-h-11 flex-col justify-center py-1 hover:text-primary">
+                    <span className="font-medium">{f.name}</span>
+                    <span className="text-sm text-muted">{t("dashboard.headcountRow", { attending: h.attending, maybe: h.maybe, invited: h.invited })}</span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted">{t("dashboard.noInvites")}</p>
+        )}
+      </Card>
+
+      <Card>
+        <CardTitle
+          action={
+            <Link href={`${base}/logistics/arrivals?date=${today}`} className="text-sm text-primary" aria-label={t("dashboard.arrivalsCard")}>
+              →
+            </Link>
+          }
+        >
+          {t("dashboard.arrivalsCard")}
+        </CardTitle>
+        {arriving.length > 0 ? (
+          <>
+            <p className="text-2xl font-semibold">{arriving.length}</p>
+            <p className={`text-sm ${needPickup.length > onRun ? "text-danger" : "text-muted"}`}>
+              {t("dashboard.arrivalsSummary", { pickup: needPickup.length, assigned: onRun })}
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-muted">{t("dashboard.noArrivals")}</p>
+        )}
       </Card>
     </div>
   );

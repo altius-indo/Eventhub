@@ -1,4 +1,4 @@
-import { Card, CardTitle, PageHeader } from "@/components/ui";
+import { buttonClass, Card, CardTitle, PageHeader } from "@/components/ui";
 import { getDb } from "@/db";
 import { formatInr, formatInrShort, type Locale, type Translator } from "@/i18n/core";
 import { budgetFacts, byPayer, groupFacts, sumFacts, type Measures } from "@/lib/budget";
@@ -73,7 +73,17 @@ export default async function BudgetPage({ params }: PageProps<"/events/[eventId
   const empty = !facts.length;
   return (
     <div className="space-y-4">
-      <PageHeader title={t("budget.title")} subtitle={t("budget.gstNote")} />
+      <PageHeader
+        title={t("budget.title")}
+        subtitle={t("budget.gstNote")}
+        action={
+          empty ? undefined : (
+            <a href={`/events/${eventId}/budget/export`} className={buttonClass("secondary")}>
+              {t("budget.export")}
+            </a>
+          )
+        }
+      />
       {empty ? (
         <Card>
           <p className="text-muted">{t("budget.empty")}</p>

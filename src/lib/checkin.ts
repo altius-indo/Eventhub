@@ -3,7 +3,8 @@ import type { Database, Tx } from "@/db";
 import { checkIns, functionInvites, functions, guests, households, rsvps, users, type Guest, type Household, type RsvpStatus } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 import { freezeDueLocks } from "./caterer-headcount";
-import { resolveGuestToken, resolvePassToken } from "./guest-links";
+import { sha256 } from "./crypto";
+import { makePassToken, resolveGuestToken, resolvePassToken } from "./guest-links";
 
 export class CheckInError extends Error {
   constructor(public code: "invalid_pass" | "wrong_event" | "function_not_found" | "not_invited" | "not_found") {
@@ -280,4 +281,77 @@ export async function recentCheckIns(db: Tx, eventId: string, functionId: string
     .where(and(eq(checkIns.eventId, eventId), eq(checkIns.functionId, functionId)))
     .orderBy(desc(checkIns.checkedInAt))
     .limit(limit);
+}
+
+// ---------------------------------------------------------------------------
+// Offline snapshot (SEAT-04, ADR-0034)
+// ---------------------------------------------------------------------------
+
+export type SnapshotMember = {
+  id: string;
+  name: string;
+  ageGroup: Guest["ageGroup"];
+  invited: boolean;
+  rsvp: RsvpStatus | null;
+  checkedInAt: string | null;
+};
+export type SnapshotHousehold = {
+  id: string;
+  name: string;
+  side: Household["side"];
+  /** SHA-256 (base64url) of the family's current entry-pass token; null when the link is revoked. */
+  passHash: string | null;
+  members: SnapshotMember[];
+};
+export type CheckInSnapshot = { functionId: string; generatedAt: string; households: SnapshotHousehold[] };
+
+/**
+ * What the check-in desk caches on the device so pass lookup and name search still work when it
+ * loads without a connection (ADR-0034). Only families with someone invited to (or already checked
+ * in at) this function, and only names, age group, RSVP and check-in state: no phones, emails,
+ * addresses, notes, travel or gift data. The pass is stored as a hash, never as a usable token.
+ */
+export async function checkInSnapshot(db: Tx, eventId: string, functionId: string, now = new Date()): Promise<CheckInSnapshot> {
+  await checkFunction(db, eventId, functionId);
+  const relevant = sql`(exists (select 1 from ${functionInvites} fi join ${guests} g2 on g2.id = fi.guest_id
+      where g2.household_id = ${households.id} and fi.function_id = ${functionId})
+    or exists (select 1 from ${checkIns} ci join ${guests} g3 on g3.id = ci.guest_id
+      where g3.household_id = ${households.id} and ci.function_id = ${functionId}))`;
+  const rows = await db
+    .select({
+      householdId: households.id,
+      householdName: households.name,
+      side: households.side,
+      linkVersion: households.linkVersion,
+      linkRevokedAt: households.linkRevokedAt,
+      id: guests.id,
+      name: guests.name,
+      ageGroup: guests.ageGroup,
+      invited: sql<boolean>`${functionInvites.guestId} is not null`,
+      rsvp: rsvps.status,
+      checkedInAt: checkIns.checkedInAt,
+    })
+    .from(households)
+    .innerJoin(guests, eq(guests.householdId, households.id))
+    .leftJoin(functionInvites, and(eq(functionInvites.guestId, guests.id), eq(functionInvites.functionId, functionId)))
+    .leftJoin(rsvps, and(eq(rsvps.guestId, guests.id), eq(rsvps.functionId, functionId)))
+    .leftJoin(checkIns, and(eq(checkIns.guestId, guests.id), eq(checkIns.functionId, functionId)))
+    .where(and(eq(households.eventId, eventId), relevant))
+    .orderBy(asc(households.name), asc(households.id), asc(guests.sortOrder), asc(guests.createdAt));
+  const out = new Map<string, SnapshotHousehold>();
+  for (const r of rows) {
+    let h = out.get(r.householdId);
+    if (!h) {
+      h = {
+        id: r.householdId,
+        name: r.householdName,
+        side: r.side,
+        passHash: r.linkRevokedAt ? null : sha256(makePassToken(r.householdId, r.linkVersion)),
+        members: [],
+      };
+      out.set(r.householdId, h);
+    }
+    h.members.push({ id: r.id, name: r.name, ageGroup: r.ageGroup, invited: r.invited, rsvp: r.rsvp, checkedInAt: r.checkedInAt?.toISOString() ?? null });
+  }
+  return { functionId, generatedAt: now.toISOString(), households: [...out.values()] };
 }

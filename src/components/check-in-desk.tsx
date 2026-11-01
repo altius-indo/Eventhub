@@ -8,12 +8,18 @@ type Household = { id: string; name: string; side: string; members: Member[] };
 type Counts = { expected: number; maybe: number; noReply: number; arrived: number; arrivedExpected: number; arrivedUninvited: number; walkIns: number };
 type Recent = { guestId: string; name: string; householdName: string; at: string; by: string | null };
 type Queued = { guestId: string; at: string; source: "scan" | "manual"; allowUninvited: boolean };
+/** Cached copy of the function's guest list (GET apiUrl, ADR-0034): names and status only. */
+type Snapshot = {
+  functionId: string;
+  generatedAt: string;
+  households: { id: string; name: string; side: string; passHash: string | null; members: Omit<Member, "checkedInBy">[] }[];
+};
 
 export type DeskLabels = Record<
   | "scan" | "stopScan" | "scanHelp" | "cameraUnavailable" | "search" | "searchButton" | "noResults" | "markArrived" | "arrivedAt" | "by"
   | "notInvited" | "declined" | "undo" | "walkIn" | "walkInName" | "walkInCount" | "walkInAdd" | "expected" | "arrived" | "maybe" | "noReply"
   | "walkIns" | "uninvited" | "recent" | "pending" | "retrying" | "saved" | "allowUninvited" | "invalidPass" | "wrongEvent" | "offline"
-  | "signInAgain" | "legacyPass" | "rejected" | "logIn"
+  | "signInAgain" | "legacyPass" | "rejected" | "logIn" | "offlineCopy"
   | "bride" | "groom" | "both" | "adult" | "child" | "infant" | "somethingWrong",
   string
 >;
@@ -25,6 +31,51 @@ type ApiResult = { kind: "ok"; data: any } | { kind: "rejected"; status: number;
 
 const CHUNK = 50;
 const QUEUE_PREFIX = "eh_checkin_queue_";
+const SNAPSHOT_PREFIX = "eh_checkin_snapshot_";
+const SNAPSHOT_EVERY_TICKS = 6; // refresh the offline copy about once a minute
+
+function readSnapshot(key: string): Snapshot | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(key) ?? "null");
+    return v && Array.isArray(v.households) ? (v as Snapshot) : null;
+  } catch {
+    return null;
+  }
+}
+
+function dropSnapshots(keep?: string) {
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith(SNAPSHOT_PREFIX) && k !== keep) localStorage.removeItem(k);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** Same token rules as the server's extractToken; only entry passes (/c/ or bare) are in the snapshot. */
+function passTokenOf(raw: string): string | null {
+  const s = raw.trim();
+  const m = s.match(/\/(c|g)\/([A-Za-z0-9_-]{44})(?:[/?#]|$)/);
+  if (m) return m[1] === "c" ? m[2] : null;
+  return /^[A-Za-z0-9_-]{44}$/.test(s) ? s : null;
+}
+
+async function sha256b64url(value: string): Promise<string | null> {
+  if (!globalThis.crypto?.subtle) return null;
+  const buf = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  let bin = "";
+  for (const b of buf) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** A snapshot family with this device's queued (not yet synced) check-ins applied. */
+function withQueue(h: Snapshot["households"][number], queue: Queued[]): Household {
+  return {
+    id: h.id,
+    name: h.name,
+    side: h.side,
+    members: h.members.map((m) => ({ ...m, checkedInAt: m.checkedInAt ?? queue.find((q) => q.guestId === m.id)?.at ?? null, checkedInBy: null })),
+  };
+}
 
 function readQueue(key: string): Queued[] {
   try {
@@ -68,6 +119,9 @@ export function CheckInDesk({
   const flushing = useRef<Promise<number> | null>(null);
   // Per user and function, so a shared phone never syncs one person's queue under another's login.
   const storageKey = `${QUEUE_PREFIX}${userId}_${functionId}`;
+  const snapshotKey = `${SNAPSHOT_PREFIX}${userId}_${functionId}`;
+  const snapshotRef = useRef<Snapshot | null>(null);
+  const ticks = useRef(0);
 
   const api = useCallback(
     async (payload: object): Promise<ApiResult> => {
@@ -91,13 +145,41 @@ export function CheckInDesk({
     [apiUrl],
   );
 
+  /** Downloads the offline copy. Signed out or no longer allowed: the copy is deleted. */
+  const refreshSnapshot = useCallback(async () => {
+    let res: Response;
+    try {
+      res = await fetch(apiUrl, { headers: { Accept: "application/json" }, cache: "no-store", redirect: "manual" });
+    } catch {
+      return;
+    }
+    if (res.status === 401 || res.status === 403 || res.status === 404) {
+      snapshotRef.current = null;
+      dropSnapshots();
+      return;
+    }
+    if (!res.ok || res.type === "opaqueredirect") return;
+    try {
+      const data = (await res.json()) as Snapshot;
+      if (!Array.isArray(data?.households)) return;
+      snapshotRef.current = data;
+      localStorage.setItem(snapshotKey, JSON.stringify(data));
+    } catch {
+      /* bad JSON or storage full: keep the previous copy */
+    }
+  }, [apiUrl, snapshotKey]);
+
   const refreshCounts = useCallback(async () => {
     const r = await api({ op: "counts" });
     if (r.kind === "ok") {
       setCounts(r.data.counts);
       setRecent(r.data.recent);
       setSignedOut(false);
-    } else if (r.kind === "retry" && r.signedOut) setSignedOut(true);
+    } else if (r.kind === "retry" && r.signedOut) {
+      setSignedOut(true);
+      snapshotRef.current = null;
+      dropSnapshots();
+    }
   }, [api]);
 
   // The queue lives in localStorage (survives reloads and flaky connections); every change
@@ -168,12 +250,17 @@ export function CheckInDesk({
       // Deferred so the first render matches the server, then shows any saved queue.
       setQueueSize(readQueue(storageKey).length);
       setOnline(navigator.onLine);
-      flush().then(refreshCounts);
+      // Only this person's copy for this function stays on the device.
+      dropSnapshots(snapshotKey);
+      snapshotRef.current = readSnapshot(snapshotKey);
+      flush().then(refreshCounts).then(refreshSnapshot);
     }, 0);
     const id = setInterval(async () => {
       setOnline(navigator.onLine);
       if (readQueue(storageKey).length) await flush();
       await refreshCounts();
+      ticks.current = (ticks.current + 1) % SNAPSHOT_EVERY_TICKS;
+      if (ticks.current === 0) await refreshSnapshot();
     }, 10_000);
     const onOnline = () => {
       setOnline(true);
@@ -188,7 +275,7 @@ export function CheckInDesk({
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
     };
-  }, [flush, refreshCounts, storageKey]);
+  }, [flush, refreshCounts, refreshSnapshot, snapshotKey, storageKey]);
 
   const show = (list: Household[], src: "scan" | "manual") => {
     setHouseholds(list);
@@ -198,12 +285,28 @@ export function CheckInDesk({
     setSelected(sel);
   };
 
+  const copyNote = useCallback(
+    (snap: Snapshot) =>
+      labels.offlineCopy.replace("{time}", new Date(snap.generatedAt).toLocaleTimeString(locale === "hi" ? "hi-IN" : "en-IN", { hour: "numeric", minute: "2-digit", timeZone })),
+    [labels.offlineCopy, locale, timeZone],
+  );
+
   const lookup = useCallback(
     async (raw: string) => {
       setMessage(null);
       const r = await api({ op: "lookup", raw });
       if (r.kind === "retry") {
         if (r.signedOut) setSignedOut(true);
+        // Offline: match the scanned pass against the cached copy (hashes only, ADR-0034).
+        const snap = r.signedOut ? null : snapshotRef.current;
+        const token = snap ? passTokenOf(raw) : null;
+        const hash = token ? await sha256b64url(token).catch(() => null) : null;
+        const found = snap && hash ? snap.households.find((h) => h.passHash === hash) : undefined;
+        if (snap && found) {
+          show([withQueue(found, readQueue(storageKey))], "scan");
+          setMessage({ tone: "warning", text: copyNote(snap) });
+          return;
+        }
         setMessage({ tone: "warning", text: r.signedOut ? labels.signInAgain : labels.offline });
         return;
       }
@@ -214,7 +317,7 @@ export function CheckInDesk({
       show([r.data.household], "scan");
       if (r.data.legacy) setMessage({ tone: "warning", text: labels.legacyPass });
     },
-    [api, labels.invalidPass, labels.legacyPass, labels.offline, labels.signInAgain, labels.wrongEvent],
+    [api, copyNote, labels.invalidPass, labels.legacyPass, labels.offline, labels.signInAgain, labels.wrongEvent, storageKey],
   );
 
   useEffect(() => {
@@ -233,6 +336,19 @@ export function CheckInDesk({
       if (r.data.households.length === 0) setMessage({ tone: "warning", text: labels.noResults });
     } else if (r.kind === "retry") {
       if (r.signedOut) setSignedOut(true);
+      // Offline: search names in the cached copy.
+      const snap = r.signedOut ? null : snapshotRef.current;
+      const needle = q.trim().toLocaleLowerCase();
+      if (snap && needle.length >= 2) {
+        const queue = readQueue(storageKey);
+        const hits = snap.households
+          .filter((h) => h.name.toLocaleLowerCase().includes(needle) || h.members.some((m) => m.name.toLocaleLowerCase().includes(needle)))
+          .slice(0, 20)
+          .map((h) => withQueue(h, queue));
+        show(hits, "manual");
+        setMessage({ tone: "warning", text: hits.length ? copyNote(snap) : `${labels.noResults} ${copyNote(snap)}` });
+        return;
+      }
       setMessage({ tone: "warning", text: r.signedOut ? labels.signInAgain : labels.offline });
     } else setMessage({ tone: "danger", text: labels.somethingWrong });
   }

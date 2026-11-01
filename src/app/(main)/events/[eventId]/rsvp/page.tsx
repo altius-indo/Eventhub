@@ -46,7 +46,7 @@ export default async function RsvpPage({ params }: PageProps<"/events/[eventId]/
         {fns.map((fn) => {
           const c = counts.get(fn.id);
           return (
-            <Card key={fn.id}>
+            <Card key={fn.id} id={`fn-${fn.id}`} className="scroll-mt-20">
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="text-lg font-semibold">{fn.name}</h2>
                 <span className="text-sm text-muted">
