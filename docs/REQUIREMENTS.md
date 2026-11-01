@@ -17,6 +17,7 @@
 | Event type (v1) | Multi-day weddings (mehendi, haldi, sangeet, wedding, reception, …) |
 | Scale per event | 200–1,000 guests, 10–40 vendors |
 | Logged-in users | Planners/staff, Hosts (family), Vendors, Guests |
+| Staff & vendor login | **Passwordless OTP** to phone (SMS / WhatsApp) **or** email; no passwords |
 | Guest access | Magic link per household, no account or password |
 | Payments | **Tracking only**; money moves outside the app |
 | Region | India: INR (lakh/crore formatting), GST on invoices |
@@ -71,7 +72,15 @@
 IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C** = could (later).
 
 ### 3.1 Accounts, Events & Tenancy (`EVT`)
-- **EVT-01 (M)** Sign-up/login for staff roles with email OTP or magic link (phone OTP optional, see §11).
+- **EVT-01 (M)** **Passwordless login** for all staff roles and vendors, with **no passwords anywhere**:
+  - **Identifier**: the user enters a **mobile number** (Indian +91 by default, international allowed) **or an email address** and receives a one-time code.
+  - **Delivery**: phone OTP goes by **SMS** (DLT-registered template), with **WhatsApp** (authentication template) as an alternative or fallback channel. Email OTP goes by transactional email.
+  - **Code rules**: 6 digits, valid 5 minutes, at most 5 attempts per code. Resend cooldown of 30 s, plus rate limits per identifier, IP and device.
+  - **Phone convenience**: Android SMS auto-read (WebOTP API) where supported.
+- **EVT-01a (M)** **One account, multiple identifiers**: a user can link both a phone number and an email, each verified by OTP, and log in with either. Duplicate accounts are merged when an invite's identifier matches an existing user.
+- **EVT-01b (M)** **Invitations by phone or email**: members and vendors are invited by phone number or email. The first login with that identifier, verified by OTP, accepts the invite.
+- **EVT-01c (M)** **Sessions**: on a trusted device, a session lasts 30 days with a sliding expiry. Users can view and revoke active sessions and log out everywhere. Owners can revoke a member's sessions when removing them.
+- **EVT-01d (S)** **Step-up re-verification**: a fresh OTP is required for sensitive actions, such as changing the owner, viewing or editing vendor bank details, deleting an event or bulk-exporting guest data.
 - **EVT-02 (M)** Create an event: name, couple names, dates, primary city, cover image, default currency INR.
 - **EVT-03 (M)** A user can belong to multiple events with a different role in each; event switcher in the header.
 - **EVT-04 (M)** Invite members by email/phone with role and optional side/function scope; revoke access.
@@ -166,7 +175,7 @@ Event
 - **VND-07 (M)** **Revisions**: vendors can revise a quote (versioned); changes to booked lines after booking go through budget approval (BGT-04).
 - **VND-08 (M)** **Invoices on packages**: a vendor may invoice a package as one invoice or per function. Invoice lines are allocated to functions/services the same way as quotes, so budget actuals stay accurate per function.
 - **VND-09 (M)** **Contracts & documents** per booking: upload (PDF/images), key terms (amount, cancellation policy, deliverables, deadlines), with reminders on key dates.
-- **VND-10 (M)** **Vendor portal**: the vendor logs in (email/phone OTP) to see services they're invited to quote on or booked for. From there they:
+- **VND-10 (M)** **Vendor portal**: the vendor logs in with passwordless phone or email OTP (EVT-01) to see services they're invited to quote on or booked for. From there they:
   - submit and revise quotes;
   - see their requirements, functions and run-sheet items;
   - upload invoices;
@@ -220,7 +229,7 @@ Event
 | **Responsiveness / PWA** | Mobile-first for guest, vendor and day-of screens. Installable PWA. Cached run sheet, guest lookup and check-in work through brief connectivity loss at venues. |
 | **Performance** | Lists of 1,000 guests filter and search in under 300 ms (p95); pages interactive in under 2.5 s on 4G. |
 | **Scale** | ~1,000 guests, 40 vendors and ~50 staff users per event; around 100 concurrent events at launch. |
-| **Security** | HTTPS everywhere; magic links are long, unguessable, revocable and rate-limited; role and scope checks enforced server-side; bank/ID data encrypted at rest and masked in the UI. |
+| **Security** | HTTPS everywhere; no passwords stored; OTPs are hashed, short-lived, attempt-limited and rate-limited; magic links are long, unguessable, revocable and rate-limited; role and scope checks enforced server-side; bank/ID data encrypted at rest and masked in the UI. |
 | **Privacy** | Personal data (phones, travel, IDs) visible only to roles that need it. Data export and deletion per event. Aligned with India's DPDP Act 2023 (consent for messaging, purpose limitation). |
 | **Reliability** | Daily backups with point-in-time recovery; 99.5% uptime target; message sending through a retryable job queue. |
 | **Auditability** | Immutable audit log for money, RSVP and permission changes. |
@@ -280,7 +289,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 
 - **Frontend/Backend**: Next.js (App Router, TypeScript), React Server Components plus server actions/route handlers; Tailwind CSS with an accessible component library (e.g. shadcn/ui).
 - **Database**: PostgreSQL via Prisma. Every event-scoped table carries `event_id`; authorisation is centralised in a policy layer (role + side/function scope).
-- **Auth**: Auth.js (NextAuth) with email magic link/OTP for members and vendors; signed, revocable tokens for guest household links.
+- **Auth**: passwordless OTP via phone (SMS through an Indian DLT-compliant provider such as MSG91 or Twilio Verify, plus WhatsApp authentication templates) or email. Implemented as a custom OTP provider on Auth.js, or a managed service. Database-backed sessions; signed, revocable tokens for guest household links.
 - **Background jobs**: Queue (e.g. BullMQ/Redis or pg-boss) for messaging, reminders, imports and exports.
 - **Integrations**: WhatsApp BSP, email provider (Resend/SES), SMS provider with DLT templates, object storage (S3-compatible).
 - **Realtime**: Chat and live check-in counts via WebSockets/SSE (e.g. Pusher/Ably or self-hosted).
@@ -316,7 +325,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 | **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders |
 | **M7 Hardening** | Run sheet live mode, offline check-in, reports/exports, performance, security review, UAT on a real wedding dataset |
 
-**Lead-time risk:** WhatsApp Business API approval (Meta business verification, template approval) and SMS **DLT registration** take days to weeks. Start these during M1.
+**Lead-time risk:** WhatsApp Business API approval (Meta business verification, template approval) and SMS **DLT registration** take days to weeks. Start these during M1. **Phone OTP login depends on them**, so email OTP ships first in M1 and phone OTP switches on as soon as the DLT template is approved.
 
 ---
 
@@ -331,14 +340,13 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Login method for staff and vendors**: email OTP only, or also phone OTP (SMS/WhatsApp)? Phone is more natural in India but adds SMS cost.
-2. **Vendor visibility of headcount**: should caterers see live RSVP headcount for their functions automatically?
-3. **Side coordinators and money**: can side coordinators see their side's budget and payables, or should finance stay Owner/Host/Planner only?
-4. **Approval threshold**: one global threshold, or per category/payer? Who approves when both families share a cost?
-5. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
-6. **Gifts / shagun tracking and thank-you notes**: in scope?
-7. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
-8. **Photo sharing / gallery** after the event: in scope?
-9. **Data retention**: how long are guest and personal data kept after the event ends?
-10. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-11. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+1. **Vendor visibility of headcount**: should caterers see live RSVP headcount for their functions automatically?
+2. **Side coordinators and money**: can side coordinators see their side's budget and payables, or should finance stay Owner/Host/Planner only?
+3. **Approval threshold**: one global threshold, or per category/payer? Who approves when both families share a cost?
+4. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
+5. **Gifts / shagun tracking and thank-you notes**: in scope?
+6. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
+7. **Photo sharing / gallery** after the event: in scope?
+8. **Data retention**: how long are guest and personal data kept after the event ends?
+9. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+10. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
