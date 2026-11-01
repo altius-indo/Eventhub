@@ -5,11 +5,27 @@ import type { EventFunction } from "@/db/schema";
 import { SubmitButton } from "./submit-button";
 import { Alert, Field, Input, Textarea } from "./ui";
 
-type Values = Partial<Record<"name" | "date" | "startTime" | "endTime" | "venueName" | "venueAddress" | "mapUrl" | "dressCode" | "description", string | null>>;
+type Values = Partial<Record<"name" | "date" | "startTime" | "endTime" | "venueName" | "venueAddress" | "mapUrl" | "dressCode" | "description", string | null>> & {
+  isPublic?: boolean;
+  venuePublic?: boolean;
+};
 export type FunctionFormState = { error?: string; info?: string; fieldErrors?: Partial<Record<keyof Values, string>>; values?: Values };
 
 export type FunctionFormLabels = Record<
-  "name" | "namePlaceholder" | "date" | "startTime" | "endTime" | "venueName" | "venueAddress" | "mapUrl" | "dressCode" | "dressCodePlaceholder" | "description" | "submit",
+  | "name"
+  | "namePlaceholder"
+  | "date"
+  | "startTime"
+  | "endTime"
+  | "venueName"
+  | "venueAddress"
+  | "mapUrl"
+  | "dressCode"
+  | "dressCodePlaceholder"
+  | "description"
+  | "isPublic"
+  | "venuePublic"
+  | "submit",
   string
 >;
 
@@ -27,7 +43,7 @@ export function FunctionForm({
   const [state, formAction] = useActionState(action, {});
   const v: Values = state.values ?? fn ?? { date: defaultDate ?? "" };
   const e = state.fieldErrors ?? {};
-  const val = (k: keyof Values) => (v[k] ?? "").slice(0, k === "startTime" || k === "endTime" ? 5 : undefined);
+  const val = (k: Exclude<keyof Values, "isPublic" | "venuePublic">) => (v[k] ?? "").slice(0, k === "startTime" || k === "endTime" ? 5 : undefined);
   return (
     <form action={formAction} className="space-y-4">
       <Field label={labels.name} htmlFor="name" error={e.name}>
@@ -59,6 +75,14 @@ export function FunctionForm({
       <Field label={labels.description} htmlFor="description">
         <Textarea id="description" name="description" rows={3} maxLength={2000} defaultValue={val("description")} />
       </Field>
+      <div className="space-y-1">
+        <label className="flex min-h-11 items-center gap-2 text-sm">
+          <input type="checkbox" name="isPublic" defaultChecked={!!v.isPublic} className="h-5 w-5" /> {labels.isPublic}
+        </label>
+        <label className="flex min-h-11 items-center gap-2 text-sm">
+          <input type="checkbox" name="venuePublic" defaultChecked={!!v.venuePublic} className="h-5 w-5" /> {labels.venuePublic}
+        </label>
+      </div>
       {state.error && <Alert tone="danger">{state.error}</Alert>}
       {state.info && <Alert tone="success">{state.info}</Alert>}
       <SubmitButton>{labels.submit}</SubmitButton>

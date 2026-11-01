@@ -6,7 +6,11 @@ import { functionSchema, type FunctionInput } from "../functions";
 const fields = ["name", "date", "startTime", "endTime", "venueName", "venueAddress", "mapUrl", "dressCode", "description"] as const;
 
 export function parseFunctionForm(t: Translator, formData: FormData): { ok: true; data: FunctionInput } | { ok: false; state: FunctionFormState } {
-  const values = Object.fromEntries(fields.map((f) => [f, String(formData.get(f) ?? "")]));
+  const values = {
+    ...Object.fromEntries(fields.map((f) => [f, String(formData.get(f) ?? "")])),
+    isPublic: formData.get("isPublic") === "on",
+    venuePublic: formData.get("venuePublic") === "on",
+  };
   const parsed = functionSchema.safeParse(values);
   if (parsed.success) return { ok: true, data: parsed.data };
   const fieldErrors: FunctionFormState["fieldErrors"] = {};
@@ -32,6 +36,8 @@ export function functionFormLabels(t: Translator, submit: string): FunctionFormL
     dressCode: t("functionForm.dressCode"),
     dressCodePlaceholder: t("functionForm.dressCodePlaceholder"),
     description: t("functionForm.description"),
+    isPublic: t("functionForm.isPublic"),
+    venuePublic: t("functionForm.venuePublic"),
     submit,
   };
 }

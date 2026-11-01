@@ -308,7 +308,7 @@ export async function bulkInvite(db: Database, eventId: string, guestIds: string
 // Listing, filtering and stats (GST-05)
 // ---------------------------------------------------------------------------
 
-export const guestFilterKeys = ["q", "side", "tag", "fn", "age", "diet"] as const;
+export const guestFilterKeys = ["q", "side", "tag", "fn", "age", "diet", "rsvp", "travel"] as const;
 export type GuestFilters = Partial<Record<(typeof guestFilterKeys)[number], string>>;
 
 export function cleanFilters(input: Record<string, unknown>): GuestFilters {
@@ -346,6 +346,19 @@ function guestConditions(eventId: string, f: GuestFilters): SQL[] {
       sql`exists (select 1 from ${functionInvites} where ${functionInvites.guestId} = ${guests.id} and ${functionInvites.functionId} = ${f.fn})`,
     );
   }
+  // RSVP status, for one function when `fn` is set, otherwise for any function
+  const fnId = f.fn && /^[0-9a-f-]{36}$/i.test(f.fn) ? f.fn : null;
+  const fnClause = fnId ? sql`and fi.function_id = ${fnId}` : sql``;
+  if (f.rsvp === "pending") {
+    conds.push(sql`exists (select 1 from function_invites fi left join rsvps r on r.guest_id = fi.guest_id and r.function_id = fi.function_id
+      where fi.guest_id = ${guests.id} and r.status is null ${fnClause})`);
+  } else if (f.rsvp === "attending" || f.rsvp === "maybe" || f.rsvp === "declined") {
+    conds.push(sql`exists (select 1 from function_invites fi join rsvps r on r.guest_id = fi.guest_id and r.function_id = fi.function_id
+      where fi.guest_id = ${guests.id} and r.status = ${f.rsvp} ${fnClause})`);
+  }
+  if (f.travel === "submitted") conds.push(sql`exists (select 1 from guest_travel t where t.guest_id = ${guests.id} and (t.arrival_at is not null or t.arrival_mode is not null))`);
+  else if (f.travel === "missing") conds.push(sql`not exists (select 1 from guest_travel t where t.guest_id = ${guests.id} and (t.arrival_at is not null or t.arrival_mode is not null))`);
+  else if (f.travel === "pickup") conds.push(sql`exists (select 1 from guest_travel t where t.guest_id = ${guests.id} and (t.needs_pickup or t.needs_drop))`);
   return conds;
 }
 

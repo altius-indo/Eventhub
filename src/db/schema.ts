@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  customType,
   date,
   index,
   integer,
@@ -109,6 +110,8 @@ export const events = pgTable("events", {
   endDate: date("end_date"),
   city: text("city"),
   timezone: text("timezone").notNull().default("Asia/Kolkata"),
+  /** Guests can change RSVPs until the end of this day (event timezone). */
+  rsvpDeadline: date("rsvp_deadline"),
   currency: text("currency").notNull().default("INR"),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: createdAt(),
@@ -245,6 +248,10 @@ export const functions = pgTable(
     mapUrl: text("map_url"),
     dressCode: text("dress_code"),
     description: text("description"),
+    /** Listed on the public wedding website (WEB-04); private functions show only to invited guests. */
+    isPublic: boolean("is_public").notNull().default(false),
+    /** Whether the exact venue address/map is shown publicly or only to invited guests. */
+    venuePublic: boolean("venue_public").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
@@ -272,6 +279,15 @@ export const households = pgTable(
     city: text("city"),
     postalCode: text("postal_code"),
     notes: text("notes"),
+    /** Language for this family's guest pages and messages (L10N-02). */
+    locale: text("locale").notNull().default("en"),
+    /** Extra people (+1s, children) the family may add when they RSVP. */
+    plusOnesAllowed: integer("plus_ones_allowed").notNull().default(0),
+    /** Guest links are signed with this version; bumping it invalidates old links (GST-06). */
+    linkVersion: integer("link_version").notNull().default(1),
+    linkRevokedAt: ts("link_revoked_at"),
+    linkSentAt: ts("link_sent_at"),
+    rsvpRemindedAt: ts("rsvp_reminded_at"),
     createdAt: createdAt(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
@@ -298,6 +314,8 @@ export const guests = pgTable(
     dietNotes: text("diet_notes"),
     accessibilityNotes: text("accessibility_notes"),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    /** Added by the family themselves as a +1 when RSVPing. */
+    addedByGuest: boolean("added_by_guest").notNull().default(false),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: createdAt(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -356,6 +374,127 @@ export const guestImports = pgTable("guest_imports", {
   completedAt: ts("completed_at"),
   createdAt: createdAt(),
 });
+
+// ---------------------------------------------------------------------------
+// RSVP & travel — RSV-01..05, TRV-01/02
+// ---------------------------------------------------------------------------
+
+export const rsvpStatus = pgEnum("rsvp_status", ["attending", "maybe", "declined"]);
+
+export const rsvps = pgTable(
+  "rsvps",
+  {
+    functionId: uuid("function_id")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    guestId: uuid("guest_id")
+      .notNull()
+      .references(() => guests.id, { onDelete: "cascade" }),
+    status: rsvpStatus("status").notNull(),
+    /** Null when the guest answered themselves; otherwise the team member who recorded it. */
+    recordedBy: uuid("recorded_by").references(() => users.id, { onDelete: "set null" }),
+    respondedAt: ts("responded_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("rsvps_pk").on(t.functionId, t.guestId), index("rsvps_guest_idx").on(t.guestId)],
+);
+
+export const travelMode = pgEnum("travel_mode", ["flight", "train", "bus", "car", "other"]);
+
+export const guestTravel = pgTable("guest_travel", {
+  guestId: uuid("guest_id")
+    .primaryKey()
+    .references(() => guests.id, { onDelete: "cascade" }),
+  arrivalMode: travelMode("arrival_mode"),
+  arrivalNumber: text("arrival_number"),
+  arrivalAt: timestamp("arrival_at", { withTimezone: false }),
+  arrivalPoint: text("arrival_point"),
+  needsPickup: boolean("needs_pickup").notNull().default(false),
+  departureMode: travelMode("departure_mode"),
+  departureNumber: text("departure_number"),
+  departureAt: timestamp("departure_at", { withTimezone: false }),
+  departurePoint: text("departure_point"),
+  needsDrop: boolean("needs_drop").notNull().default(false),
+  notes: text("notes"),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+  updatedByGuest: boolean("updated_by_guest").notNull().default(false),
+});
+
+// ---------------------------------------------------------------------------
+// Wedding website — WEB-01..09
+// ---------------------------------------------------------------------------
+
+export const siteVisibility = pgEnum("site_visibility", ["unlisted", "passcode", "public"]);
+
+export type LocalizedText = { en?: string; hi?: string };
+export type SiteContent = {
+  theme: "traditional" | "modern" | "minimal";
+  accent: string;
+  monogram: string;
+  coverImageId: string | null;
+  sections: {
+    welcome: { visible: boolean; headline: LocalizedText; message: LocalizedText };
+    story: { visible: boolean; title: LocalizedText; body: LocalizedText; imageIds: string[] };
+    events: { visible: boolean; title: LocalizedText };
+    travel: { visible: boolean; title: LocalizedText; body: LocalizedText };
+    faqs: { visible: boolean; title: LocalizedText; items: { q: LocalizedText; a: LocalizedText }[] };
+    gallery: { visible: boolean; title: LocalizedText; imageIds: string[] };
+    gifts: { visible: boolean; title: LocalizedText; body: LocalizedText };
+    contact: { visible: boolean; title: LocalizedText; people: { name: string; phone: string }[] };
+  };
+  order: (keyof SiteContent["sections"])[];
+};
+
+export const websites = pgTable(
+  "websites",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull(),
+    visibility: siteVisibility("visibility").notNull().default("unlisted"),
+    passcodeHash: text("passcode_hash"),
+    passcodeVersion: integer("passcode_version").notNull().default(1),
+    draft: jsonb("draft").$type<SiteContent>().notNull(),
+    published: jsonb("published").$type<SiteContent>(),
+    publishedAt: ts("published_at"),
+    publishedBy: uuid("published_by").references(() => users.id, { onDelete: "set null" }),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("websites_event_uq").on(t.eventId), uniqueIndex("websites_slug_uq").on(t.slug)],
+);
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
+
+/** Images for the wedding website (cover, story, gallery), stored resized as WebP. */
+export const siteImages = pgTable(
+  "site_images",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    mime: text("mime").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    bytes: integer("bytes").notNull(),
+    data: bytea("data").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("site_images_event_idx").on(t.eventId)],
+);
+
+/** Generic attempt log for rate limiting public endpoints (find-my-invitation, passcode). */
+export const rateEvents = pgTable(
+  "rate_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    kind: text("kind").notNull(),
+    key: text("key").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("rate_events_idx").on(t.kind, t.key, t.createdAt)],
+);
 
 // ---------------------------------------------------------------------------
 // Tasks — ITN-05
@@ -430,3 +569,6 @@ export type Diet = (typeof diet.enumValues)[number];
 export type Task = typeof tasks.$inferSelect;
 export type TaskStatus = (typeof taskStatus.enumValues)[number];
 export type TaskPriority = (typeof taskPriority.enumValues)[number];
+export type RsvpStatus = (typeof rsvpStatus.enumValues)[number];
+export type GuestTravel = typeof guestTravel.$inferSelect;
+export type Website = typeof websites.$inferSelect;

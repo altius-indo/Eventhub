@@ -5,7 +5,7 @@ import { Alert, Card, CardTitle, Field, Input } from "@/components/ui";
 import { eventFormLabels } from "@/lib/server/event-form";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
-import { deleteEventAction, updateEventAction } from "./actions";
+import { deleteEventAction, updateEventAction, updateRsvpDeadlineAction } from "./actions";
 
 export default async function SettingsPage({ params }: PageProps<"/events/[eventId]/settings">) {
   const { eventId } = await params;
@@ -28,6 +28,16 @@ export default async function SettingsPage({ params }: PageProps<"/events/[event
           event={ctx.event}
           disabled={!canEdit}
         />
+      </Card>
+
+      <Card>
+        <CardTitle>{t("rsvp.deadline")}</CardTitle>
+        <SimpleForm action={updateRsvpDeadlineAction.bind(null, eventId)} className="space-y-3">
+          <Field label={t("rsvp.deadline")} htmlFor="rsvpDeadline" hint={t("rsvp.deadlineHelp")}>
+            <Input id="rsvpDeadline" name="rsvpDeadline" type="date" defaultValue={ctx.event.rsvpDeadline ?? ""} disabled={!canEdit} className="sm:w-1/2" />
+          </Field>
+          {canEdit && <SubmitButton variant="secondary">{t("common.save")}</SubmitButton>}
+        </SimpleForm>
       </Card>
 
       {ctx.can("event.delete") && (

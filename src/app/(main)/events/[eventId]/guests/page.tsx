@@ -124,6 +124,20 @@ export default async function GuestsPage({ params, searchParams }: PageProps<"/e
             ))}
             <option value="unknown">{t("guests.dietUnknown")}</option>
           </Select>
+          <Select name="rsvp" defaultValue={filters.rsvp ?? ""} aria-label={t("rsvp.title")}>
+            <option value="">{t("rsvp.anyRsvp")}</option>
+            {(["attending", "maybe", "declined", "pending"] as const).map((r) => (
+              <option key={r} value={r}>
+                {t(`rsvp.${r}`)}
+              </option>
+            ))}
+          </Select>
+          <Select name="travel" defaultValue={filters.travel ?? ""} aria-label={t("travel.title")}>
+            <option value="">{t("rsvp.travelAny")}</option>
+            <option value="submitted">{t("rsvp.travelSubmitted")}</option>
+            <option value="missing">{t("rsvp.travelMissing")}</option>
+            <option value="pickup">{t("rsvp.travelPickup")}</option>
+          </Select>
           <div className="flex gap-2">
             <button type="submit" className={buttonClass("primary", "flex-1")}>
               {t("guests.filter")}

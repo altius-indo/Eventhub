@@ -4,6 +4,7 @@ import { getLocale } from "@/lib/server/session";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.APP_URL ?? "http://localhost:3000"),
   title: { default: "EventHub", template: "%s · EventHub" },
   description: "Plan big weddings together: guests, itinerary, vendors, budgets and messaging in one place.",
   applicationName: "EventHub",

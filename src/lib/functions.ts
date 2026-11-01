@@ -44,6 +44,8 @@ export const functionSchema = z
       .refine((v) => !v || /^https?:\/\//i.test(v), "mapUrl"),
     dressCode: optionalText(200),
     description: optionalText(2000),
+    isPublic: z.boolean().optional(),
+    venuePublic: z.boolean().optional(),
   })
   .refine((v) => !v.startTime || !v.endTime || v.endTime > v.startTime, { message: "timeOrder", path: ["endTime"] });
 

@@ -15,6 +15,13 @@
       "when": 1793496690827,
       "tag": "0001_guests_itinerary_tasks",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793498162077,
+      "tag": "0002_guest_experience",
+      "breakpoints": true
     }
   ]
 }

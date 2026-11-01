@@ -15,7 +15,7 @@ function daysUntil(isoDate: string, today: string): number {
   return Math.round((Date.parse(isoDate) - Date.parse(today)) / 86_400_000);
 }
 
-const upcoming: MessageKey[] = ["dashboard.modules.services", "dashboard.modules.budget", "dashboard.modules.messaging", "dashboard.modules.website"];
+const upcoming: MessageKey[] = ["dashboard.modules.services", "dashboard.modules.budget", "dashboard.modules.messaging"];
 
 export default async function EventDashboard({ params }: PageProps<"/events/[eventId]">) {
   const { eventId } = await params;
@@ -109,7 +109,7 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
 
       <Card className="sm:col-span-2 lg:col-span-3">
         <CardTitle>{t("dashboard.comingNext")}</CardTitle>
-        <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <ul className="grid gap-2 sm:grid-cols-3">
           {upcoming.map((key) => (
             <li key={key} className="rounded-lg border border-dashed border-border px-3 py-3 text-sm text-muted">
               {t(key)}

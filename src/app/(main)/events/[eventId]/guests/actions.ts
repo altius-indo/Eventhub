@@ -1,8 +1,15 @@
 "use server";
 
+import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
+import { guests, households, type RsvpStatus } from "@/db/schema";
+import { audit } from "@/lib/audit";
+import { DeliveryError } from "@/lib/delivery";
+import { regenerateGuestLink, revokeGuestLink, sendGuestLink } from "@/lib/guest-links";
+import { RsvpError, saveRsvps } from "@/lib/rsvp";
+import { saveTravel, travelFromForm } from "@/lib/travel";
 import { NotFoundError } from "@/lib/functions";
 import {
   addGuest,
@@ -23,7 +30,7 @@ import {
 } from "@/lib/guests";
 import { getEventContext } from "@/lib/server/event-context";
 import { parseGuestFields, parseHouseholdFields } from "@/lib/server/guest-form";
-import { getTranslator } from "@/lib/server/session";
+import { appUrl, getTranslator } from "@/lib/server/session";
 
 type State = { error?: string; info?: string };
 
@@ -180,4 +187,104 @@ export async function deleteViewAction(eventId: string, viewId: string) {
   if (!allowed) return;
   await deleteSavedView(getDb(), eventId, viewId);
   refresh(eventId);
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 3: guest links, RSVPs on behalf, travel, family settings
+// ---------------------------------------------------------------------------
+
+async function householdFor(eventId: string, householdId: string) {
+  const [h] = await getDb()
+    .select()
+    .from(households)
+    .where(and(eq(households.id, householdId), eq(households.eventId, eventId)));
+  return h ?? null;
+}
+
+export async function sendGuestLinkAction(eventId: string, householdId: string, _prev: State, formData: FormData): Promise<State> {
+  const { ctx, t, allowed } = await editor(eventId);
+  if (!allowed) return { error: t("common.notAllowed") };
+  const household = await householdFor(eventId, householdId);
+  if (!household || household.linkRevokedAt) return { error: t("guestLink.revoked") };
+  const [kind, guestId] = String(formData.get("target") ?? "").split(":");
+  const [guest] = await getDb()
+    .select()
+    .from(guests)
+    .where(and(eq(guests.id, guestId ?? ""), eq(guests.householdId, householdId)));
+  const to = kind === "email" ? guest?.email : guest?.phone;
+  if (!guest || !to) return { error: t("guestLink.noContact") };
+  try {
+    await sendGuestLink(getDb(), { household, event: ctx.event, channel: kind === "email" ? "email" : "sms", to, appUrl: appUrl() });
+  } catch (err) {
+    if (err instanceof DeliveryError) return { error: t("auth.errors.deliveryFailed") };
+    throw err;
+  }
+  refresh(eventId);
+  return { info: t("guestLink.sent") };
+}
+
+export async function regenerateLinkAction(eventId: string, householdId: string) {
+  const { ctx, allowed } = await editor(eventId);
+  if (!allowed) return;
+  const h = await regenerateGuestLink(getDb(), eventId, householdId);
+  if (h) await audit(getDb(), { eventId, actor: ctx.actor, action: "guest_link.regenerated", entityType: "household", entityId: h.id, data: { name: h.name } });
+  refresh(eventId);
+}
+
+export async function revokeLinkAction(eventId: string, householdId: string) {
+  const { ctx, allowed } = await editor(eventId);
+  if (!allowed) return;
+  const h = await revokeGuestLink(getDb(), eventId, householdId);
+  if (h) await audit(getDb(), { eventId, actor: ctx.actor, action: "guest_link.revoked", entityType: "household", entityId: h.id, data: { name: h.name } });
+  refresh(eventId);
+}
+
+export async function familySettingsAction(eventId: string, householdId: string, _prev: State, formData: FormData): Promise<State> {
+  const { t, allowed } = await editor(eventId);
+  if (!allowed) return { error: t("common.notAllowed") };
+  const locale = formData.get("locale") === "hi" ? "hi" : "en";
+  const plusOnes = Math.max(0, Math.min(10, Math.trunc(Number(formData.get("plusOnesAllowed")) || 0)));
+  await getDb()
+    .update(households)
+    .set({ locale, plusOnesAllowed: plusOnes, updatedAt: new Date() })
+    .where(and(eq(households.id, householdId), eq(households.eventId, eventId)));
+  refresh(eventId);
+  return { info: t("common.saved") };
+}
+
+/** Records RSVPs on the family's behalf (RSV-04). Select names are "rsvp:<guestId>:<functionId>". */
+export async function recordRsvpAction(eventId: string, householdId: string, _prev: State, formData: FormData): Promise<State> {
+  const { ctx, t, allowed } = await editor(eventId);
+  if (!allowed) return { error: t("common.notAllowed") };
+  const household = await householdFor(eventId, householdId);
+  if (!household) return { error: t("common.somethingWrong") };
+  const answers = [...formData.entries()].flatMap(([k, v]) => {
+    const m = k.match(/^rsvp:([0-9a-f-]{36}):([0-9a-f-]{36})$/i);
+    if (!m) return [];
+    const status: RsvpStatus | null = v === "attending" || v === "maybe" || v === "declined" ? v : null;
+    return [{ guestId: m[1], functionId: m[2], status }];
+  });
+  try {
+    await saveRsvps(getDb(), { household, event: ctx.event, answers, recordedBy: ctx.actor });
+  } catch (err) {
+    if (err instanceof RsvpError) return { error: t(`rsvp.errors.${err.code}`) };
+    throw err;
+  }
+  refresh(eventId);
+  return { info: t("rsvp.savedTeam") };
+}
+
+export async function saveTravelAction(eventId: string, guestId: string, _prev: State, formData: FormData): Promise<State> {
+  const { t, allowed } = await editor(eventId);
+  if (!allowed) return { error: t("common.notAllowed") };
+  const [guest] = await getDb()
+    .select({ id: guests.id })
+    .from(guests)
+    .where(and(eq(guests.id, guestId), eq(guests.eventId, eventId)));
+  if (!guest) return { error: t("common.somethingWrong") };
+  const parsed = travelFromForm(formData);
+  if (!parsed.success) return { error: t("travel.order") };
+  await saveTravel(getDb(), guestId, parsed.data, false);
+  refresh(eventId);
+  return { info: t("common.saved") };
 }

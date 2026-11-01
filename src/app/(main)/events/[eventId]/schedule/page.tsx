@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Card, LinkButton, PageHeader } from "@/components/ui";
+import { Badge, Card, LinkButton, PageHeader } from "@/components/ui";
 import { getDb } from "@/db";
 import { formatDay, formatTime } from "@/i18n/core";
 import { groupByDay, invitedCounts, listFunctions } from "@/lib/functions";
@@ -51,7 +51,10 @@ export default async function SchedulePage({ params }: PageProps<"/events/[event
                       <Card>
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <h3 className="text-lg font-semibold">{fn.name}</h3>
+                            <h3 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+                              {fn.name}
+                              <Badge tone={fn.isPublic ? "success" : "neutral"}>{fn.isPublic ? t("schedule.public") : t("schedule.private")}</Badge>
+                            </h3>
                             <p className="text-sm text-muted">
                               {[
                                 fn.startTime && `${formatTime(locale, fn.startTime)}${fn.endTime ? ` – ${formatTime(locale, fn.endTime)}` : ""}`,

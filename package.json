@@ -12,7 +12,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "jobs:purge": "tsx scripts/purge-deleted-events.ts",
-    "jobs:reminders": "tsx scripts/send-task-reminders.ts"
+    "jobs:reminders": "tsx scripts/send-task-reminders.ts",
+    "jobs:rsvp-reminders": "tsx scripts/send-rsvp-reminders.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",
@@ -21,9 +22,11 @@
     "next": "16.4.3",
     "nodemailer": "^10.3.1",
     "pg": "^8.23.1",
+    "qrcode": "^1.5.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "server-only": "^0.0.1",
+    "sharp": "^0.35.5",
     "zod": "^4.3.3"
   },
   "devDependencies": {
@@ -31,6 +34,7 @@
     "@types/node": "^22.20.5",
     "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "dotenv": "^18.0.9",

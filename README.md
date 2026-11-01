@@ -26,6 +26,22 @@ A web app for planning large, multi-day Indian weddings: itinerary, guests and l
 - Excel/CSV import: column matching (also Hindi headers), validation and duplicate report, then confirm. Excel export that can be imported back, plus a template.
 - Task checklist with due dates, assignees, function links, priority, comments, a standard 22-item wedding checklist, and daily reminders (`npm run jobs:reminders`).
 
+**Milestone 3 (Guest experience)** is built:
+
+- A personal link per family (`/g/<token>`, signed, so nothing secret is stored). Share it by copy, WhatsApp (pre-filled message) or SMS/email. Make a new link (old ones stop working) or turn it off. Each family has a language (English/Hindi).
+- RSVP per person and function: attending / maybe / not attending, food preference and allergies. A deadline after which guests can't change replies. Families can add +1s or children up to an allowance. Hosts and Planners can record replies on a family's behalf. Daily reminders go to families who haven't replied (`npm run jobs:rsvp-reminders`).
+- Headcount per function (attending / maybe / declined / no reply, by side, age and food, allergies), and an Excel export for caterers with a sheet per function. The guest list filters by RSVP and travel status.
+- Guest travel: arrival/departure, flight/train, pickup/drop needed. Guests fill it in themselves (with "same for the whole family"), or the team does.
+- Wedding website at `/<couple-slug>`:
+  - Three themes and eight accent colours, a monogram and cover photo.
+  - Sections (welcome, story, events, travel, FAQs, gallery, gift note, contact) that can be shown, hidden and reordered, written in English and Hindi.
+  - Draft and preview; publishing needs a Host.
+  - Visibility: unlisted (noindex), passcode, or public.
+  - Functions are public or private; venue addresses can be limited to invited guests.
+  - "Find my invitation" sends the family's link without revealing who is on the list.
+  - Link-preview image, a QR code for printed cards, and calendar files.
+- The family's personal page doubles as the guest portal: their functions (including private ones), replies, food, +1s, travel, an entry-pass QR code, and their own calendar file. It works even before the site is published.
+
 ## Tech
 
 Next.js 16 (App Router, server actions) · TypeScript · PostgreSQL · Drizzle ORM · Tailwind CSS 4 · Vitest.
@@ -55,6 +71,7 @@ In development, codes and invitations aren't really sent. They're written to a d
 | `npm run db:migrate` | Apply migrations |
 | `npm run jobs:purge` | Permanently delete events past their 7-day restore window (run daily) |
 | `npm run jobs:reminders` | Remind assignees of tasks due by tomorrow or overdue (run daily, e.g. 08:00 IST) |
+| `npm run jobs:rsvp-reminders` | Remind families who haven't replied, in the 14 days before the RSVP deadline, every 3 days (run daily) |
 
 ### Message delivery
 
@@ -70,6 +87,8 @@ In development, codes and invitations aren't really sent. They're written to a d
 ```
 src/
   app/(main)/          pages: login, welcome, step-up, events, account, admin, dev outbox
+  app/(site)/[slug]/   the public wedding website and each family's personal page
+  app/g/[token]/       guest link handler
   app/offline/         static offline page (cached by the service worker)
   components/          UI building blocks
   db/                  Drizzle schema and client
@@ -84,6 +103,10 @@ src/
     guest-import.ts    spreadsheet parsing, column mapping, preview, import, export
     functions.ts       functions, master schedule, calendar export
     tasks.ts           task checklist, default template, reminders
+    guest-links.ts     signed per-family links, sending and sharing
+    rsvp.ts            replies, +1s, deadline, headcounts, reminders
+    travel.ts          guest arrival/departure details
+    website.ts         wedding website content, slugs, visibility, images, publishing
   lib/server/          Next.js glue: cookies, request context, event context
   proxy.ts             redirects signed-out visitors to /login
 drizzle/               SQL migrations

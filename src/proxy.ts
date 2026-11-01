@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const SESSION_COOKIE = "eh_session";
-const PUBLIC_PREFIXES = ["/login", "/offline", "/dev/outbox"];
+/** App areas that need a signed-in team member. Everything else (login, wedding sites, guest links) is public. */
+const PROTECTED_PREFIXES = ["/events", "/account", "/admin", "/welcome", "/step-up"];
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 
 /**
@@ -12,9 +13,9 @@ const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const token = request.cookies.get(SESSION_COOKIE)?.value;
-  const isPublic = PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  const isProtected = pathname === "/" || PROTECTED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
-  if (!token && !isPublic) {
+  if (!token && isProtected) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = pathname === "/" ? "" : `?next=${encodeURIComponent(pathname + search)}`;
@@ -22,7 +23,7 @@ export function proxy(request: NextRequest) {
   }
 
   const response = NextResponse.next();
-  if (token && request.method === "GET") {
+  if (token && request.method === "GET" && isProtected) {
     response.cookies.set(SESSION_COOKIE, token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -35,5 +36,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|icons/|manifest.webmanifest|sw.js|robots.txt).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|icons/|manifest.webmanifest|sw.js|robots.txt|site-images/).*)"],
 };
