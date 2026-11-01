@@ -14,7 +14,7 @@ export default async function HeadcountPrint({ params }: PageProps<"/vendor/[ven
   const ctx = await getVendorContext(vendorId);
   if (!ctx.can("portal.headcount") || !isUuid(functionId)) notFound();
   const { t, locale } = await getTranslator();
-  const view = await getCatererView(getDb(), ctx.event.id, vendorId, functionId).catch((e) => {
+  const view = await getCatererView(getDb(), ctx.event.id, vendorId, functionId, new Date(), { setBaseline: !ctx.viaAdmin }).catch((e) => {
     if (e instanceof HeadcountError) notFound();
     throw e;
   });

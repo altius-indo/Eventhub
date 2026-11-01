@@ -81,7 +81,7 @@ export async function submitQuoteAction(vendorId: string, requestId: string, rev
 export async function acknowledgeAction(vendorId: string, functionId: string, _p: State): Promise<State> {
   const ctx = await getVendorContext(vendorId);
   const { t } = await getTranslator();
-  if (!ctx.can("portal.headcount") || !isUuid(functionId)) return { error: t("common.notAllowed") };
+  if (!ctx.can("portal.headcount") || ctx.viaAdmin || !isUuid(functionId)) return { error: t("common.notAllowed") };
   try {
     await acknowledgeHeadcount(getDb(), { eventId: ctx.event.id, vendorId, functionId, actor: ctx.actor });
   } catch (e) {

@@ -40,5 +40,8 @@ export const getVendorContext = cache(async (vendorId: string): Promise<VendorCo
   const actor: Actor = { userId: session.user.id, isAppAdmin: viaAdmin };
   const subject: PolicySubject = { isAppAdmin: viaAdmin, membership: null, vendor: { vendorId } };
   if (viaAdmin) await audit(db, { eventId: row.event.id, actor, action: "admin.vendor_portal_opened", entityType: "vendor", entityId: vendorId });
-  return { ...session, vendor: row.vendor, event: row.event, actor, subject, viaAdmin, can: (p) => decide(subject, p) !== "deny" };
+  // An App Admin looking in is read-only: never quotes, invoices or acknowledges as the vendor.
+  const ADMIN_READ: ReadonlySet<Permission> = new Set(["portal.view", "portal.headcount", "portal.chat"]);
+  const can = (p: Permission) => decide(subject, p) !== "deny" && (!viaAdmin || ADMIN_READ.has(p));
+  return { ...session, vendor: row.vendor, event: row.event, actor, subject, viaAdmin, can };
 });

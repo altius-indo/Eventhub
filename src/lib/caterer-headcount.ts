@@ -348,7 +348,15 @@ export type CatererView = {
  * The aggregate headcount of one function for a caterer booked on it (404 otherwise).
  * Viewing it sets the alert baseline if there is none yet.
  */
-export async function getCatererView(db: Database, eventId: string, vendorId: string, functionId: string, now = new Date()): Promise<CatererView> {
+export async function getCatererView(
+  db: Database,
+  eventId: string,
+  vendorId: string,
+  functionId: string,
+  now = new Date(),
+  /** False when someone other than the caterer looks (App Admin), so alerts aren't silenced. */
+  opts: { setBaseline?: boolean } = {},
+): Promise<CatererView> {
   return db.transaction(async (tx) => {
     const pairs = await cateringPairs(tx, { eventId, vendorId, functionId });
     if (pairs.length === 0) throw new HeadcountError("not_found");
@@ -358,7 +366,7 @@ export async function getCatererView(db: Database, eventId: string, vendorId: st
     let s = await ensureState(tx, eventId, p.bookingId, functionId);
     const frozen = !!(s.frozenAt && s.lockedSnapshot);
     const shown = frozen ? s.lockedSnapshot! : live;
-    if (s.baselineTotal == null) {
+    if (s.baselineTotal == null && opts.setBaseline !== false) {
       [s] = await tx
         .update(catererHeadcountState)
         .set({ baseline: shown, baselineTotal: snapshotTotal(shown), baselineAt: now })

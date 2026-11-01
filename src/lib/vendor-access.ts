@@ -167,9 +167,12 @@ export async function vendorLink(db: Tx, userId: string, vendorId: string) {
 /** Users who can read a vendor's thread and get its notifications. */
 export async function vendorUserIds(db: Tx, vendorIds: string[]) {
   if (vendorIds.length === 0) return [];
+  // Same conditions as vendorLinksForUser: no notifications for archived vendors or deleted events.
   const rows = await db
     .select({ userId: vendorContacts.userId })
     .from(vendorContacts)
-    .where(and(inArray(vendorContacts.vendorId, vendorIds), isNull(vendorContacts.revokedAt)));
+    .innerJoin(vendors, eq(vendors.id, vendorContacts.vendorId))
+    .innerJoin(events, eq(events.id, vendorContacts.eventId))
+    .where(and(inArray(vendorContacts.vendorId, vendorIds), isNull(vendorContacts.revokedAt), isNull(vendors.archivedAt), isNull(events.deletedAt)));
   return [...new Set(rows.map((r) => r.userId).filter((x): x is string => !!x))];
 }

@@ -15,7 +15,7 @@ export async function GET(_req: Request, { params }: RouteContext<"/vendor/[vend
   const t = createTranslator(await getLocale());
   let view;
   try {
-    view = await getCatererView(getDb(), ctx.event.id, vendorId, functionId);
+    view = await getCatererView(getDb(), ctx.event.id, vendorId, functionId, new Date(), { setBaseline: !ctx.viaAdmin });
   } catch (e) {
     if (e instanceof HeadcountError) return new Response("Not found", { status: 404 });
     throw e;

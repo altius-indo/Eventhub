@@ -604,8 +604,10 @@ export async function createHandover(db: Database, c: GiftCtx, input: HandoverIn
     await audit(tx, { eventId: c.eventId, actor: c.actor, action: diff === 0 ? "gift.handover" : "gift.handover_discrepancy", entityType: "cash_handover", entityId: h.id, data: { function: functionName ?? "" } });
     if (diff !== 0) {
       // Hosts only: the amount never goes to anyone without gift access.
+      // In-app only: shagun amounts never go out by email (GFT-07).
       await notifyHosts(tx, c.eventId, {
         kind: "gift.handover_discrepancy",
+        noEmail: true,
         data: { function: functionName ?? "—", amount: `${diff < 0 ? "−" : "+"}${formatInr("en", Math.abs(diff))}` },
         href: `/events/${c.eventId}/gifts/cash`,
       });
