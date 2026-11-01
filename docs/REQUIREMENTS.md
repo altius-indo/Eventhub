@@ -49,7 +49,7 @@
 |---|---|---|---|---|---|---|---|
 | Event settings & members | RW | R | R | – | – | – | – |
 | Guests / households | RW | RW | RW | RW (own side) | R (own functions) | – | Own household |
-| RSVP | RW | RW | RW | RW (own side) | R | Headcount only* | Own |
+| RSVP | RW | RW | RW | RW (own side) | R | Caterers: live aggregate headcount for booked functions (RSV-06) | Own |
 | Travel & rooms | RW | RW | RW | RW (own side) | – | Transport/hotel vendor: assigned only | Own |
 | Seating & check-in | RW | RW | RW | RW (own side) | RW (own functions) | – | Own table |
 | Itinerary / functions | RW | RW | RW | R | RW (own functions) | Assigned functions | Invited functions |
@@ -63,7 +63,6 @@
 | Messaging / broadcasts | RW | RW | RW | Own side | Own functions | Own threads | Receive / reply |
 | Reports | RW | R | R | Own side | Own functions | – | – |
 
-\* Open question; see §11.
 
 ---
 
@@ -110,6 +109,16 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **RSV-03 (M)** RSVP deadline; automated reminders to non-responders (via messaging channels).
 - **RSV-04 (M)** Planners and coordinators can record RSVPs on behalf of guests (phone calls with elders).
 - **RSV-05 (M)** Live headcount per function, broken down by side, meal type and adults/kids; exportable for caterers.
+- **RSV-06 (M)** **Caterer live headcount**: vendors booked on a **Catering** service automatically see the live headcount for **the functions they're booked for**, and only those, in the vendor portal.
+  - **What they see**: expected attendees (confirmed + maybe, shown separately), adults/kids/infants, meal preference counts (veg / non-veg / Jain / vegan / custom), allergy counts, and pending RSVPs still outstanding.
+  - **Aggregate only**: no guest names, phone numbers or other personal data.
+  - **Split bookings**: when a requirement is split between caterers (e.g. two caterers for one function), each sees the function headcount plus their own contracted share.
+  - **Change alerts**: the caterer and the service owner are notified when headcount moves by more than a configurable threshold (default ±5% or ±20 guests) since the caterer last viewed or acknowledged it. The caterer can **acknowledge** the latest count.
+  - **Export**: the caterer can download the headcount summary (PDF/Excel).
+- **RSV-07 (S)** **Final headcount lock**: per catering booking, the planner sets a "final guarantee" date (e.g. 72 h before the function). After that date:
+  - the headcount shown to the caterer is frozen;
+  - later RSVP changes are shown to the planner as a delta;
+  - the planner can release an updated final count manually.
 
 ### 3.5 Travel & Accommodation (`TRV`)
 - **TRV-01 (M)** Per member: arrival and departure (mode, flight/train no., date-time, terminal/station), self-arranged vs needs pickup.
@@ -178,6 +187,7 @@ Event
 - **VND-10 (M)** **Vendor portal**: the vendor logs in with passwordless phone or email OTP (EVT-01) to see services they're invited to quote on or booked for. From there they:
   - submit and revise quotes;
   - see their requirements, functions and run-sheet items;
+  - (caterers) see live headcount for their booked functions (RSV-06);
   - upload invoices;
   - view the payment schedule and status;
   - chat with the team.
@@ -340,13 +350,12 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Vendor visibility of headcount**: should caterers see live RSVP headcount for their functions automatically?
-2. **Side coordinators and money**: can side coordinators see their side's budget and payables, or should finance stay Owner/Host/Planner only?
-3. **Approval threshold**: one global threshold, or per category/payer? Who approves when both families share a cost?
-4. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
-5. **Gifts / shagun tracking and thank-you notes**: in scope?
-6. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
-7. **Photo sharing / gallery** after the event: in scope?
-8. **Data retention**: how long are guest and personal data kept after the event ends?
-9. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-10. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+1. **Side coordinators and money**: can side coordinators see their side's budget and payables, or should finance stay Owner/Host/Planner only?
+2. **Approval threshold**: one global threshold, or per category/payer? Who approves when both families share a cost?
+3. **Guest ID collection**: do hotels need guest ID proofs (Aadhaar/passport) collected via the app? This has significant privacy implications.
+4. **Gifts / shagun tracking and thank-you notes**: in scope?
+5. **Wedding website**: is a public, shareable wedding microsite (story, photos, venue info) wanted in addition to private magic links?
+6. **Photo sharing / gallery** after the event: in scope?
+7. **Data retention**: how long are guest and personal data kept after the event ends?
+8. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+9. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
