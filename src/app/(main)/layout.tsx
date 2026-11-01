@@ -1,5 +1,11 @@
 import { AppShell } from "@/components/app-shell";
+import { SplashScreen } from "@/components/splash-screen";
 
 export default function MainLayout({ children }: LayoutProps<"/">) {
-  return <AppShell>{children}</AppShell>;
+  return (
+    <>
+      <SplashScreen />
+      <AppShell>{children}</AppShell>
+    </>
+  );
 }

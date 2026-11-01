@@ -142,3 +142,29 @@ body {
     max-width: none !important;
   }
 }
+
+/* Launch splash (src/components/splash-screen.tsx): fades out by itself, never blocks input. */
+.eh-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  pointer-events: none;
+  animation: eh-splash-out 0.4s ease-in 1s forwards;
+}
+@keyframes eh-splash-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eh-splash {
+    animation-duration: 0.01s;
+    animation-delay: 0.8s;
+  }
+}

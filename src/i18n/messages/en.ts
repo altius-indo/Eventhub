@@ -1,5 +1,5 @@
 const en = {
-  app: { name: "EventHub", tagline: "Plan big weddings together, in one place." },
+  app: { name: "EventHub", tagline: "Plan big weddings together, in one place.", splashLogo: "Annamahalakshmi Foods logo" },
   common: {
     save: "Save",
     cancel: "Cancel",
