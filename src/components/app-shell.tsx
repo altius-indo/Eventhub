@@ -15,7 +15,8 @@ export async function AppShell({ children }: { children: ReactNode }) {
     <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-10 border-b border-border bg-surface/95 backdrop-blur">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
-          <Link href={ctx ? "/events" : "/login"} className="text-lg font-semibold tracking-tight text-brand">
+          {/* "/" lands on the last-opened event (or the list); see src/app/page.tsx. */}
+          <Link href={ctx ? "/" : "/login"} className="text-lg font-semibold tracking-tight text-brand">
             {t("app.name")}
           </Link>
           {ctx && (

@@ -1,4 +1,6 @@
 import "@/lib/gallery-hooks";
+import { ConfirmButton } from "@/components/confirm-button";
+import { EventAvatar } from "@/components/event-avatar";
 import { EventForm } from "@/components/event-form";
 import { SimpleForm } from "@/components/simple-form";
 import { SubmitButton } from "@/components/submit-button";
@@ -6,11 +8,12 @@ import { Alert, Badge, buttonClass, Card, CardTitle, Field, Input } from "@/comp
 import { getDb } from "@/db";
 import { formatDate, formatDay } from "@/i18n/core";
 import { ARCHIVE_DOWNLOADS_PER_DAY, listArchiveParts } from "@/lib/archive";
+import { logoVersion } from "@/lib/event-logo";
 import { getRetention, listErasureRequests } from "@/lib/retention";
 import { eventFormLabels } from "@/lib/server/event-form";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
-import { deleteEventAction, updateEventAction, updateRsvpDeadlineAction } from "./actions";
+import { deleteEventAction, removeLogoAction, updateEventAction, updateRsvpDeadlineAction, uploadLogoAction } from "./actions";
 
 export default async function SettingsPage({ params, searchParams }: PageProps<"/events/[eventId]/settings">) {
   const { eventId } = await params;
@@ -23,6 +26,7 @@ export default async function SettingsPage({ params, searchParams }: PageProps<"
   const canExport = ctx.can("event.export");
   const parts = canExport ? await listArchiveParts(db, eventId, t) : [];
   const erasures = ctx.can("guests.edit") ? await listErasureRequests(db, eventId) : [];
+  const logoV = logoVersion(eventId, ctx.event.logoKey);
 
   return (
     <div className="max-w-xl space-y-4">
@@ -39,6 +43,33 @@ export default async function SettingsPage({ params, searchParams }: PageProps<"
           event={ctx.event}
           disabled={!canEdit}
         />
+      </Card>
+
+      <Card>
+        <h2 id="branding" className="mb-3 scroll-mt-20 text-base font-semibold">
+          {t("eventLogo.title")}
+        </h2>
+        <div className="mb-3 flex items-center gap-3">
+          <EventAvatar name={ctx.event.name} logoUrl={logoV ? `/events/${eventId}/logo?v=${logoV}` : null} />
+          <p className="text-sm text-muted">{logoV ? t("eventLogo.current") : t("eventLogo.none")}</p>
+        </div>
+        {canEdit && (
+          <>
+            <SimpleForm action={uploadLogoAction.bind(null, eventId)} className="space-y-3">
+              <Field label={logoV ? t("eventLogo.replace") : t("eventLogo.upload")} htmlFor="logoFile" hint={t("eventLogo.help")}>
+                <Input id="logoFile" name="logo" type="file" accept="image/jpeg,image/png,image/webp,image/heic" required className="py-2" />
+              </Field>
+              <SubmitButton variant="secondary">{t("eventLogo.save")}</SubmitButton>
+            </SimpleForm>
+            {logoV && (
+              <form action={removeLogoAction.bind(null, eventId)} className="mt-3">
+                <ConfirmButton variant="ghost" confirm={t("eventLogo.removeConfirm")}>
+                  {t("eventLogo.remove")}
+                </ConfirmButton>
+              </form>
+            )}
+          </>
+        )}
       </Card>
 
       <Card>

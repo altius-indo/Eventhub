@@ -3,13 +3,20 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-export function EventTabs({ tabs }: { tabs: { href: string; label: string; badge?: number }[] }) {
+export type EventTab = { href: string; label: string; badge?: number };
+
+/** The first tab (dashboard) matches exactly; the others match their sub-pages too. */
+export const isActiveTab = (pathname: string, href: string, index: number) =>
+  index === 0 ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
+
+/** Event sections as a tab strip, from `sm` up; phones get the burger menu (`EventMenu`). */
+export function EventTabs({ tabs, label }: { tabs: EventTab[]; label: string }) {
   const pathname = usePathname();
   return (
-    <nav aria-label="Event" className="-mx-4 mb-6 overflow-x-auto border-b border-border px-4">
+    <nav aria-label={label} className="-mx-4 mb-6 hidden overflow-x-auto border-b border-border px-4 sm:block">
       <ul className="flex gap-1 whitespace-nowrap">
         {tabs.map((tab, i) => {
-          const active = i === 0 ? pathname === tab.href : pathname.startsWith(tab.href);
+          const active = isActiveTab(pathname, tab.href, i);
           return (
             <li key={tab.href}>
               <Link

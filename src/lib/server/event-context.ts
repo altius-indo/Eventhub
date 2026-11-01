@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import { auditLogs, events, type Event, type EventMember } from "@/db/schema";
 import { audit, type Actor } from "../audit";
 import { getMembership } from "../events";
+import { rememberLastEvent } from "../last-event";
 import { decide, type Permission, type PolicySubject } from "../policy";
 import { requireUser, type SessionContext } from "./session";
 
@@ -44,6 +45,9 @@ export const getEventContext = cache(async (eventId: string): Promise<EventConte
   const actor: Actor = { userId: session.user.id, isAppAdmin: viaAdmin };
 
   if (viaAdmin) await logAdminOpen(eventId, actor);
+  // Land here next time (EVT-03). Members only: an App Admin's visit to someone else's event
+  // shouldn't become their landing page. Writes only when it changed (once per request: cached).
+  else await rememberLastEvent(db, session.user.id, eventId, session.user.lastEventId);
 
   return {
     ...session,

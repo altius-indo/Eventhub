@@ -93,8 +93,11 @@ export async function getTranslator() {
   return { locale, t: createTranslator(locale) };
 }
 
-/** Accepts only same-site relative paths, to avoid open redirects. */
-export function safeNext(next: unknown, fallback = "/events"): string {
+/**
+ * Accepts only same-site relative paths, to avoid open redirects. The default `/` sends signed-in
+ * users to their last event (or the events list), see `src/app/page.tsx`.
+ */
+export function safeNext(next: unknown, fallback = "/"): string {
   return typeof next === "string" && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")
     ? next
     : fallback;
