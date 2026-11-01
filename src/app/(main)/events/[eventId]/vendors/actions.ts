@@ -15,6 +15,7 @@ import {
   updateSchedule,
   type MilestoneInput,
 } from "@/lib/bookings";
+import { hasRecentStepUp } from "@/lib/auth-core";
 import { isUuid, uuids } from "@/lib/ids";
 import { ForbiddenError } from "@/lib/policy";
 import { closeQuoteRequest, createQuoteRequests, declineQuote, getQuoteRequest, QuoteError, quoteInput, saveQuote, type LineInput } from "@/lib/quotes";
@@ -98,6 +99,8 @@ export async function updateVendorAction(eventId: string, vendorId: string, _p: 
 export async function setSecretsAction(eventId: string, vendorId: string, _p: State, fd: FormData): Promise<State> {
   const { ctx, t, ok } = await editor(eventId, vendorId);
   if (!ok || !ctx.can("vendors.bank_view")) return { error: t("common.notAllowed") };
+  // Changing where money goes needs a fresh one-time code (EVT-01d).
+  if (!hasRecentStepUp(ctx.session)) redirect(`/step-up?next=${encodeURIComponent(`/events/${eventId}/vendors/${vendorId}`)}`);
   const pan = String(fd.get("pan") ?? "").trim();
   const acct = String(fd.get("accountNumber") ?? "").replace(/\s/g, "");
   let bank: ReturnType<typeof bankSchema.parse> | undefined;
@@ -267,7 +270,8 @@ export async function bookAction(eventId: string, quoteId: string, _p: State, fd
     return fail(t, e);
   }
   refresh(eventId);
-  const w = res.warnings.length ? `&w=${encodeURIComponent(JSON.stringify(res.warnings))}` : "";
+  // Only warning codes travel in the URL; text is never taken from it.
+  const w = res.warnings.length ? `&w=${[...new Set(res.warnings.map((x) => x.code))].join(",")}` : "";
   redirect(`/events/${eventId}/vendors/bookings/${res.booking.id}?r=${res.result.status === "pending" ? "pending" : res.result.auto ? "auto" : "ok"}${w}`);
 }
 
@@ -307,6 +311,7 @@ export async function scheduleAction(eventId: string, bookingId: string, _p: Sta
     const amount = paiseField(fd, `amount_${i}`);
     if (amount === undefined) return { error: t("bookings.errors.invalid") };
     if (amount == null) continue;
+    if (payerField(fd, `payer_${i}`) === undefined) return { error: t("payer.invalid") };
     const parsed = milestoneSchema.safeParse({
       kind: ["advance", "milestone", "final"].includes(String(fd.get(`kind_${i}`))) ? String(fd.get(`kind_${i}`)) : "milestone",
       label: optStr(fd, `label_${i}`),
@@ -331,7 +336,7 @@ export async function contractAction(eventId: string, bookingId: string, _p: Sta
   const { t } = await getTranslator();
   if (!ctx.can("contracts.edit") || !isUuid(bookingId)) return { error: t("common.notAllowed") };
   try {
-    await updateContract(getDb(), eventId, bookingId, { cancellationPolicy: optStr(fd, "cancellationPolicy"), deliverables: optStr(fd, "deliverables"), notes: optStr(fd, "notes") });
+    await updateContract(getDb(), eventId, ctx.actor, bookingId, { cancellationPolicy: optStr(fd, "cancellationPolicy"), deliverables: optStr(fd, "deliverables"), notes: optStr(fd, "notes") });
   } catch (e) {
     return fail(t, e);
   }

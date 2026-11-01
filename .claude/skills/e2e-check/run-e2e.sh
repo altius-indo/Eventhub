@@ -18,6 +18,8 @@ psql "$E2E_DB_URL" -qc "TRUNCATE users, events, otp_challenges, dev_outbox, audi
 if [ "${SKIP_BUILD:-0}" != "1" ]; then npm run build >/dev/null; fi
 if curl -s -o /dev/null "http://localhost:$PORT/login"; then echo "Port $PORT is already in use (a leftover server?). Stop it first."; exit 1; fi
 LOG="$(mktemp)"
+# Production mode requires a field-encryption key (ADR-0019); a throwaway one per run is fine here.
+export DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")}"
 DATABASE_URL="$E2E_DB_URL" ALLOW_DEV_DELIVERY=1 APP_URL="http://localhost:$PORT" PORT="$PORT" setsid "$ROOT/node_modules/.bin/next" start >"$LOG" 2>&1 &
 SERVER=$!
 # Kill the whole process group: next-server outlives its parent, and a leftover server

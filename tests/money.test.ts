@@ -58,5 +58,9 @@ describe("money", () => {
     expect(decryptField(enc)).toBe("123456789012");
     expect(encryptField("x")).not.toBe(encryptField("x"));
     expect(mask("123456789012")).toBe("••••••••9012");
+    // Bound to its row and field: can't be decrypted under another context.
+    const bound = encryptField("secret", "vendor:a:bank");
+    expect(decryptField(bound, "vendor:a:bank")).toBe("secret");
+    expect(() => decryptField(bound, "vendor:b:bank")).toThrow();
   });
 });

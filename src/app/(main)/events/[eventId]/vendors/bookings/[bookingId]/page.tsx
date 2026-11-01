@@ -2,33 +2,28 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConfirmButton } from "@/components/confirm-button";
 import { DocumentsPanel } from "@/components/documents-panel";
-import { MoneyInput } from "@/components/money-fields";
+import { MoneyInput, PayerFields } from "@/components/money-fields";
 import { PaymentFields } from "@/components/payment-fields";
 import { SimpleForm } from "@/components/simple-form";
 import { SubmitButton } from "@/components/submit-button";
 import { Alert, Badge, Card, CardTitle, Field, Input, LinkButton, PageHeader, Select, Textarea } from "@/components/ui";
 import { getDb } from "@/db";
 import { formatDay, formatInr, type MessageKey } from "@/i18n/core";
-import { BookingError, getBooking, type BookingWarning } from "@/lib/bookings";
+import { BookingError, getBooking, matchLines } from "@/lib/bookings";
 import { listDocuments } from "@/lib/documents";
 import { listMembers } from "@/lib/events";
 import { isUuid } from "@/lib/ids";
 import { bookingFinance, listInvoices } from "@/lib/payments";
 import { getQuote } from "@/lib/quotes";
 import { getEventContext } from "@/lib/server/event-context";
-import { documentLabels, eventToday, payerText, paymentLabels, payTone, serviceLabel } from "@/lib/server/money-form";
+import { documentLabels, eventToday, payerLabels, payerText, paymentLabels, payTone, serviceLabel } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
 import { deletePaymentAction, recordPaymentAction } from "../../../budget/actions";
 import { addKeyDateAction, cancelBookingAction, contractAction, removeKeyDateAction, reviseBookingAction, scheduleAction } from "../../actions";
 
-function parseWarnings(raw: unknown): BookingWarning[] {
-  if (typeof raw !== "string") return [];
-  try {
-    const v = JSON.parse(raw);
-    return Array.isArray(v) ? v.filter((w) => w && ["condition_dropped", "over_covered", "expired"].includes(w.code)).slice(0, 10) : [];
-  } catch {
-    return [];
-  }
+const WARNINGS = ["condition_dropped", "over_covered", "expired"] as const;
+function parseWarnings(raw: unknown): (typeof WARNINGS)[number][] {
+  return typeof raw === "string" ? WARNINGS.filter((w) => raw.split(",").includes(w)) : [];
 }
 
 export default async function BookingPage({ params, searchParams }: PageProps<"/events/[eventId]/vendors/bookings/[bookingId]">) {
@@ -56,6 +51,15 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
   const canBook = ctx.can("bookings.create") && live;
   const latestId = quote?.versions[quote.versions.length - 1]?.id;
   const latest = latestId && latestId !== b.quote?.id ? await getQuote(db, eventId, latestId) : null;
+  const reviseLines =
+    latest && quote
+      ? matchLines(
+          quote.lines,
+          latest.lines,
+          b.fulfilments.map((f) => f.f.quoteLineId).filter((x): x is string => !!x),
+          new Set(latest.requirements.filter((r) => r.approvalState === "approved" && r.lifecycle !== "cancelled").map((r) => r.id)),
+        )
+      : [];
   const warnings = parseWarnings(sp.w);
   const rows = [...fin.milestones.map((m) => m.milestone), ...Array.from({ length: 2 }, () => null)];
 
@@ -68,13 +72,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
       />
       {sp.r === "pending" && <Alert tone="warning">{t("services.submitted")}</Alert>}
       {sp.r === "auto" && <Alert tone="success">{t("services.autoApproved")}</Alert>}
-      {warnings.map((w, i) => (
-        <Alert key={i} tone="warning">
-          {w.code === "condition_dropped"
-            ? t("bookings.warnings.condition_dropped", { lines: Number(w.lines) || 0 })
-            : w.code === "over_covered"
-              ? t("bookings.warnings.over_covered", { requirement: String(w.requirement).slice(0, 200) })
-              : t("bookings.warnings.expired", { validUntil: String(w.validUntil).slice(0, 10) })}
+      {warnings.map((w) => (
+        <Alert key={w} tone="warning">
+          {t(`bookings.warnings.${w}`)}
         </Alert>
       ))}
       {status === "pending_approval" && <Alert tone="warning">{t("bookings.pendingHelp")}</Alert>}
@@ -142,7 +142,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
             <SimpleForm action={scheduleAction.bind(null, eventId, bookingId)} className="mt-2 space-y-3">
               <p className="text-sm text-muted">{t("bookings.scheduleHelp", { total: inr(b.total) })}</p>
               {rows.map((m, i) => (
-                <div key={i} className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div key={i} className="grid grid-cols-2 gap-2 border-b border-border pb-3 sm:grid-cols-4">
                   <Field label={t("bookings.milestoneLabel")} htmlFor={`label_${i}`}>
                     <Input id={`label_${i}`} name={`label_${i}`} maxLength={120} defaultValue={m?.label ?? ""} />
                   </Field>
@@ -159,6 +159,9 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                   <Field label={t("bookings.amount")} htmlFor={`amount_${i}`}>
                     <MoneyInput id={`amount_${i}`} name={`amount_${i}`} value={m?.amountPaise} />
                   </Field>
+                  <div className="col-span-2 sm:col-span-4">
+                    <PayerFields labels={payerLabels(t)} value={m?.payer} prefix={`payer_${i}`} id={`ms-payer-${i}`} />
+                  </div>
                 </div>
               ))}
               <SubmitButton>{t("common.save")}</SubmitButton>
@@ -183,7 +186,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
                 </span>
                 <Badge tone={p.state === "confirmed" ? "success" : p.state === "rejected" ? "danger" : "warning"}>{t(`payments.states.${p.state}`)}</Badge>
                 {ctx.decide("payments.record") === "allow" && (
-                  <form action={deletePaymentAction.bind(null, eventId, p.id)} className="ml-auto">
+                  <form action={deletePaymentAction.bind(null, eventId, p.id, `/events/${eventId}/vendors/bookings/${bookingId}`)} className="ml-auto">
                     <ConfirmButton variant="ghost" confirm={t("payments.deleteConfirm")}>
                       {t("common.delete")}
                     </ConfirmButton>
@@ -291,13 +294,13 @@ export default async function BookingPage({ params, searchParams }: PageProps<"/
 
       <DocumentsPanel eventId={eventId} owner="bookingId" ownerId={bookingId} docs={docs} canEdit={ctx.can("contracts.edit")} back={`/events/${eventId}/vendors/bookings/${bookingId}`} defaultKind="contract" labels={documentLabels(t, t("bookings.documents"), sp)} />
 
-      {canBook && latest && status === "confirmed" && (
+      {canBook && latest && status === "confirmed" && reviseLines.length > 0 && (
         <Card>
           <CardTitle>{t("bookings.revise")}</CardTitle>
           <p className="mb-2 text-sm text-muted">{t("bookings.reviseHelp")}</p>
-          <SimpleForm action={reviseBookingAction.bind(null, eventId, bookingId, latest.quote.id, latest.lines.map((l) => l.id))}>
+          <SimpleForm action={reviseBookingAction.bind(null, eventId, bookingId, latest.quote.id, reviseLines)}>
             <SubmitButton variant="secondary">
-              {t("quotes.version", { version: latest.quote.version })} · {inr(latest.total)}
+              {t("quotes.version", { version: latest.quote.version })}
             </SubmitButton>
           </SimpleForm>
         </Card>

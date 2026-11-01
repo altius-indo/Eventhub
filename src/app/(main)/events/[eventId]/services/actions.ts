@@ -86,8 +86,10 @@ export async function updateServiceAction(eventId: string, serviceId: string, _p
   const { ctx, t, ok } = await editor(eventId, serviceId);
   const owner = String(fd.get("ownerUserId") ?? "");
   if (!ok || (owner && !isUuid(owner))) return { error: t("common.notAllowed") };
+  const payer = payerField(fd);
+  if (payer === undefined) return { error: t("payer.invalid") };
   try {
-    await updateServiceDetails(getDb(), dctx(ctx), serviceId, { name: optStr(fd, "name"), ownerUserId: owner || null, brief: optStr(fd, "brief"), payer: payerField(fd) });
+    await updateServiceDetails(getDb(), dctx(ctx), serviceId, { name: optStr(fd, "name"), ownerUserId: owner || null, brief: optStr(fd, "brief"), payer });
   } catch (e) {
     return fail(t, e);
   }
@@ -98,6 +100,7 @@ export async function updateServiceAction(eventId: string, serviceId: string, _p
 export async function addRequirementAction(eventId: string, serviceId: string, _p: State, fd: FormData): Promise<State> {
   const { ctx, t, ok } = await editor(eventId, serviceId);
   if (!ok) return { error: t("common.notAllowed") };
+  if (payerField(fd) === undefined) return { error: t("payer.invalid") };
   const input = requirementFrom(fd);
   if (!input) return { error: t("services.errors.invalid") };
   try {
@@ -112,6 +115,7 @@ export async function addRequirementAction(eventId: string, serviceId: string, _
 export async function updateRequirementAction(eventId: string, requirementId: string, _p: State, fd: FormData): Promise<State> {
   const { ctx, t, ok } = await editor(eventId, requirementId);
   if (!ok) return { error: t("common.notAllowed") };
+  if (payerField(fd) === undefined) return { error: t("payer.invalid") };
   const input = requirementFrom(fd);
   if (!input) return { error: t("services.errors.invalid") };
   try {

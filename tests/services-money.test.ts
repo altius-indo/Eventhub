@@ -1,15 +1,15 @@
 import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { auditLogs, eventMembers, events, functions, requirements, serviceTypes, vendors } from "@/db/schema";
+import { approvalRequests, auditLogs, budgetLines, eventMembers, events, functions, requirements, serviceTypes, vendors } from "@/db/schema";
 import "@/lib/approval-handlers";
 import { decideRequest, withdrawRequest } from "@/lib/approvals";
-import { addBudgetLine, budgetFacts, byPayer, categoryTotals, groupFacts, sumFacts } from "@/lib/budget";
-import { BookingError, cancelBooking, proposeBooking, reviseBooking, updateSchedule } from "@/lib/bookings";
+import { addBudgetLine, updateBudgetLine, budgetFacts, byPayer, categoryTotals, groupFacts, sumFacts } from "@/lib/budget";
+import { addKeyDate, BookingError, cancelBooking, matchLines, proposeBooking, reviseBooking, updateSchedule } from "@/lib/bookings";
 import { ensureCatalogue, listServiceTypes, setThreshold } from "@/lib/catalogue";
 import { saveDocument, DocumentError, sniffMime } from "@/lib/documents";
 import { createEvent } from "@/lib/events";
 import { createFunction, deleteFunction } from "@/lib/functions";
-import { bookingFinance, createInvoice, milestoneStatuses, payables, payStatus, PaymentError, recordPayment, sendApprovalReminders, sendPaymentReminders } from "@/lib/payments";
+import { bookingFinance, createInvoice, deleteInvoice, milestoneStatuses, payables, payStatus, PaymentError, recordPayment, sendApprovalReminders, sendPaymentReminders } from "@/lib/payments";
 import type { PolicySubject } from "@/lib/policy";
 import { compareForService, comparePackage, createQuoteRequests, getQuote, QuoteError, saveQuote, type LineInput } from "@/lib/quotes";
 import { addRequirement, addService, cancelRequirement, gapView, getService, listServices, markDelivered, updateRequirement } from "@/lib/services";
@@ -499,3 +499,93 @@ describe("vendors and documents", () => {
 
 void PaymentError;
 void serviceTypes;
+
+describe("review fixes", () => {
+  it("re-sends an edited proposal and refuses approval of a changed row", async () => {
+    const c = await cateringSetup();
+    const gifts = c.type("gifts");
+    const r = await addBudgetLine(db(), c.P, { categoryId: gifts.id, functionId: null, title: "Favours", estimatePaise: 5_000_00, payer: null, notes: null });
+    if (r.status !== "pending") throw new Error();
+    const [line] = (await budgetFacts(db(), c.event.id)).filter((f) => f.budgetLineId);
+    await c.decideAs(r.request.id, "request_changes", "Cheaper please");
+    await updateBudgetLine(db(), c.P, line.budgetLineId!, { categoryId: gifts.id, functionId: null, title: "Favours (big)", estimatePaise: 15_00_000_00, payer: null, notes: null });
+    const [req] = await db().select().from(approvalRequests).where(eq(approvalRequests.id, r.request.id));
+    expect(req.status).toBe("pending");
+    expect(req.amountPaise).toBe(15_00_000_00);
+    expect(req.title).toBe("Favours (big)");
+    // A change behind the request's back makes it stale.
+    await db().update(budgetLines).set({ version: 99 }).where(eq(budgetLines.id, line.budgetLineId!));
+    await expect(c.decideAs(r.request.id, "approve")).rejects.toMatchObject({ code: "stale" });
+  });
+
+  it("never auto-approves reductions while the limit is ₹0", async () => {
+    const c = await cateringSetup();
+    const q = await saveQuote(db(), c.event.id, c.H.actor, { requestId: c.requestId }, { ...c.head, taxType: "none", lines: [c.line(c.rM, 1000), c.line(c.rS, 1000)] });
+    const v1 = await getQuote(db(), c.event.id, q.id);
+    const b = await proposeBooking(db(), c.H, { quoteId: q.id, lineIds: v1.lines.map((l) => l.id), today: TODAY });
+    const q2 = await saveQuote(db(), c.event.id, c.H.actor, { requestId: c.requestId, reviseQuoteId: q.id }, { ...c.head, taxType: "none", lines: [c.line(c.rM, 900), c.line(c.rS, 900)] });
+    const v2 = await getQuote(db(), c.event.id, q2.id);
+    const r = await reviseBooking(db(), c.P, b.booking.id, { quoteId: q2.id, lineIds: v2.lines.map((l) => l.id), today: TODAY });
+    expect(r.result.status).toBe("pending");
+  });
+
+  it("maps a partial booking onto a revised quote", async () => {
+    const c = await cateringSetup();
+    const q = await saveQuote(db(), c.event.id, c.H.actor, { requestId: c.requestId }, { ...c.head, lines: [c.line(c.rM, 1000), c.line(c.rS, 1000), c.pkg(-100)] });
+    const q2 = await saveQuote(db(), c.event.id, c.H.actor, { requestId: c.requestId, reviseQuoteId: q.id }, { ...c.head, lines: [c.line(c.rM, 1100), c.line(c.rS, 1100), c.pkg(-50)] });
+    const [v1, v2] = await Promise.all([getQuote(db(), c.event.id, q.id), getQuote(db(), c.event.id, q2.id)]);
+    const picked = matchLines(v1.lines, v2.lines, [v1.lines[0].id, v1.lines[2].id], new Set([c.rM.id, c.rS.id]));
+    expect(picked).toEqual([v2.lines[0].id, v2.lines[2].id]);
+    expect(matchLines(v1.lines, v2.lines, [v1.lines[1].id], new Set([c.rM.id]))).toEqual([]);
+  });
+
+  it("keeps each payment's payer, and shrinks a booking when a requirement is cancelled", async () => {
+    const c = await cateringSetup();
+    const q = await saveQuote(db(), c.event.id, c.H.actor, { requestId: c.requestId }, { ...c.head, taxType: "none", lines: [c.line(c.rM, 3000), c.line(c.rS, 1000)] });
+    const v = await getQuote(db(), c.event.id, q.id);
+    const b = await proposeBooking(db(), c.H, { quoteId: q.id, lineIds: v.lines.map((l) => l.id), today: TODAY });
+    const pay = (amountPaise: number, kind: "bride" | "groom") =>
+      recordPayment(db(), c.H, { bookingId: b.booking.id, budgetLineId: null, invoiceId: null, paidOn: TODAY, amountPaise, mode: "upi", reference: null, payer: { kind }, notes: null, allowOverpay: false });
+    await pay(1000, "bride");
+    await pay(2000, "groom");
+    const p = byPayer(await budgetFacts(db(), c.event.id));
+    expect([p.bride.paid, p.groom.paid]).toEqual([1000, 2000]);
+
+    await cancelRequirement(db(), c.H, c.rS.id, "Not needed");
+    const fin = await bookingFinance(db(), c.event.id, b.booking.id, TODAY);
+    expect(fin.total).toBe(3000);
+    expect(fin.milestones.reduce((a, m) => a + m.milestone.amountPaise, 0)).toBe(3000);
+  });
+
+  it("books a requirement without a quantity fully", async () => {
+    const c = await cateringSetup();
+    const free = (await addRequirement(db(), c.H, c.svcM.id, req("Mehendi artist", null, null))).requirement;
+    const [rq] = await createQuoteRequests(db(), c.event.id, c.H.actor, { vendorIds: [c.vendor.id], serviceIds: [c.svcM.id], dueDate: null, message: null });
+    const q = await saveQuote(db(), c.event.id, c.H.actor, { requestId: rq }, { ...c.head, lines: [c.line(free, 500, 2)] });
+    await proposeBooking(db(), c.H, { quoteId: q.id, lineIds: [(await getQuote(db(), c.event.id, q.id)).lines[0].id], today: TODAY });
+    const s = await getService(db(), c.event.id, c.svcM.id);
+    expect(s.requirements.find((r) => r.id === free.id)?.status).toBe("booked");
+  });
+
+  it("keeps invoices with payments and checks key-date assignees", async () => {
+    const c = await cateringSetup();
+    const q = await saveQuote(db(), c.event.id, c.H.actor, { requestId: c.requestId }, { ...c.head, taxType: "none", lines: [c.line(c.rM, 1000)] });
+    const b = await proposeBooking(db(), c.H, { quoteId: q.id, lineIds: [(await getQuote(db(), c.event.id, q.id)).lines[0].id], today: TODAY });
+    const inv = await createInvoice(db(), c.event.id, c.H.actor, {
+      vendorId: c.vendor.id,
+      bookingId: b.booking.id,
+      number: "1",
+      invoiceDate: TODAY,
+      dueDate: null,
+      supplierGstin: null,
+      taxType: "none",
+      printedTotalPaise: null,
+      notes: null,
+      lines: [{ serviceId: null, description: "x", hsnSac: null, amountPaise: 1000, gstRateBps: 0 }],
+    });
+    await recordPayment(db(), c.H, { bookingId: b.booking.id, budgetLineId: null, invoiceId: inv.id, paidOn: TODAY, amountPaise: 500, mode: "cash", reference: null, payer: null, notes: null, allowOverpay: false });
+    await expect(deleteInvoice(db(), c.event.id, c.H.actor, inv.id)).rejects.toMatchObject({ code: "has_payments" });
+    const outsider = await makeUser("outsider@example.com");
+    await expect(addKeyDate(db(), c.event.id, c.H.actor, b.booking.id, { label: "Menu tasting", date: TODAY, assigneeId: outsider.id })).rejects.toMatchObject({ code: "invalid" });
+  });
+});

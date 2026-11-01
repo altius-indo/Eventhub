@@ -155,6 +155,9 @@ export async function createInvoice(db: Database, eventId: string, actor: Actor,
 
 export async function deleteInvoice(db: Database, eventId: string, actor: Actor, invoiceId: string) {
   await db.transaction(async (tx) => {
+    // Invoices with payments recorded against them stay (the money trail, EVT-06).
+    const [paid] = await tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoiceId), eq(payments.eventId, eventId))).limit(1);
+    if (paid) throw new PaymentError("has_payments");
     const [inv] = await tx.delete(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.eventId, eventId))).returning();
     if (!inv) throw new PaymentError("not_found");
     await audit(tx, { eventId, actor, action: "invoice.deleted", entityType: "invoice", entityId: inv.id, data: { number: inv.number, amount: inv.totalPaise } });
@@ -252,8 +255,11 @@ export async function recordPayment(db: Database, ctx: Ctx, input: PaymentInput)
       title = l.title;
     }
     if (input.invoiceId) {
+      // Only an invoice of this booking (or this vendor's unlinked invoice); none for other costs.
+      if (!input.bookingId) throw new PaymentError("invalid");
       const [inv] = await tx.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.eventId, ctx.eventId)));
-      if (!inv || (input.bookingId && inv.bookingId && inv.bookingId !== input.bookingId)) throw new PaymentError("invalid");
+      const [bk] = await tx.select({ vendorId: bookings.vendorId }).from(bookings).where(eq(bookings.id, input.bookingId));
+      if (!inv || inv.vendorId !== bk?.vendorId || (inv.bookingId && inv.bookingId !== input.bookingId)) throw new PaymentError("invalid");
     }
     const { allowOverpay, ...row } = input;
     const [payment] = await tx

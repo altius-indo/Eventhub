@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { events } from "@/db/schema";
 import { audit } from "@/lib/audit";
+import { hasRecentStepUp } from "@/lib/auth-core";
 import { addBudgetLine, budgetLineSchema, BudgetError, deleteBudgetLine, updateBudgetLine } from "@/lib/budget";
 import { CatalogueError, setThreshold } from "@/lib/catalogue";
 import { isUuid } from "@/lib/ids";
@@ -47,6 +48,7 @@ export async function addLineAction(eventId: string, _p: State, fd: FormData): P
   const ctx = await getEventContext(eventId);
   const { t } = await getTranslator();
   if (!ctx.can("budget.edit")) return { error: t("common.notAllowed") };
+  if (payerField(fd) === undefined) return { error: t("payer.invalid") };
   const input = lineFrom(fd);
   if (!input) return { error: t("budget.errors.invalid") };
   try {
@@ -62,6 +64,7 @@ export async function updateLineAction(eventId: string, lineId: string, _p: Stat
   const ctx = await getEventContext(eventId);
   const { t } = await getTranslator();
   if (!ctx.can("budget.edit") || !isUuid(lineId)) return { error: t("common.notAllowed") };
+  if (payerField(fd) === undefined) return { error: t("payer.invalid") };
   const input = lineFrom(fd);
   if (!input) return { error: t("budget.errors.invalid") };
   try {
@@ -95,6 +98,11 @@ export async function recordPaymentAction(eventId: string, target: { bookingId?:
   const amount = paiseField(fd, "amount");
   const inv = String(fd.get("invoiceId") ?? "");
   if (!amount || (inv && !isUuid(inv))) return { error: t("payments.errors.invalid") };
+  if (payerField(fd) === undefined) return { error: t("payer.invalid") };
+  // A Host's payment counts at once, so it needs a fresh one-time code like approving one (EVT-01d).
+  if (ctx.decide("payments.record") === "allow" && !hasRecentStepUp(ctx.session)) {
+    redirect(`/step-up?next=${encodeURIComponent(target.bookingId ? `/events/${eventId}/vendors/bookings/${target.bookingId}` : `/events/${eventId}/budget/lines`)}`);
+  }
   const parsed = paymentInput.safeParse({
     bookingId: target.bookingId ?? null,
     budgetLineId: target.budgetLineId ?? null,
@@ -117,9 +125,10 @@ export async function recordPaymentAction(eventId: string, target: { bookingId?:
   }
 }
 
-export async function deletePaymentAction(eventId: string, paymentId: string) {
+export async function deletePaymentAction(eventId: string, paymentId: string, back: string) {
   const ctx = await getEventContext(eventId);
   if (!isUuid(paymentId) || ctx.decide("payments.record") !== "allow") return;
+  if (!hasRecentStepUp(ctx.session)) redirect(`/step-up?next=${encodeURIComponent(back.startsWith(`/events/${eventId}/`) ? back : `/events/${eventId}/budget`)}`);
   await deletePayment(getDb(), dctx(ctx), paymentId).catch((e) => {
     if (!(e instanceof PaymentError)) throw e;
   });
@@ -173,12 +182,15 @@ export async function createInvoiceAction(eventId: string, _p: State, fd: FormDa
   redirect(`/events/${eventId}/budget/invoices/${id}?saved=1`);
 }
 
-export async function deleteInvoiceAction(eventId: string, invoiceId: string) {
+export async function deleteInvoiceAction(eventId: string, invoiceId: string, _p: State): Promise<State> {
   const ctx = await getEventContext(eventId);
-  if (!ctx.can("invoices.edit") || !isUuid(invoiceId)) return;
-  await deleteInvoice(getDb(), eventId, ctx.actor, invoiceId).catch((e) => {
-    if (!(e instanceof PaymentError)) throw e;
-  });
+  const { t } = await getTranslator();
+  if (!ctx.can("invoices.edit") || !isUuid(invoiceId)) return { error: t("common.notAllowed") };
+  try {
+    await deleteInvoice(getDb(), eventId, ctx.actor, invoiceId);
+  } catch (e) {
+    return fail(t, e);
+  }
   refresh(eventId);
   redirect(`/events/${eventId}/budget/invoices`);
 }

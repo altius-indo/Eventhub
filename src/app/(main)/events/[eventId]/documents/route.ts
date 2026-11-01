@@ -25,6 +25,12 @@ export async function POST(req: Request, { params }: RouteContext<"/events/[even
   if (!(await getSessionContext())) return NextResponse.json({ error: "signed_out" }, { status: 401 });
   if (!isUuid(eventId)) return NextResponse.json({ error: "not_found" }, { status: 404 });
   const ctx = await getEventContext(eventId);
+  // Refuse oversized bodies before reading them (the proxy would otherwise truncate silently).
+  const declared = Number(req.headers.get("content-length") ?? "");
+  if (!Number.isFinite(declared) || declared <= 0) return NextResponse.json({ error: "length_required" }, { status: 411 });
+  if (declared > MAX_DOCUMENT_BYTES + 512 * 1024) {
+    return NextResponse.redirect(new URL(`/events/${eventId}?docError=too_large`, req.url), 303);
+  }
 
   const fd = await req.formData().catch(() => null);
   const backRaw = String(fd?.get("back") ?? "");

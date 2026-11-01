@@ -173,6 +173,7 @@ const en = {
     commentRequired: "Add a comment when rejecting or requesting changes.",
     requestedBy: "Requested by {name}",
     notPending: "This request has already been decided.",
+    editToResend: "A Host asked for changes. Edit it (that sends it again) or withdraw it.",
     stale: "This change is out of date (something changed since it was asked). Reject it with a note so the Planner can resubmit.",
     reminderSubject: "Changes waiting for your approval · {event}",
     reminderIntro: "Waiting for a Host: {count}",
@@ -280,6 +281,9 @@ const en = {
       "payment.deleted": "deleted a payment",
       "document.uploaded": "uploaded {name}",
       "document.deleted": "deleted {name}",
+      "booking.key_date_added": "added a contract key date: {label}",
+      "booking.contract_changed": "changed contract terms",
+      "service.details_changed": "changed the owner or payer of a service",
       "event.money_settings": "changed budget settings",
     },
   },
@@ -1030,6 +1034,7 @@ const en = {
     table: "{function}: {table}",
   },
   payer: {
+    invalid: "Check the share: a percent from 0 to 100, or a rupee amount.",
     label: "Who pays",
     none: "Not set",
     bride: "Bride's family",
@@ -1345,9 +1350,9 @@ const en = {
     revise: "Move to the latest quote version",
     reviseHelp: "The vendor revised their quote. Moving the booking changes the commitment and needs a Host if you're a Planner.",
     warnings: {
-      condition_dropped: "The package condition isn't met, so {lines} conditional line(s) were left out.",
-      over_covered: "{requirement} is now booked for more than needed.",
-      expired: "The quote expired on {validUntil}.",
+      condition_dropped: "The package condition isn't met, so its conditional lines (e.g. a bundle discount) were left out.",
+      over_covered: "Some requirements are now booked for more than needed.",
+      expired: "This quote has expired. Check the prices with the vendor.",
     },
     errors: {
       not_found: "That booking no longer exists.",
@@ -1404,6 +1409,7 @@ const en = {
     errors: { not_found: "That cost no longer exists.", invalid: "Please check the details.", has_payments: "Payments were recorded against this cost." },
   },
   payments: {
+    statusColumn: "Status",
     title: "Payments",
     empty: "No payments yet.",
     paidOn: "Paid on",

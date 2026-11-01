@@ -88,11 +88,11 @@ export async function setVendorSecrets(db: Database, eventId: string, vendorId: 
   if (input.pan !== undefined) {
     const pan = input.pan?.trim().toUpperCase() || null;
     if (pan && !isValidPan(pan)) throw new VendorError("invalid_pan");
-    set.panEnc = pan ? encryptField(pan) : null;
+    set.panEnc = pan ? encryptField(pan, `vendor:${vendorId}:pan`) : null;
     set.panLast4 = pan ? pan.slice(-4) : null;
   }
   if (input.bank !== undefined) {
-    set.bankEnc = input.bank ? encryptField(JSON.stringify(input.bank)) : null;
+    set.bankEnc = input.bank ? encryptField(JSON.stringify(input.bank), `vendor:${vendorId}:bank`) : null;
     set.bankLast4 = input.bank ? input.bank.accountNumber.slice(-4) : null;
   }
   await db.transaction(async (tx) => {
@@ -120,8 +120,8 @@ export async function revealVendorSecrets(db: Database, eventId: string, vendorI
     if (!v) throw new VendorError("not_found");
     await audit(tx, { eventId, actor, action: "vendor.bank_viewed", entityType: "vendor", entityId: v.id, data: { name: v.name } });
     return {
-      pan: v.panEnc ? decryptField(v.panEnc) : null,
-      bank: v.bankEnc ? (JSON.parse(decryptField(v.bankEnc)) as BankDetails) : null,
+      pan: v.panEnc ? decryptField(v.panEnc, `vendor:${v.id}:pan`) : null,
+      bank: v.bankEnc ? (JSON.parse(decryptField(v.bankEnc, `vendor:${v.id}:bank`)) as BankDetails) : null,
     };
   });
 }

@@ -21,10 +21,10 @@ export async function GET(req: Request, { params }: RouteContext<"/events/[event
     { header: t("invoices.vendor"), key: "vendor", width: 28 },
     { header: t("bookings.milestoneLabel"), key: "label", width: 20 },
     { header: t("bookings.due"), key: "due", width: 14 },
-    { header: t("bookings.amount"), key: "amount", width: 14, style: { numFmt: "#,##,##0.00" } },
-    { header: t("bookings.balance"), key: "remaining", width: 14, style: { numFmt: "#,##,##0.00" } },
+    { header: t("bookings.amount"), key: "amount", width: 14, style: { numFmt: "#,##0.00" } },
+    { header: t("bookings.balance"), key: "remaining", width: 14, style: { numFmt: "#,##0.00" } },
     { header: t("payments.payer"), key: "payer", width: 24 },
-    { header: t("payments.status.due"), key: "status", width: 14 },
+    { header: t("payments.statusColumn"), key: "status", width: 14 },
   ];
   ws.getRow(1).font = { bold: true };
   for (const r of rows) {

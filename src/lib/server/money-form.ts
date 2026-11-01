@@ -42,7 +42,7 @@ export const dateField = (fd: FormData, name: string) => {
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 };
 
-export function payerField(fd: FormData, prefix = "payer"): Payer | null {
+export function payerField(fd: FormData, prefix = "payer"): Payer | null | undefined {
   return payerFromForm(str(fd, `${prefix}Kind`), str(fd, `${prefix}Mode`), str(fd, `${prefix}Value`));
 }
 

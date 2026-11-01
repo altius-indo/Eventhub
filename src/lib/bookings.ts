@@ -1,10 +1,12 @@
-import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
 import {
   approvalRequests,
   bookingKeyDates,
   bookings,
+  eventMembers,
+  events,
   fulfilments,
   functions,
   paymentMilestones,
@@ -19,13 +21,14 @@ import {
   type Quote,
   type QuoteLine,
 } from "@/db/schema";
-import { ApprovalError, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
+import { ApprovalError, refreshOpenRequest, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
 import { audit, type Actor } from "./audit";
 import { canAutoApprove, overspendFor } from "./budget";
 import { allocate } from "./money";
 import { decide, ForbiddenError, type PolicySubject } from "./policy";
 import { allocatePackages, lineGst, splitGst } from "./quotes";
 import { payerSchema } from "./services";
+import { todayIn } from "./tasks";
 
 export class BookingError extends Error {
   constructor(
@@ -76,7 +79,7 @@ type Computed = {
  * conditions (VND-04): all-or-nothing quotes must be taken whole, and conditional lines
  * (e.g. a bundle discount) drop out when the minimum number of functions isn't booked.
  */
-async function computeBooking(tx: Tx, eventId: string, quoteId: string, lineIds: string[], today: string | null): Promise<Computed> {
+async function computeBooking(tx: Tx, eventId: string, quoteId: string, lineIds: string[], today: string | null, excludeBookingId?: string): Promise<Computed> {
   const [quote] = await tx.select().from(quotes).where(and(eq(quotes.id, quoteId), eq(quotes.eventId, eventId)));
   if (!quote) throw new BookingError("not_found");
   if (quote.declinedAt) throw new BookingError("declined");
@@ -138,7 +141,7 @@ async function computeBooking(tx: Tx, eventId: string, quoteId: string, lineIds:
       .select({ requirementId: fulfilments.requirementId, quantity: fulfilments.quantity })
       .from(fulfilments)
       .innerJoin(bookings, eq(bookings.id, fulfilments.bookingId))
-      .where(and(inArray(fulfilments.requirementId, reqIds), isNull(fulfilments.cancelledAt), ne(bookings.status, "cancelled"), ne(bookings.quoteId, quote.id)));
+      .where(and(inArray(fulfilments.requirementId, reqIds), isNull(fulfilments.cancelledAt), ne(bookings.status, "cancelled"), excludeBookingId ? ne(bookings.id, excludeBookingId) : undefined));
     for (const r of reqs) {
       if (r.quantity == null) continue;
       const before = existing.filter((e) => e.requirementId === r.id);
@@ -192,6 +195,10 @@ export async function proposeBooking(
 ): Promise<{ booking: Booking; result: SubmitResult; warnings: BookingWarning[] }> {
   if (decide(ctx.subject, "bookings.create") === "deny") throw new ForbiddenError("bookings.create");
   return db.transaction(async (tx) => {
+    // One live booking per quote (any version): serialise on the quote's root row.
+    const [q0] = await tx.select({ rootId: quotes.rootId }).from(quotes).where(and(eq(quotes.id, input.quoteId), eq(quotes.eventId, ctx.eventId)));
+    if (!q0) throw new BookingError("not_found");
+    await tx.select({ id: quotes.id }).from(quotes).where(eq(quotes.id, q0.rootId)).for("update");
     const c = await computeBooking(tx, ctx.eventId, input.quoteId, input.lineIds, input.today);
     const live = await tx
       .select({ id: bookings.id })
@@ -223,7 +230,7 @@ export async function proposeBooking(
       subject: ctx.subject,
       type: "booking.create",
       title: v?.name ?? "",
-      payload: { bookingId: booking.id },
+      payload: { bookingId: booking.id, version: booking.version },
       amountPaise: total,
       entityType: "booking",
       entityId: booking.id,
@@ -254,10 +261,11 @@ const bookingIdPayload = z.object({ bookingId: z.string().uuid() }).passthrough(
 registerApprovalHandler("booking.create", {
   permission: "bookings.create",
   async apply(tx, payload, { eventId, actor }) {
-    const { bookingId } = bookingIdPayload.parse(payload);
+    const { bookingId, version } = bookingIdPayload.extend({ version: z.number().int().optional() }).parse(payload);
     const b = await lockBooking(tx, eventId, bookingId);
     if (b.status === "confirmed") return;
     if (b.status !== "pending_approval") throw new ApprovalError("stale");
+    if (version !== undefined && version !== b.version) throw new ApprovalError("stale");
     // Everything it books must still be live.
     const rows = await tx
       .select({ sState: services.approvalState, sCancelled: services.cancelledAt, rState: requirements.approvalState, rLife: requirements.lifecycle })
@@ -269,6 +277,13 @@ registerApprovalHandler("booking.create", {
       throw new ApprovalError("stale");
     }
     await tx.update(bookings).set({ status: "confirmed", confirmedAt: new Date() }).where(eq(bookings.id, b.id));
+    // An advance due before the Host confirmed is due on the day of confirmation, not overdue.
+    const [ev] = await tx.select({ tz: events.timezone }).from(events).where(eq(events.id, eventId));
+    const today = todayIn(ev?.tz ?? "Asia/Kolkata");
+    await tx
+      .update(paymentMilestones)
+      .set({ dueDate: today })
+      .where(and(eq(paymentMilestones.bookingId, b.id), eq(paymentMilestones.kind, "advance"), lt(paymentMilestones.dueDate, today)));
     await audit(tx, { eventId, actor, action: "booking.confirmed", entityType: "booking", entityId: b.id, data: { amount: b.subtotalPaise + b.gstPaise } });
   },
   async onClosed(tx, payload, { eventId }, outcome) {
@@ -337,7 +352,7 @@ export async function reviseBooking(db: Database, ctx: Ctx, bookingId: string, i
     const b = await lockBooking(tx, ctx.eventId, bookingId);
     if (b.status !== "confirmed") throw new BookingError("not_confirmed");
     const [oldQ] = b.quoteId ? await tx.select().from(quotes).where(eq(quotes.id, b.quoteId)) : [];
-    const c = await computeBooking(tx, ctx.eventId, input.quoteId, input.lineIds, input.today);
+    const c = await computeBooking(tx, ctx.eventId, input.quoteId, input.lineIds, input.today, b.id);
     if (!oldQ || c.quote.rootId !== oldQ.rootId) throw new BookingError("invalid");
     const [v] = await tx.select({ name: vendors.name }).from(vendors).where(eq(vendors.id, b.vendorId));
     const result = await submitChangeTx(tx, {
@@ -370,7 +385,7 @@ registerApprovalHandler("booking.change", {
     const p = changePayload.parse(payload);
     const b = await lockBooking(tx, eventId, p.bookingId);
     if (b.version !== p.baseVersion || b.status !== "confirmed") throw new ApprovalError("stale");
-    const c = await computeBooking(tx, eventId, p.quoteId, p.lineIds, null).catch(() => {
+    const c = await computeBooking(tx, eventId, p.quoteId, p.lineIds, null, b.id).catch(() => {
       throw new ApprovalError("stale");
     });
     await tx.update(fulfilments).set({ cancelledAt: new Date() }).where(and(eq(fulfilments.bookingId, b.id), isNull(fulfilments.cancelledAt)));
@@ -398,7 +413,7 @@ registerApprovalHandler("booking.change", {
   async autoApprove(tx, payload, eventId) {
     const p = changePayload.parse(payload);
     const b = await lockBooking(tx, eventId, p.bookingId);
-    const c = await computeBooking(tx, eventId, p.quoteId, p.lineIds, null);
+    const c = await computeBooking(tx, eventId, p.quoteId, p.lineIds, null, b.id);
     const before = await tx.select().from(fulfilments).where(and(eq(fulfilments.bookingId, b.id), isNull(fulfilments.cancelledAt)));
     const after = await categoryAdditions(tx, c.rows);
     const prev = await categoryAdditions(tx, before);
@@ -422,6 +437,9 @@ export async function updateSchedule(db: Database, ctx: Ctx, bookingId: string, 
     checkSchedule(milestones, b.subtotalPaise + b.gstPaise);
     if (b.status === "pending_approval") {
       await replaceMilestones(tx, ctx.eventId, b.id, milestones);
+      // The schedule is part of the pending booking: re-send it so the Host sees the new version.
+      await tx.update(bookings).set({ version: b.version + 1 }).where(eq(bookings.id, b.id));
+      await refreshOpenRequest(tx, { eventId: ctx.eventId, entityType: "booking", entityId: b.id, actor: ctx.actor, payload: { bookingId: b.id, version: b.version + 1 } });
       return { status: "applied" } as const;
     }
     const [v] = await tx.select({ name: vendors.name }).from(vendors).where(eq(vendors.id, b.vendorId));
@@ -460,25 +478,39 @@ registerApprovalHandler("booking.schedule", {
 // Contract terms and key dates (VND-09)
 // ---------------------------------------------------------------------------
 
-export async function updateContract(db: Database, eventId: string, bookingId: string, input: { cancellationPolicy: string | null; deliverables: string | null; notes: string | null }) {
-  const [b] = await db
-    .update(bookings)
-    .set({ cancellationPolicy: input.cancellationPolicy?.trim() || null, deliverables: input.deliverables?.trim() || null, notes: input.notes?.trim() || null })
-    .where(and(eq(bookings.id, bookingId), eq(bookings.eventId, eventId)))
-    .returning({ id: bookings.id });
-  if (!b) throw new BookingError("not_found");
+export async function updateContract(
+  db: Database,
+  eventId: string,
+  actor: Actor,
+  bookingId: string,
+  input: { cancellationPolicy: string | null; deliverables: string | null; notes: string | null },
+) {
+  await db.transaction(async (tx) => {
+    const [b] = await tx
+      .update(bookings)
+      .set({ cancellationPolicy: input.cancellationPolicy?.trim() || null, deliverables: input.deliverables?.trim() || null, notes: input.notes?.trim() || null })
+      .where(and(eq(bookings.id, bookingId), eq(bookings.eventId, eventId)))
+      .returning({ id: bookings.id });
+    if (!b) throw new BookingError("not_found");
+    await audit(tx, { eventId, actor, action: "booking.contract_changed", entityType: "booking", entityId: b.id });
+  });
 }
 
 /** A key date becomes a task, so the daily task reminders cover it. */
 export async function addKeyDate(db: Database, eventId: string, actor: Actor, bookingId: string, input: { label: string; date: string; assigneeId: string | null }) {
   return db.transaction(async (tx) => {
     const b = await lockBooking(tx, eventId, bookingId);
+    if (input.assigneeId) {
+      const [m] = await tx.select({ id: eventMembers.id }).from(eventMembers).where(and(eq(eventMembers.eventId, eventId), eq(eventMembers.userId, input.assigneeId)));
+      if (!m) throw new BookingError("invalid");
+    }
     const [v] = await tx.select({ name: vendors.name }).from(vendors).where(eq(vendors.id, b.vendorId));
     const [task] = await tx
       .insert(tasks)
       .values({ eventId, title: `${v?.name ?? ""}: ${input.label}`.slice(0, 200), dueDate: input.date, assigneeId: input.assigneeId, createdBy: actor.userId, priority: "high" })
       .returning();
     const [row] = await tx.insert(bookingKeyDates).values({ eventId, bookingId: b.id, label: input.label, date: input.date, taskId: task.id }).returning();
+    await audit(tx, { eventId, actor, action: "booking.key_date_added", entityType: "booking", entityId: b.id, data: { label: input.label, date: input.date } });
     return row;
   });
 }
@@ -562,4 +594,24 @@ export async function bookingForQuoteRoot(db: Tx, eventId: string, rootId: strin
 export async function bookingOverspend(db: Tx, eventId: string, bookingId: string) {
   const rows = await db.select().from(fulfilments).where(and(eq(fulfilments.bookingId, bookingId), eq(fulfilments.eventId, eventId), isNull(fulfilments.cancelledAt)));
   return overspendFor(db, eventId, await categoryAdditions(db, rows));
+}
+
+/**
+ * Maps what a booking took from one quote version onto another (VND-07): the same requirement,
+ * the same service extra, or the package line in the same position. Lines for requirements
+ * that are no longer live are left out.
+ */
+export function matchLines(oldLines: QuoteLine[], newLines: QuoteLine[], selectedOldIds: string[], liveRequirementIds: Set<string>): string[] {
+  const chosen = oldLines.filter((l) => selectedOldIds.includes(l.id));
+  const oldPkg = oldLines.filter((l) => l.scope === "package");
+  const newPkg = newLines.filter((l) => l.scope === "package");
+  const out = new Set<string>();
+  for (const l of chosen) {
+    let m: QuoteLine | undefined;
+    if (l.scope === "requirement") m = newLines.find((n) => n.scope === "requirement" && n.requirementId === l.requirementId);
+    else if (l.scope === "service") m = newLines.find((n) => n.scope === "service" && n.serviceId === l.serviceId);
+    else m = newPkg[oldPkg.indexOf(l)];
+    if (m && (!m.requirementId || liveRequirementIds.has(m.requirementId))) out.add(m.id);
+  }
+  return [...out];
 }

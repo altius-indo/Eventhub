@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
 import {
@@ -15,7 +15,7 @@ import {
   services,
   type Payer,
 } from "@/db/schema";
-import { ApprovalError, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
+import { ApprovalError, refreshOpenRequest, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
 import { audit, type Actor } from "./audit";
 import { getServiceType } from "./catalogue";
 import { allocate, gstFor } from "./money";
@@ -75,11 +75,15 @@ export async function categoryTotals(db: Tx, eventId: string) {
  */
 export async function canAutoApprove(db: Tx, eventId: string, additions: Map<string, number>, opts: { checkOverspend: boolean }) {
   if (additions.size === 0) return false;
+  // Serialise money auto-approvals per event so two concurrent changes can't both slip under plan.
+  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${`money:${eventId}`}))`);
   const ids = [...additions.keys()];
   const cats = await db.select().from(serviceTypes).where(and(eq(serviceTypes.eventId, eventId), inArray(serviceTypes.id, ids)));
   for (const [id, amount] of additions) {
     const c = cats.find((x) => x.id === id);
     if (!c) return false;
+    // A ₹0 limit (the default) means every change needs a Host, including reductions (BGT-04).
+    if (c.autoApproveBelowPaise <= 0) return false;
     if (amount > 0 && !(amount < c.autoApproveBelowPaise)) return false;
   }
   if (opts.checkOverspend && (await overspendFor(db, eventId, additions)).length) return false;
@@ -144,7 +148,7 @@ export async function addBudgetLine(db: Database, ctx: Ctx, input: BudgetLineInp
       subject: ctx.subject,
       type: "budget_line.create",
       title: line.title,
-      payload: { budgetLineId: line.id },
+      payload: { budgetLineId: line.id, version: line.version },
       amountPaise: line.estimatePaise,
       entityType: "budget_line",
       entityId: line.id,
@@ -162,6 +166,16 @@ export async function updateBudgetLine(db: Database, ctx: Ctx, id: string, input
     if (line.approvalState === "rejected") throw new BudgetError("not_found");
     if (line.approvalState === "proposed") {
       await tx.update(budgetLines).set({ ...input, version: line.version + 1, updatedAt: new Date() }).where(eq(budgetLines.id, id));
+      // Re-send the open request with the new values, so the Host approves what they see.
+      await refreshOpenRequest(tx, {
+        eventId: ctx.eventId,
+        entityType: "budget_line",
+        entityId: id,
+        actor: ctx.actor,
+        payload: { budgetLineId: id, version: line.version + 1 },
+        amountPaise: input.estimatePaise,
+        title: input.title,
+      });
       return { status: "applied" } as const;
     }
     return submitChangeTx(tx, {
@@ -214,10 +228,11 @@ const lineId = z.object({ budgetLineId: z.string().uuid() }).passthrough();
 registerApprovalHandler("budget_line.create", {
   permission: "budget.edit",
   async apply(tx, payload, { eventId }) {
-    const { budgetLineId } = lineId.parse(payload);
+    const { budgetLineId, version } = lineId.extend({ version: z.number().int().optional() }).parse(payload);
     const l = await lockLine(tx, eventId, budgetLineId);
     if (l.approvalState === "approved") return;
     if (l.approvalState !== "proposed") throw new ApprovalError("stale");
+    if (version !== undefined && version !== l.version) throw new ApprovalError("stale");
     await tx.update(budgetLines).set({ approvalState: "approved", updatedAt: new Date() }).where(eq(budgetLines.id, l.id));
   },
   async onClosed(tx, payload, { eventId }) {
@@ -364,7 +379,7 @@ export async function budgetFacts(db: Tx, eventId: string): Promise<Fact[]> {
   // Spreads an amount over a booking's services by their committed share.
   const byBooking = new Map<string, { serviceId: string; requirementId: string | null; weight: number }[]>();
   for (const { f, bookingId } of fs) byBooking.set(bookingId, [...(byBooking.get(bookingId) ?? []), { serviceId: f.serviceId, requirementId: f.requirementId, weight: f.amountPaise + f.gstPaise }]);
-  const spread = (bookingId: string, amount: number, vendorId: string, key: "invoiced" | "paid", payer: Payer | null) => {
+  const spread = (bookingId: string, amount: number, vendorId: string, key: "invoiced" | "paid", payer: Payer | null, payerKey?: string) => {
     const parts = byBooking.get(bookingId);
     if (!parts?.length) {
       facts.push({ ...zero(), functionId: null, categoryId: null, serviceId: null, requirementId: null, budgetLineId: null, vendorId, payerKey: "none", payer, [key]: amount });
@@ -373,7 +388,7 @@ export async function budgetFacts(db: Tx, eventId: string): Promise<Fact[]> {
     const split = allocate(amount, parts.map((p) => Math.max(0, p.weight)));
     parts.forEach((p, i) => {
       const b = base(p.serviceId, p.requirementId);
-      facts.push({ ...zero(), ...b, vendorId, payer: payer ?? b.payer, payerKey: payer ? `p:${bookingId}` : b.payerKey, [key]: split[i] });
+      facts.push({ ...zero(), ...b, vendorId, payer: payer ?? b.payer, payerKey: payer ? (payerKey ?? `p:${bookingId}`) : b.payerKey, [key]: split[i] });
     });
   };
 
@@ -397,7 +412,8 @@ export async function budgetFacts(db: Tx, eventId: string): Promise<Fact[]> {
     .leftJoin(bookings, eq(bookings.id, payments.bookingId))
     .where(and(eq(payments.eventId, eventId), eq(payments.state, "confirmed")));
   for (const { p, vendorId } of pays) {
-    if (p.bookingId && vendorId) spread(p.bookingId, p.amountPaise, vendorId, "paid", p.payer);
+    // Each payment keeps its own payer label: the advance may come from one family, the rest from the other.
+    if (p.bookingId && vendorId) spread(p.bookingId, p.amountPaise, vendorId, "paid", p.payer, `pay:${p.id}`);
     else if (p.budgetLineId) {
       const l = lines.find((x) => x.id === p.budgetLineId);
       if (l) facts.push({ ...zero(), ...lineFact(l), payer: p.payer ?? l.payer, payerKey: p.payer ? `pay:${p.id}` : `b:${l.id}`, paid: p.amountPaise });

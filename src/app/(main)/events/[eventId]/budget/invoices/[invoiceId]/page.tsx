@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConfirmButton } from "@/components/confirm-button";
 import { DocumentsPanel } from "@/components/documents-panel";
+import { SimpleForm } from "@/components/simple-form";
 import { Alert, Badge, Card, CardTitle, PageHeader } from "@/components/ui";
 import { getDb } from "@/db";
 import { formatDay, formatInr, type MessageKey } from "@/i18n/core";
@@ -92,11 +93,11 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
       </Card>
       <DocumentsPanel eventId={eventId} owner="invoiceId" ownerId={i.id} docs={docs} canEdit={ctx.can("contracts.edit")} back={`/events/${eventId}/budget/invoices/${i.id}`} defaultKind="invoice" labels={documentLabels(t, t("bookings.documents"), sp)} />
       {ctx.can("invoices.edit") && (
-        <form action={deleteInvoiceAction.bind(null, eventId, i.id)}>
+        <SimpleForm action={deleteInvoiceAction.bind(null, eventId, i.id)} className="space-y-2">
           <ConfirmButton variant="ghost" className="text-danger" confirm={t("invoices.deleteConfirm")}>
             {t("common.delete")}
           </ConfirmButton>
-        </form>
+        </SimpleForm>
       )}
     </div>
   );

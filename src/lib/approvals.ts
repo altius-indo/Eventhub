@@ -242,3 +242,47 @@ export async function countPendingApprovals(db: Tx, eventIds: string[]): Promise
   for (const r of rows) result.set(r.eventId, (result.get(r.eventId) ?? 0) + 1);
   return result;
 }
+
+/**
+ * Keeps an open request in step with its staged row (ADR-0016): when a proposed row is edited,
+ * the request gets the new version, amount and title and goes back to "pending", so a Host
+ * always approves exactly what the queue shows. Approving checks the version.
+ */
+export async function refreshOpenRequest(
+  tx: Tx,
+  input: { eventId: string; entityType: string; entityId: string; actor: Actor; payload: Record<string, unknown>; amountPaise?: number | null; title?: string },
+) {
+  const [request] = await tx
+    .select()
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.eventId, input.eventId),
+        eq(approvalRequests.entityType, input.entityType),
+        eq(approvalRequests.entityId, input.entityId),
+        inArray(approvalRequests.status, ["pending", "changes_requested"]),
+      ),
+    )
+    .for("update");
+  if (!request) return null;
+  await tx
+    .update(approvalRequests)
+    .set({
+      payload: input.payload,
+      ...(input.amountPaise !== undefined ? { amountPaise: input.amountPaise } : {}),
+      ...(input.title ? { title: input.title } : {}),
+      status: "pending",
+      decidedAt: null,
+      decidedBy: null,
+    })
+    .where(eq(approvalRequests.id, request.id));
+  await audit(tx, {
+    eventId: input.eventId,
+    actor: input.actor,
+    action: "approval.resubmitted",
+    entityType: "approval",
+    entityId: request.id,
+    data: { title: input.title ?? request.title },
+  });
+  return request.id;
+}

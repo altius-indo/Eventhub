@@ -17,8 +17,9 @@ import {
   type Requirement,
   type Service,
 } from "@/db/schema";
-import { ApprovalError, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
+import { ApprovalError, refreshOpenRequest, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
 import { audit, type Actor } from "./audit";
+import { bookingsOf, recalcBookingTotals } from "./booking-totals";
 import { getServiceType } from "./catalogue";
 import { decide, ForbiddenError, type PolicySubject } from "./policy";
 import { addMinutes, parseWallClock } from "./wall-clock";
@@ -36,18 +37,20 @@ export const payerSchema = z.union([
   z.object({ kind: z.literal("shared"), mode: z.literal("fixed"), bridePaise: z.number().int().min(0) }),
 ]);
 
-/** Form value -> Payer ("bride" | "groom" | "shared" with percent or fixed rupees). */
-export function payerFromForm(kind: string, splitMode: string, splitValue: string): Payer | null {
+/** Form value -> Payer ("bride" | "groom" | "shared" with percent or fixed rupees); undefined = invalid. */
+export function payerFromForm(kind: string, splitMode: string, splitValue: string): Payer | null | undefined {
   if (kind === "bride" || kind === "groom") return { kind };
   if (kind !== "shared") return null;
-  const v = splitValue.trim().replace(/,/g, "");
+  const v = splitValue.trim().replace(/[₹,%\s]/g, "");
   if (splitMode === "fixed") {
-    if (!/^\d{1,11}(\.\d{1,2})?$/.test(v)) return { kind: "shared", mode: "percent", brideBps: 5000 };
+    if (!/^\d{1,11}(\.\d{1,2})?$/.test(v)) return undefined;
     const [r, p = ""] = v.split(".");
     return { kind: "shared", mode: "fixed", bridePaise: Number(r) * 100 + Number(p.padEnd(2, "0")) };
   }
-  const pct = v === "" ? 50 : Number(v);
-  if (!Number.isFinite(pct) || pct < 0 || pct > 100) return { kind: "shared", mode: "percent", brideBps: 5000 };
+  if (v === "") return { kind: "shared", mode: "percent", brideBps: 5000 };
+  if (!/^\d{1,3}(\.\d{1,2})?$/.test(v)) return undefined;
+  const pct = Number(v);
+  if (pct > 100) return undefined;
   return { kind: "shared", mode: "percent", brideBps: Math.round(pct * 100) };
 }
 
@@ -170,7 +173,7 @@ export async function addService(
       subject: ctx.subject,
       type: "service.create",
       title: titleFor(fn.name, service.name ?? type.name),
-      payload: { serviceId: service.id },
+      payload: { serviceId: service.id, version: service.version },
       entityType: "service",
       entityId: service.id,
       functionIds: [fn.id],
@@ -195,6 +198,9 @@ export async function updateServiceDetails(
       .update(services)
       .set({ name: input.name?.trim() || null, ownerUserId: input.ownerUserId, brief: input.brief?.trim() || null, payer: input.payer, updatedAt: new Date() })
       .where(eq(services.id, s.id));
+    if (JSON.stringify(s.payer) !== JSON.stringify(input.payer) || s.ownerUserId !== input.ownerUserId) {
+      await audit(tx, { eventId: ctx.eventId, actor: ctx.actor, action: "service.details_changed", entityType: "service", entityId: s.id, data: { payer: input.payer?.kind ?? null } });
+    }
   });
 }
 
@@ -213,6 +219,7 @@ export async function addRequirement(db: Database, ctx: Ctx, serviceId: string, 
       .values({ eventId: ctx.eventId, serviceId: s.id, ...toRow(input), approvalState: state, sortOrder: n + 1, createdBy: ctx.actor.userId })
       .returning();
     let result: SubmitResult = { status: "applied" };
+    if (s.approvalState === "proposed") await syncServiceProposal(tx, ctx.eventId, s.id, ctx.actor);
     if (s.approvalState === "approved") {
       result = await submitChangeTx(tx, {
         eventId: ctx.eventId,
@@ -220,7 +227,7 @@ export async function addRequirement(db: Database, ctx: Ctx, serviceId: string, 
         subject: ctx.subject,
         type: "requirement.create",
         title: titleFor(fn.name, "", req.title),
-        payload: { requirementId: req.id },
+        payload: { requirementId: req.id, version: req.version },
         amountPaise: req.estimatePaise,
         entityType: "requirement",
         entityId: req.id,
@@ -245,6 +252,19 @@ export async function updateRequirement(db: Database, ctx: Ctx, requirementId: s
     const row = toRow(input);
     if (r.approvalState === "proposed") {
       await tx.update(requirements).set({ ...row, version: r.version + 1, updatedAt: new Date() }).where(eq(requirements.id, r.id));
+      // The open request (this requirement's, or its proposed service's) is re-sent with the new values.
+      const [svc] = await tx.select({ approvalState: services.approvalState }).from(services).where(eq(services.id, r.serviceId));
+      if (svc?.approvalState === "proposed") await syncServiceProposal(tx, ctx.eventId, r.serviceId, ctx.actor);
+      else
+        await refreshOpenRequest(tx, {
+          eventId: ctx.eventId,
+          entityType: "requirement",
+          entityId: r.id,
+          actor: ctx.actor,
+          payload: { requirementId: r.id, version: r.version + 1 },
+          amountPaise: row.estimatePaise,
+          title: undefined,
+        });
       return { status: "applied" } as const;
     }
     const s = await lockService(tx, ctx.eventId, r.serviceId);
@@ -333,6 +353,25 @@ async function closeOpenRequestsFor(tx: Tx, eventId: string, entityType: string,
         inArray(approvalRequests.status, ["pending", "changes_requested"]),
       ),
     );
+}
+
+/** Sum of a still-proposed service's requirement estimates (its request's amount). */
+async function proposedTotal(tx: Tx, serviceId: string) {
+  const [{ sum }] = await tx
+    .select({ sum: sql<number>`coalesce(sum(${requirements.estimatePaise}), 0)::bigint`.mapWith(Number) })
+    .from(requirements)
+    .where(and(eq(requirements.serviceId, serviceId), eq(requirements.approvalState, "proposed")));
+  return sum;
+}
+
+/** A proposed service changed (requirements added or edited): new version, request re-sent. */
+async function syncServiceProposal(tx: Tx, eventId: string, serviceId: string, actor: Actor) {
+  const [s] = await tx
+    .update(services)
+    .set({ version: sql`${services.version} + 1`, updatedAt: new Date() })
+    .where(eq(services.id, serviceId))
+    .returning({ version: services.version });
+  await refreshOpenRequest(tx, { eventId, entityType: "service", entityId: serviceId, actor, payload: { serviceId, version: s.version }, amountPaise: await proposedTotal(tx, serviceId) });
 }
 
 async function rejectService(tx: Tx, serviceId: string) {
@@ -427,7 +466,7 @@ export async function copyService(db: Database, ctx: Ctx, serviceId: string, toF
       subject: ctx.subject,
       type: "service.create",
       title: titleFor(fn.name, s.name ?? type?.name ?? ""),
-      payload: { serviceId: copy.id },
+      payload: { serviceId: copy.id, version: copy.version },
       amountPaise: reqs.reduce((a, r) => a + (r.estimatePaise ?? 0), 0),
       entityType: "service",
       entityId: copy.id,
@@ -441,17 +480,19 @@ export async function copyService(db: Database, ctx: Ctx, serviceId: string, toF
 // Approval handlers (SVC-10)
 // ---------------------------------------------------------------------------
 
-const idPayload = (key: string) => z.object({ [key]: z.string().uuid() }).passthrough();
+const servicePayload = z.object({ serviceId: z.string().uuid(), version: z.number().int().optional() });
+const requirementPayload = z.object({ requirementId: z.string().uuid(), version: z.number().int().optional() });
 
 registerApprovalHandler("service.create", {
   permission: "services.edit",
   async apply(tx, payload, { eventId }) {
-    const { serviceId } = idPayload("serviceId").parse(payload) as { serviceId: string };
+    const { serviceId, version } = servicePayload.parse(payload);
     const s = await lockService(tx, eventId, serviceId);
     if (s.approvalState !== "proposed") {
       if (s.approvalState === "approved") return;
       throw new ApprovalError("stale");
     }
+    if (version !== undefined && version !== s.version) throw new ApprovalError("stale");
     await tx.update(services).set({ approvalState: "approved", updatedAt: new Date() }).where(eq(services.id, s.id));
     await tx
       .update(requirements)
@@ -459,7 +500,7 @@ registerApprovalHandler("service.create", {
       .where(and(eq(requirements.serviceId, s.id), eq(requirements.approvalState, "proposed")));
   },
   async onClosed(tx, payload, { eventId }) {
-    const { serviceId } = idPayload("serviceId").parse(payload) as { serviceId: string };
+    const { serviceId } = servicePayload.parse(payload);
     const s = await lockService(tx, eventId, serviceId).catch(() => null);
     if (s && s.approvalState === "proposed") await rejectService(tx, s.id);
   },
@@ -468,14 +509,15 @@ registerApprovalHandler("service.create", {
 registerApprovalHandler("requirement.create", {
   permission: "services.edit",
   async apply(tx, payload, { eventId }) {
-    const { requirementId } = idPayload("requirementId").parse(payload) as { requirementId: string };
+    const { requirementId, version } = requirementPayload.parse(payload);
     const r = await lockRequirement(tx, eventId, requirementId);
     if (r.approvalState === "approved") return;
     if (r.approvalState !== "proposed") throw new ApprovalError("stale");
+    if (version !== undefined && version !== r.version) throw new ApprovalError("stale");
     await tx.update(requirements).set({ approvalState: "approved", updatedAt: new Date() }).where(eq(requirements.id, r.id));
   },
   async onClosed(tx, payload, { eventId }) {
-    const { requirementId } = idPayload("requirementId").parse(payload) as { requirementId: string };
+    const { requirementId } = requirementPayload.parse(payload);
     const r = await lockRequirement(tx, eventId, requirementId).catch(() => null);
     if (r && r.approvalState === "proposed") await tx.update(requirements).set({ approvalState: "rejected" }).where(eq(requirements.id, r.id));
   },
@@ -503,7 +545,10 @@ registerApprovalHandler("requirement.cancel", {
     const r = await lockRequirement(tx, eventId, requirementId);
     if (r.lifecycle === "cancelled") return;
     await tx.update(requirements).set({ lifecycle: "cancelled", version: r.version + 1, updatedAt: new Date() }).where(eq(requirements.id, r.id));
+    const affected = await bookingsOf(tx, { requirementId: r.id });
     await cancelFulfilmentsWhere(tx, eq(fulfilments.requirementId, r.id));
+    await recalcBookingTotals(tx, affected);
+    await closeOpenRequestsFor(tx, eventId, "requirement", r.id);
     await audit(tx, { eventId, actor, action: "requirement.cancelled", entityType: "requirement", entityId: r.id, data: { title: r.title, reason } });
   },
 });
@@ -515,8 +560,15 @@ registerApprovalHandler("service.cancel", {
     const s = await lockService(tx, eventId, serviceId);
     if (s.cancelledAt) return;
     await tx.update(services).set({ cancelledAt: new Date(), version: s.version + 1, updatedAt: new Date() }).where(eq(services.id, s.id));
-    await tx.update(requirements).set({ lifecycle: "cancelled", updatedAt: new Date() }).where(and(eq(requirements.serviceId, s.id), ne(requirements.lifecycle, "delivered")));
+    const cancelled = await tx
+      .update(requirements)
+      .set({ lifecycle: "cancelled", updatedAt: new Date() })
+      .where(and(eq(requirements.serviceId, s.id), ne(requirements.lifecycle, "delivered")))
+      .returning({ id: requirements.id });
+    const affected = await bookingsOf(tx, { serviceId: s.id });
     await cancelFulfilmentsWhere(tx, eq(fulfilments.serviceId, s.id));
+    await recalcBookingTotals(tx, affected);
+    for (const c of cancelled) await closeOpenRequestsFor(tx, eventId, "requirement", c.id);
     await audit(tx, { eventId, actor, action: "service.cancelled", entityType: "service", entityId: s.id, data: { reason } });
   },
 });
@@ -571,7 +623,9 @@ export function requirementStatus(r: Pick<Requirement, "approvalState" | "lifecy
   if (r.lifecycle === "cancelled") return "cancelled";
   if (r.lifecycle === "delivered") return "delivered";
   if (c) {
-    if (c.full || (r.quantity != null && r.quantity > 0 && c.confirmedQty >= r.quantity)) return "booked";
+    // Without a quantity, any confirmed booking covers it.
+    if (c.full || ((r.quantity == null || r.quantity === 0) && c.confirmedQty > 0)) return "booked";
+    if (r.quantity != null && r.quantity > 0 && c.confirmedQty >= r.quantity) return "booked";
     if (c.confirmedQty > 0) return "partially_booked";
   }
   return quoting ? "quoting" : "open";
