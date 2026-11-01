@@ -1,12 +1,16 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { getDb } from "@/db";
+import { unreadCount } from "@/lib/notifications";
 import { getSessionContext, getTranslator } from "@/lib/server/session";
+import { NotificationBell } from "./notification-bell";
 import { LanguageSwitcher } from "./language-switcher";
 import { SignOutButton } from "./sign-out-button";
 
 export async function AppShell({ children }: { children: ReactNode }) {
   const ctx = await getSessionContext();
   const { t, locale } = await getTranslator();
+  const unread = ctx ? await unreadCount(getDb(), ctx.user.id) : 0;
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-10 border-b border-border bg-surface/95 backdrop-blur">
@@ -30,6 +34,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
             </nav>
           )}
           <div className="ml-auto flex items-center gap-2">
+            {ctx && <NotificationBell count={unread} label={unread > 0 ? t("notifications.bellUnread", { count: unread }) : t("notifications.bell")} />}
             <LanguageSwitcher locale={locale} label={t("nav.language")} />
             {ctx && <SignOutButton label={t("common.signOut")} unsavedWarning={t("checkin.unsavedSignOut")} />}
           </div>
