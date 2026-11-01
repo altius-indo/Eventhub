@@ -1,6 +1,6 @@
 # EventHub — Product Requirements (v1)
 
-> Status: **Draft for review** · Captured: 2026-11-01 via interactive requirements session
+> Status: **Ready for sign-off**: all open questions resolved · Captured: 2026-11-01 via interactive requirements session
 > Owner: Product owner (subhajyoti) · Next step: review → sign-off → architecture & scaffold
 
 ---
@@ -23,6 +23,7 @@
 | Photo gallery | **Post-event gallery** per function: photographers, family and guests upload; guests see photos from functions they were invited to |
 | Wedding website | **Public wedding microsite** per event; shows only what the family marks public, with a personalised view when opened via a guest's magic link |
 | Name & branding | Product name **EventHub** (final). No visual identity yet: v1 uses a neutral, themeable design system (colour/typography tokens) so branding can be applied later without rework |
+| Usage limits | Sensible per-event defaults for messaging and gallery storage, configurable by the platform operator (§4.1) |
 | Data retention | Event data kept for **1 year after the event's last function**, then permanently deleted (after export reminders) |
 | Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to the receiving family |
 | Spend approvals | **Per-category thresholds**; a cost is approved by the family/families paying it, so **shared costs need both families** |
@@ -374,6 +375,41 @@ Event
 
 ---
 
+### 4.1 Usage Limits & Cost Controls (defaults)
+
+EventHub is free for personal use, so per-event limits keep running costs predictable. All values below are **defaults in platform configuration**: the platform operator can change them globally or raise them for a specific event without a code change. Provider prices are **not hard-coded**; they live in a configurable rate table.
+
+**Messaging** (per event, over its whole lifetime)
+
+| Item | Default |
+|---|---|
+| WhatsApp messages (broadcasts, invites, reminders, thank-yous) | **15,000** (≈ 1,000 guests × 15 messages) |
+| SMS messages (non-OTP) | **3,000**. SMS is a fallback only, for recipients without WhatsApp or after WhatsApp delivery fails. |
+| Emails | **50,000** |
+| OTP messages (login) | Don't count towards event limits. Rate-limited per identifier (EVT-01), with a platform-wide daily cap of 5,000 SMS OTPs as an abuse guard. |
+| Channel order for guest messages | WhatsApp → email → SMS (fallback), unless a guest's preference says otherwise |
+
+**Gallery storage** (per event)
+
+| Item | Default |
+|---|---|
+| Total gallery storage (photos + video) | **250 GB** per event |
+| Single photo upload | 50 MB |
+| Single video upload | Vendors: 4 GB. Guests: 500 MB / 10 minutes. |
+| Guest uploads | Up to **300 items / 5 GB per household**. Guest photos are stored as high-quality JPEG (max 4096 px long edge) instead of originals, to save space. |
+| Professional (vendor) uploads | Originals kept, within the event limit |
+| Full-gallery ZIP downloads | Family only by default (GAL-06); at most 5 full downloads per day per event |
+| Storage tiering | Originals move to a cheaper infrequent-access tier 90 days after upload. Web renditions stay on standard storage + CDN. |
+
+**Controls**
+- **LIM-01 (M)** **Usage meter** per event (Owner/Host/Planner): messages sent by channel vs limit, and storage used vs limit, with a breakdown by function and by uploader type.
+- **LIM-02 (M)** **Pre-send estimate**: before a broadcast or bulk send, show the number of recipients and messages per channel and the remaining quota (plus an estimated cost from the rate table, visible to the operator).
+- **LIM-03 (M)** **Warnings** at 80% and 95% of any limit (in-app plus email to the Owner).
+  - **At 100% of a messaging limit**: further bulk sends on that channel are blocked; one-to-one messages and OTPs still work.
+  - **At 100% of storage**: new guest uploads are blocked first; vendor deliveries can still use a 10% reserve so professional photos are never lost.
+- **LIM-04 (M)** **Limit increase requests**: the Owner can request more from inside the app; the operator approves it in an admin view.
+- **LIM-05 (M)** **Operator cost dashboard and alerts**: platform-wide monthly usage and estimated spend per provider (WhatsApp, SMS, email, storage, bandwidth), with configurable monthly budget alerts.
+
 ## 5. Core Data Model (conceptual)
 
 ```
@@ -488,6 +524,6 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ---
 
-## 11. Open Questions (to resolve before/during M1)
+## 11. Open Questions
 
-1. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email) and **gallery storage**: is there a per-event storage cap (e.g. 200 GB) or video size limit? Photo/video storage and bandwidth will be the largest running cost.
+None at present. All questions from the requirements session have been resolved. New questions found during build will be added here.
