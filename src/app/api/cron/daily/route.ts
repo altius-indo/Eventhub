@@ -7,6 +7,7 @@ import { processOutbox } from "@/lib/outbox";
 import { sendApprovalReminders, sendPaymentReminders } from "@/lib/payments";
 import { sendRsvpReminders } from "@/lib/rsvp";
 import { sendTaskReminders } from "@/lib/tasks";
+import { sendThankYouReminders } from "@/lib/thank-yous";
 
 /** Long enough for a day's reminders across events. */
 export const maxDuration = 60;
@@ -35,6 +36,7 @@ export async function GET(req: Request) {
     ["oldNotifications", () => purgeOldNotifications(db, now)],
     // [vendor-portal daily jobs]
     // [gifts daily jobs]
+    ["thankYouReminders", () => sendThankYouReminders(db, now)],
   ];
   const result: Record<string, number | string> = {};
   // One failing job must not stop the others.

@@ -14,6 +14,7 @@ import {
   type Household,
 } from "@/db/schema";
 import { audit, type Actor } from "./audit";
+import { anonymiseGiftsOfHousehold } from "./gifts";
 import { assertFunctionsInEvent, NotFoundError } from "./functions";
 import { isUuid } from "./ids";
 
@@ -181,6 +182,8 @@ export async function updateHousehold(db: Database, eventId: string, householdId
 
 export async function deleteHousehold(db: Database, eventId: string, householdId: string, actor: Actor) {
   await db.transaction(async (tx) => {
+    // Erasure (EVT-09): their gifts stay for reconciliation, without the name or link.
+    await anonymiseGiftsOfHousehold(tx, eventId, householdId);
     const [h] = await tx
       .delete(households)
       .where(and(eq(households.id, householdId), eq(households.eventId, eventId)))
