@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
   customType,
   date,
   foreignKey,
@@ -11,6 +12,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   time,
   timestamp,
@@ -119,6 +121,10 @@ export const events = pgTable("events", {
   shareRooms: boolean("share_rooms").notNull().default(false),
   shareSeating: boolean("share_seating").notNull().default(false),
   currency: text("currency").notNull().default("INR"),
+  /** GST place of supply (2-digit state code) used to suggest CGST+SGST vs IGST. */
+  placeOfSupply: text("place_of_supply"),
+  /** Who gets payment reminders (PAY-05): "hosts" or "hosts_planners". */
+  paymentRemindersTo: text("payment_reminders_to").notNull().default("hosts_planners"),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -219,8 +225,16 @@ export const approvalRequests = pgTable(
     decidedAt: ts("decided_at"),
     decidedBy: uuid("decided_by").references(() => users.id, { onDelete: "set null" }),
     appliedAt: ts("applied_at"),
+    /** What the request is about, for "pending change" badges and filters (SVC-10). */
+    entityType: text("entity_type"),
+    entityId: uuid("entity_id"),
+    functionIds: uuid("function_ids").array().notNull().default(sql`'{}'::uuid[]`),
+    lastRemindedAt: ts("last_reminded_at"),
   },
-  (t) => [index("approval_event_status_idx").on(t.eventId, t.status, t.createdAt)],
+  (t) => [
+    index("approval_event_status_idx").on(t.eventId, t.status, t.createdAt),
+    index("approval_entity_idx").on(t.entityType, t.entityId),
+  ],
 );
 
 export const approvalDecisions = pgTable("approval_decisions", {
@@ -261,7 +275,7 @@ export const functions = pgTable(
     createdAt: createdAt(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
-  (t) => [index("functions_event_idx").on(t.eventId, t.date, t.startTime)],
+  (t) => [index("functions_event_idx").on(t.eventId, t.date, t.startTime), unique("functions_event_uq").on(t.id, t.eventId)],
 );
 
 // ---------------------------------------------------------------------------
@@ -778,6 +792,506 @@ export const taskComments = pgTable(
   (t) => [index("task_comments_task_idx").on(t.taskId, t.createdAt)],
 );
 
+
+// ---------------------------------------------------------------------------
+// Services, vendors & money — SVC, VND, BGT, PAY (milestone 5)
+// Money is integer paise. Planner-created rows start as approval_state "proposed" (ADR-0016).
+// FKs from money rows to functions/vendors use "no action": deleting a function or vendor
+// that has services/bookings fails, while deleting the whole event still cascades.
+// ---------------------------------------------------------------------------
+
+export const approvalState = pgEnum("approval_state", ["proposed", "approved", "rejected"]);
+export const catalogueKind = pgEnum("catalogue_kind", ["service", "standalone"]);
+export const requirementLifecycle = pgEnum("requirement_lifecycle", ["open", "delivered", "cancelled"]);
+export const requirementPriority = pgEnum("requirement_priority", ["must", "nice"]);
+export const quoteLineScope = pgEnum("quote_line_scope", ["requirement", "service", "package"]);
+export const bookingStatus = pgEnum("booking_status", ["pending_approval", "confirmed", "cancelled"]);
+export const taxType = pgEnum("tax_type", ["none", "cgst_sgst", "igst"]);
+export const paymentMode = pgEnum("payment_mode", ["upi", "bank", "cheque", "cash", "card"]);
+export const paymentState = pgEnum("payment_state", ["recorded", "confirmed", "rejected"]);
+export const milestoneKind = pgEnum("milestone_kind", ["advance", "milestone", "final"]);
+export const documentKind = pgEnum("document_kind", ["contract", "quote", "invoice", "receipt", "brief", "other"]);
+
+/** Who pays (BGT-03): a reporting label only. Shared splits are by percent (basis points) or fixed paise to the bride's side. */
+export type Payer =
+  | { kind: "bride" }
+  | { kind: "groom" }
+  | { kind: "shared"; mode: "percent"; brideBps: number }
+  | { kind: "shared"; mode: "fixed"; bridePaise: number };
+
+export type RequirementTemplate = { title: string; unit?: string; quantity?: number; specs?: string };
+
+/** Service catalogue and budget categories (SVC-01, BGT-04 thresholds). */
+export const serviceTypes = pgTable(
+  "service_types",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    /** Built-in types have a key (translated name); custom ones only a name. */
+    systemKey: text("system_key"),
+    name: text("name").notNull(),
+    kind: catalogueKind("kind").notNull().default("service"),
+    requirementTemplates: jsonb("requirement_templates").$type<RequirementTemplate[]>().notNull().default([]),
+    /** Planner bookings/changes below this amount apply without a Host (default 0 = always ask). */
+    autoApproveBelowPaise: bigint("auto_approve_below_paise", { mode: "number" }).notNull().default(0),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: createdAt(),
+  },
+  (t) => [unique("service_types_key_uq").on(t.eventId, t.systemKey), unique("service_types_event_uq").on(t.id, t.eventId)],
+);
+
+export const services = pgTable(
+  "services",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id").notNull(),
+    serviceTypeId: uuid("service_type_id").notNull(),
+    /** Optional label, e.g. "Bar" for a second Catering service. */
+    name: text("name"),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+    brief: text("brief"),
+    payer: jsonb("payer").$type<Payer>(),
+    approvalState: approvalState("approval_state").notNull().default("approved"),
+    cancelledAt: ts("cancelled_at"),
+    version: integer("version").notNull().default(1),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("services_fn_idx").on(t.functionId),
+    unique("services_event_uq").on(t.id, t.eventId),
+    foreignKey({ name: "services_fn_fk", columns: [t.functionId, t.eventId], foreignColumns: [functions.id, functions.eventId] }),
+    foreignKey({ name: "services_type_fk", columns: [t.serviceTypeId, t.eventId], foreignColumns: [serviceTypes.id, serviceTypes.eventId] }),
+  ],
+);
+
+export const requirements = pgTable(
+  "requirements",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    serviceId: uuid("service_id").notNull(),
+    title: text("title").notNull(),
+    quantity: integer("quantity"),
+    unit: text("unit"),
+    specs: text("specs"),
+    /** Wall-clock overrides; null = the function's own time/venue. */
+    startsAt: wallClock("starts_at"),
+    endsAt: wallClock("ends_at"),
+    venue: text("venue"),
+    estimatePaise: bigint("estimate_paise", { mode: "number" }),
+    priority: requirementPriority("priority").notNull().default("must"),
+    payer: jsonb("payer").$type<Payer>(),
+    approvalState: approvalState("approval_state").notNull().default("approved"),
+    lifecycle: requirementLifecycle("lifecycle").notNull().default("open"),
+    deliveredAt: ts("delivered_at"),
+    version: integer("version").notNull().default(1),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("requirements_service_idx").on(t.serviceId, t.sortOrder),
+    unique("requirements_event_uq").on(t.id, t.eventId),
+    unique("requirements_service_uq").on(t.id, t.serviceId),
+    foreignKey({ name: "requirements_service_fk", columns: [t.serviceId, t.eventId], foreignColumns: [services.id, services.eventId] }).onDelete("cascade"),
+  ],
+);
+
+/** Vendor directory (VND-01). PAN and bank details are encrypted (ADR-0019). */
+export const vendors = pgTable(
+  "vendors",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    contactName: text("contact_name"),
+    phone: text("phone"),
+    email: text("email"),
+    gstin: text("gstin"),
+    panEnc: text("pan_enc"),
+    panLast4: text("pan_last4"),
+    bankEnc: text("bank_enc"),
+    bankLast4: text("bank_last4"),
+    rating: integer("rating"),
+    ratingNote: text("rating_note"),
+    notes: text("notes"),
+    archivedAt: ts("archived_at"),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("vendors_event_idx").on(t.eventId, t.name), unique("vendors_event_uq").on(t.id, t.eventId)],
+);
+
+export const vendorServiceTypes = pgTable(
+  "vendor_service_types",
+  {
+    vendorId: uuid("vendor_id")
+      .notNull()
+      .references(() => vendors.id, { onDelete: "cascade" }),
+    serviceTypeId: uuid("service_type_id")
+      .notNull()
+      .references(() => serviceTypes.id, { onDelete: "cascade" }),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.vendorId, t.serviceTypeId] })],
+);
+
+/** A request to one vendor to quote for one or more services (VND-02). */
+export const quoteRequests = pgTable(
+  "quote_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    vendorId: uuid("vendor_id").notNull(),
+    dueDate: date("due_date"),
+    message: text("message"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    closedAt: ts("closed_at"),
+  },
+  (t) => [
+    index("quote_requests_event_idx").on(t.eventId, t.createdAt),
+    foreignKey({ name: "quote_requests_vendor_fk", columns: [t.vendorId, t.eventId], foreignColumns: [vendors.id, vendors.eventId] }).onDelete("cascade"),
+  ],
+);
+
+export const quoteRequestServices = pgTable(
+  "quote_request_services",
+  {
+    requestId: uuid("request_id")
+      .notNull()
+      .references(() => quoteRequests.id, { onDelete: "cascade" }),
+    serviceId: uuid("service_id")
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.requestId, t.serviceId] }), index("quote_request_services_service_idx").on(t.serviceId)],
+);
+
+/** A vendor's quote; revisions are new rows with the same root and a higher version (VND-07). */
+export const quotes = pgTable(
+  "quotes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    vendorId: uuid("vendor_id").notNull(),
+    requestId: uuid("request_id").references(() => quoteRequests.id, { onDelete: "set null" }),
+    rootId: uuid("root_id").notNull(),
+    version: integer("version").notNull().default(1),
+    vendorRef: text("vendor_ref"),
+    receivedOn: date("received_on"),
+    validUntil: date("valid_until"),
+    terms: text("terms"),
+    taxType: taxType("tax_type").notNull().default("none"),
+    /** Package conditions (VND-04). */
+    allOrNothing: boolean("all_or_nothing").notNull().default(false),
+    minFunctions: integer("min_functions"),
+    declinedAt: ts("declined_at"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("quotes_root_version_uq").on(t.rootId, t.version),
+    unique("quotes_event_uq").on(t.id, t.eventId),
+    index("quotes_event_idx").on(t.eventId, t.vendorId),
+    foreignKey({ name: "quotes_vendor_fk", columns: [t.vendorId, t.eventId], foreignColumns: [vendors.id, vendors.eventId] }).onDelete("cascade"),
+  ],
+);
+
+export const quoteLines = pgTable(
+  "quote_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    quoteId: uuid("quote_id")
+      .notNull()
+      .references(() => quotes.id, { onDelete: "cascade" }),
+    scope: quoteLineScope("scope").notNull(),
+    serviceId: uuid("service_id").references(() => services.id, { onDelete: "cascade" }),
+    requirementId: uuid("requirement_id").references(() => requirements.id, { onDelete: "cascade" }),
+    description: text("description"),
+    /** Quantity this line covers (partial share of the requirement), if any. */
+    quantity: integer("quantity"),
+    amountPaise: bigint("amount_paise", { mode: "number" }).notNull(),
+    gstRateBps: integer("gst_rate_bps").notNull().default(0),
+    /** Package discount that applies only when the package conditions hold (VND-04). */
+    conditional: boolean("conditional").notNull().default(false),
+    /** Manual split of a package-level line over services: { serviceId: paise }. Null = proportional. */
+    allocation: jsonb("allocation").$type<Record<string, number>>(),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (t) => [
+    index("quote_lines_quote_idx").on(t.quoteId, t.sortOrder),
+    index("quote_lines_service_idx").on(t.serviceId),
+    check(
+      "quote_lines_scope_ck",
+      sql`(${t.scope} = 'requirement' and ${t.requirementId} is not null and ${t.serviceId} is not null) or (${t.scope} = 'service' and ${t.requirementId} is null and ${t.serviceId} is not null) or (${t.scope} = 'package' and ${t.requirementId} is null and ${t.serviceId} is null)`,
+    ),
+    foreignKey({ name: "quote_lines_req_fk", columns: [t.requirementId, t.serviceId], foreignColumns: [requirements.id, requirements.serviceId] }).onDelete("cascade"),
+  ],
+);
+
+/** An accepted quote (or part of one): VND-06. One quote makes at most one live booking. */
+export const bookings = pgTable(
+  "bookings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    vendorId: uuid("vendor_id").notNull(),
+    quoteId: uuid("quote_id").references(() => quotes.id),
+    status: bookingStatus("status").notNull().default("pending_approval"),
+    /** Snapshots of the agreed amounts (pre-GST and GST), in paise. */
+    subtotalPaise: bigint("subtotal_paise", { mode: "number" }).notNull().default(0),
+    gstPaise: bigint("gst_paise", { mode: "number" }).notNull().default(0),
+    /** Contract key terms (VND-09). */
+    cancellationPolicy: text("cancellation_policy"),
+    deliverables: text("deliverables"),
+    notes: text("notes"),
+    version: integer("version").notNull().default(1),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    confirmedAt: ts("confirmed_at"),
+    cancelledAt: ts("cancelled_at"),
+    cancelReason: text("cancel_reason"),
+  },
+  (t) => [
+    index("bookings_event_idx").on(t.eventId, t.status),
+    unique("bookings_event_uq").on(t.id, t.eventId),
+    uniqueIndex("bookings_live_quote_uq").on(t.quoteId).where(sql`status <> 'cancelled' and quote_id is not null`),
+    foreignKey({ name: "bookings_vendor_fk", columns: [t.vendorId, t.eventId], foreignColumns: [vendors.id, vendors.eventId] }),
+  ],
+);
+
+/** A vendor's share of a requirement (or a service-level amount) under a booking (SVC-06). */
+export const fulfilments = pgTable(
+  "fulfilments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    bookingId: uuid("booking_id")
+      .notNull()
+      .references(() => bookings.id, { onDelete: "cascade" }),
+    serviceId: uuid("service_id")
+      .notNull()
+      .references(() => services.id),
+    requirementId: uuid("requirement_id").references(() => requirements.id),
+    quoteLineId: uuid("quote_line_id").references(() => quoteLines.id, { onDelete: "set null" }),
+    quantity: integer("quantity"),
+    amountPaise: bigint("amount_paise", { mode: "number" }).notNull(),
+    gstPaise: bigint("gst_paise", { mode: "number" }).notNull().default(0),
+    cancelledAt: ts("cancelled_at"),
+  },
+  (t) => [index("fulfilments_booking_idx").on(t.bookingId), index("fulfilments_req_idx").on(t.requirementId), index("fulfilments_service_idx").on(t.serviceId)],
+);
+
+/** Costs not tied to a service, e.g. return gifts (BGT-02). */
+export const budgetLines = pgTable(
+  "budget_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    categoryId: uuid("category_id").notNull(),
+    functionId: uuid("function_id").references(() => functions.id, { onDelete: "set null" }),
+    title: text("title").notNull(),
+    estimatePaise: bigint("estimate_paise", { mode: "number" }).notNull().default(0),
+    payer: jsonb("payer").$type<Payer>(),
+    notes: text("notes"),
+    approvalState: approvalState("approval_state").notNull().default("approved"),
+    version: integer("version").notNull().default(1),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("budget_lines_event_idx").on(t.eventId),
+    foreignKey({ name: "budget_lines_cat_fk", columns: [t.categoryId, t.eventId], foreignColumns: [serviceTypes.id, serviceTypes.eventId] }),
+  ],
+);
+
+/** Payment schedule of a booking (PAY-02). Active only when the booking is confirmed. */
+export const paymentMilestones = pgTable(
+  "payment_milestones",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    bookingId: uuid("booking_id")
+      .notNull()
+      .references(() => bookings.id, { onDelete: "cascade" }),
+    kind: milestoneKind("kind").notNull().default("milestone"),
+    label: text("label"),
+    amountPaise: bigint("amount_paise", { mode: "number" }).notNull(),
+    dueDate: date("due_date"),
+    payer: jsonb("payer").$type<Payer>(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    lastRemindedOn: date("last_reminded_on"),
+  },
+  (t) => [index("payment_milestones_booking_idx").on(t.bookingId, t.sortOrder)],
+);
+
+/** Vendor invoices with GST (PAY-01). Amounts are as printed on the invoice. */
+export const invoices = pgTable(
+  "invoices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    vendorId: uuid("vendor_id").notNull(),
+    bookingId: uuid("booking_id").references(() => bookings.id, { onDelete: "set null" }),
+    number: text("number").notNull(),
+    invoiceDate: date("invoice_date").notNull(),
+    dueDate: date("due_date"),
+    supplierGstin: text("supplier_gstin"),
+    taxType: taxType("tax_type").notNull().default("none"),
+    subtotalPaise: bigint("subtotal_paise", { mode: "number" }).notNull(),
+    cgstPaise: bigint("cgst_paise", { mode: "number" }).notNull().default(0),
+    sgstPaise: bigint("sgst_paise", { mode: "number" }).notNull().default(0),
+    igstPaise: bigint("igst_paise", { mode: "number" }).notNull().default(0),
+    totalPaise: bigint("total_paise", { mode: "number" }).notNull(),
+    notes: text("notes"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("invoices_number_uq").on(t.eventId, t.vendorId, t.number),
+    foreignKey({ name: "invoices_vendor_fk", columns: [t.vendorId, t.eventId], foreignColumns: [vendors.id, vendors.eventId] }),
+  ],
+);
+
+export const invoiceLines = pgTable(
+  "invoice_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    /** Service the line is for (null = spread over the booking's services). */
+    serviceId: uuid("service_id").references(() => services.id, { onDelete: "set null" }),
+    description: text("description").notNull(),
+    hsnSac: text("hsn_sac"),
+    amountPaise: bigint("amount_paise", { mode: "number" }).notNull(),
+    gstRateBps: integer("gst_rate_bps").notNull().default(0),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (t) => [index("invoice_lines_invoice_idx").on(t.invoiceId)],
+);
+
+/** Payments made outside the app (PAY-03). A Planner's payment waits for a Host to confirm. */
+export const payments = pgTable(
+  "payments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    bookingId: uuid("booking_id").references(() => bookings.id),
+    budgetLineId: uuid("budget_line_id").references(() => budgetLines.id),
+    invoiceId: uuid("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
+    paidOn: date("paid_on").notNull(),
+    amountPaise: bigint("amount_paise", { mode: "number" }).notNull(),
+    mode: paymentMode("mode").notNull(),
+    reference: text("reference"),
+    payer: jsonb("payer").$type<Payer>(),
+    notes: text("notes"),
+    state: paymentState("state").notNull().default("recorded"),
+    recordedBy: uuid("recorded_by").references(() => users.id, { onDelete: "set null" }),
+    confirmedBy: uuid("confirmed_by").references(() => users.id, { onDelete: "set null" }),
+    confirmedAt: ts("confirmed_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("payments_booking_idx").on(t.bookingId, t.state),
+    index("payments_event_idx").on(t.eventId, t.paidOn),
+    check("payments_amount_ck", sql`${t.amountPaise} > 0`),
+    check("payments_target_ck", sql`(${t.bookingId} is null) <> (${t.budgetLineId} is null)`),
+  ],
+);
+
+/** Uploaded files (contracts, quotes, invoices, receipts). Bytes live in document_blobs (ADR-0018). */
+export const documents = pgTable(
+  "documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    kind: documentKind("kind").notNull().default("other"),
+    vendorId: uuid("vendor_id").references(() => vendors.id, { onDelete: "cascade" }),
+    quoteId: uuid("quote_id").references(() => quotes.id, { onDelete: "cascade" }),
+    bookingId: uuid("booking_id").references(() => bookings.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id").references(() => invoices.id, { onDelete: "cascade" }),
+    paymentId: uuid("payment_id").references(() => payments.id, { onDelete: "cascade" }),
+    serviceId: uuid("service_id").references(() => services.id, { onDelete: "cascade" }),
+    filename: text("filename").notNull(),
+    mime: text("mime").notNull(),
+    bytes: integer("bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    uploadedBy: uuid("uploaded_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("documents_event_idx").on(t.eventId, t.createdAt)],
+);
+
+export const documentBlobs = pgTable("document_blobs", {
+  documentId: uuid("document_id")
+    .primaryKey()
+    .references(() => documents.id, { onDelete: "cascade" }),
+  data: bytea("data").notNull(),
+});
+
+/** Key dates in a contract (VND-09) become tasks so the daily task reminders cover them. */
+export const bookingKeyDates = pgTable(
+  "booking_key_dates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    bookingId: uuid("booking_id")
+      .notNull()
+      .references(() => bookings.id, { onDelete: "cascade" }),
+    label: text("label").notNull(),
+    date: date("date").notNull(),
+    taskId: uuid("task_id").references(() => tasks.id, { onDelete: "set null" }),
+  },
+  (t) => [index("booking_key_dates_booking_idx").on(t.bookingId)],
+);
+
 // ---------------------------------------------------------------------------
 // Development outbox: messages "sent" by the dev delivery provider.
 // ---------------------------------------------------------------------------
@@ -818,3 +1332,22 @@ export type Room = typeof rooms.$inferSelect;
 export type SeatingTable = typeof seatingTables.$inferSelect;
 export type RunSheetItem = typeof runSheetItems.$inferSelect;
 export type RunItemStatus = (typeof runItemStatus.enumValues)[number];
+export type ServiceType = typeof serviceTypes.$inferSelect;
+export type Service = typeof services.$inferSelect;
+export type Requirement = typeof requirements.$inferSelect;
+export type Vendor = typeof vendors.$inferSelect;
+export type QuoteRequest = typeof quoteRequests.$inferSelect;
+export type Quote = typeof quotes.$inferSelect;
+export type QuoteLine = typeof quoteLines.$inferSelect;
+export type Booking = typeof bookings.$inferSelect;
+export type Fulfilment = typeof fulfilments.$inferSelect;
+export type BudgetLine = typeof budgetLines.$inferSelect;
+export type PaymentMilestone = typeof paymentMilestones.$inferSelect;
+export type Invoice = typeof invoices.$inferSelect;
+export type InvoiceLine = typeof invoiceLines.$inferSelect;
+export type Payment = typeof payments.$inferSelect;
+export type DocumentRow = typeof documents.$inferSelect;
+export type ApprovalState = (typeof approvalState.enumValues)[number];
+export type BookingStatus = (typeof bookingStatus.enumValues)[number];
+export type TaxType = (typeof taxType.enumValues)[number];
+export type PaymentMode = (typeof paymentMode.enumValues)[number];

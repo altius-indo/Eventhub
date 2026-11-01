@@ -29,6 +29,20 @@
       "when": 1793500559116,
       "tag": "0003_logistics",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793503939040,
+      "tag": "0004_event_money_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793503939936,
+      "tag": "0005_services_vendors_money",
+      "breakpoints": true
     }
   ]
 }

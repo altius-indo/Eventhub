@@ -1,3 +1,4 @@
+import { ensureCatalogue } from "./catalogue";
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lte } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
@@ -53,13 +54,14 @@ const toRow = (d: EventDetails) => ({
   city: d.city || null,
 });
 
-export async function createEvent(db: Database, actor: Actor, details: EventDetails): Promise<Event> {
+export async function createEvent(db: Database, actor: Actor, details: EventDetails, locale: Locale = "en"): Promise<Event> {
   return db.transaction(async (tx) => {
     const [event] = await tx
       .insert(events)
       .values({ ...toRow(details), createdBy: actor.userId })
       .returning();
     await tx.insert(eventMembers).values({ eventId: event.id, userId: actor.userId, role: "host" });
+    await ensureCatalogue(tx, event.id, locale);
     await audit(tx, { eventId: event.id, actor, action: "event.created", entityType: "event", entityId: event.id });
     return event;
   });

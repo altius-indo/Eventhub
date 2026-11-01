@@ -12,7 +12,10 @@ export async function resetDb() {
     TRUNCATE TABLE approval_decisions, approval_requests, audit_logs, event_invitations,
       event_members, events, sessions, otp_challenges, user_identifiers, users, dev_outbox, rate_events,
       check_ins, seat_assignments, seating_tables, room_assignments, rooms, room_blocks, hotels,
-      transfer_passengers, transfer_runs, run_sheet_items
+      transfer_passengers, transfer_runs, run_sheet_items,
+      document_blobs, documents, booking_key_dates, payments, invoice_lines, invoices, payment_milestones,
+      fulfilments, bookings, budget_lines, quote_lines, quotes, quote_request_services, quote_requests,
+      vendor_service_types, vendors, requirements, services, service_types
     RESTART IDENTITY CASCADE
   `);
 }

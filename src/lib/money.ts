@@ -61,20 +61,38 @@ export function roundDiv(a: number, b: number): number {
 }
 
 export type GstType = "none" | "cgst_sgst" | "igst";
-export const GST_RATES = [0, 5, 12, 18, 28] as const;
+export const GST_RATES_BPS = [0, 500, 1200, 1800, 2800] as const;
+
+/** Integer division of BigInts rounded half away from zero. */
+function roundDivBig(a: bigint, b: bigint): bigint {
+  const q = a / b;
+  const r = a - q * b;
+  const twice = (r < BigInt(0) ? -r : r) * BigInt(2);
+  if (twice >= (b < BigInt(0) ? -b : b)) return q + ((a < BigInt(0)) !== (b < BigInt(0)) ? -BigInt(1) : BigInt(1));
+  return q;
+}
 
 /**
- * Tax on a taxable amount. CGST and SGST are each half the rate, computed and
- * rounded separately (as printed on Indian invoices).
+ * Tax on a taxable amount at a rate in basis points (18% = 1800). CGST and SGST are each
+ * half the rate, computed and rounded separately (as printed on Indian invoices).
  */
-export function gstFor(taxable: number, ratePercent: number, type: GstType) {
-  if (type === "none" || ratePercent === 0) return { cgst: 0, sgst: 0, igst: 0, tax: 0, total: taxable };
+export function gstFor(taxable: number, rateBps: number, type: GstType) {
+  if (type === "none" || rateBps === 0) return { cgst: 0, sgst: 0, igst: 0, tax: 0, total: taxable };
+  const amount = BigInt(taxable) * BigInt(rateBps);
   if (type === "igst") {
-    const igst = roundDiv(taxable * ratePercent, 100);
+    const igst = Number(roundDivBig(amount, BigInt(10_000)));
     return { cgst: 0, sgst: 0, igst, tax: igst, total: taxable + igst };
   }
-  const half = roundDiv(taxable * ratePercent, 200);
+  const half = Number(roundDivBig(amount, BigInt(20_000)));
   return { cgst: half, sgst: half, igst: 0, tax: half * 2, total: taxable + half * 2 };
+}
+
+/** "18" / "2.5" -> basis points, or null. */
+export function percentToBps(input: string): number | null {
+  const s = input.trim().replace("%", "");
+  if (!/^\d{1,2}(\.\d{1,2})?$|^100$/.test(s)) return null;
+  const [w, f = ""] = s.split(".");
+  return Number(w) * 100 + Number(f.padEnd(2, "0"));
 }
 
 /** State code (first two digits) of a GSTIN, or null. */

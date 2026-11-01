@@ -12,7 +12,18 @@ export type ApplyContext = { eventId: string; actor: Actor; requestedBy: string 
 export type ApprovalHandler<P = Record<string, unknown>> = {
   /** Permission the change needs (e.g. "budget.edit"). */
   permission: Permission;
+  /** Applies the change. Throw ApprovalError("stale") if what was proposed no longer matches. */
   apply(db: Tx, payload: P, ctx: ApplyContext): Promise<void>;
+  /**
+   * Called when a request is rejected or withdrawn, to discard what was staged
+   * (e.g. mark a proposed row rejected, cancel a pending booking).
+   */
+  onClosed?(db: Tx, payload: P, ctx: ApplyContext, outcome: "rejected" | "cancelled"): Promise<void>;
+  /**
+   * Whether a Planner's change may apply without a Host: per-category thresholds and no
+   * overspend (BGT-04, ADR-0017). Absent = always needs a Host.
+   */
+  autoApprove?(db: Tx, payload: P, eventId: string): Promise<boolean>;
 };
 
 const registry = new Map<string, ApprovalHandler>();
@@ -28,7 +39,7 @@ export function getApprovalHandler(type: string): ApprovalHandler {
 }
 
 export class ApprovalError extends Error {
-  constructor(public code: "not_found" | "not_pending" | "comment_required" | "not_requester") {
+  constructor(public code: "not_found" | "not_pending" | "comment_required" | "not_requester" | "stale") {
     super(code);
   }
 }
@@ -41,26 +52,38 @@ export type SubmitInput = {
   title: string;
   payload: Record<string, unknown>;
   amountPaise?: number | null;
+  /** The row the change is about, and the functions it touches (queue filters, SVC-10). */
+  entityType?: string;
+  entityId?: string;
+  functionIds?: string[];
 };
 
-export type SubmitResult = { status: "applied" } | { status: "pending"; request: ApprovalRequest };
+export type SubmitResult = { status: "applied"; auto?: boolean } | { status: "pending"; request: ApprovalRequest };
 
 export async function submitChange(db: Database, input: SubmitInput): Promise<SubmitResult> {
+  return db.transaction((tx) => submitChangeTx(tx, input));
+}
+
+/** As submitChange, inside the caller's transaction (so staging a row and submitting are atomic). */
+export async function submitChangeTx(tx: Tx, input: SubmitInput): Promise<SubmitResult> {
   const handler = getApprovalHandler(input.type);
   const decision = decide(input.subject, handler.permission);
   if (decision === "deny") throw new ForbiddenError(handler.permission);
+  const ctx = { eventId: input.eventId, actor: input.actor, requestedBy: input.actor.userId };
 
-  return db.transaction(async (tx) => {
-    if (decision === "allow") {
-      await handler.apply(tx, input.payload, { eventId: input.eventId, actor: input.actor, requestedBy: input.actor.userId });
+  {
+    const auto = decision === "approval" && handler.autoApprove ? await handler.autoApprove(tx, input.payload, input.eventId) : false;
+    if (decision === "allow" || auto) {
+      await handler.apply(tx, input.payload, ctx);
       await audit(tx, {
         eventId: input.eventId,
         actor: input.actor,
-        action: "change.applied",
+        action: auto ? "change.auto_approved" : "change.applied",
         entityType: input.type,
-        data: { title: input.title },
+        entityId: input.entityId,
+        data: { title: input.title, amount: input.amountPaise ?? null },
       });
-      return { status: "applied" } as const;
+      return auto ? ({ status: "applied", auto: true } as const) : ({ status: "applied" } as const);
     }
     const [request] = await tx
       .insert(approvalRequests)
@@ -71,6 +94,9 @@ export async function submitChange(db: Database, input: SubmitInput): Promise<Su
         payload: input.payload,
         amountPaise: input.amountPaise ?? null,
         requestedBy: input.actor.userId,
+        entityType: input.entityType ?? null,
+        entityId: input.entityId ?? null,
+        functionIds: input.functionIds ?? [],
       })
       .returning();
     await audit(tx, {
@@ -82,7 +108,7 @@ export async function submitChange(db: Database, input: SubmitInput): Promise<Su
       data: { title: input.title, type: input.type },
     });
     return { status: "pending", request } as const;
-  });
+  }
 }
 
 export type DecideInput = {
@@ -117,13 +143,10 @@ export async function decideRequest(db: Database, input: DecideInput): Promise<A
     });
 
     const status = input.decision === "approve" ? "approved" : input.decision === "reject" ? "rejected" : "changes_requested";
-    if (input.decision === "approve") {
-      await getApprovalHandler(request.type).apply(tx, request.payload, {
-        eventId: request.eventId,
-        actor: input.actor,
-        requestedBy: request.requestedBy,
-      });
-    }
+    const handler = getApprovalHandler(request.type);
+    const ctx = { eventId: request.eventId, actor: input.actor, requestedBy: request.requestedBy };
+    if (input.decision === "approve") await handler.apply(tx, request.payload, ctx);
+    if (input.decision === "reject") await handler.onClosed?.(tx, request.payload, ctx, "rejected");
     const [updated] = await tx
       .update(approvalRequests)
       .set({
@@ -158,6 +181,7 @@ export async function withdrawRequest(db: Database, eventId: string, requestId: 
     if (request.requestedBy !== actor.userId) throw new ApprovalError("not_requester");
     if (!["pending", "changes_requested"].includes(request.status)) throw new ApprovalError("not_pending");
     await tx.update(approvalRequests).set({ status: "cancelled", decidedAt: new Date() }).where(eq(approvalRequests.id, requestId));
+    await getApprovalHandler(request.type).onClosed?.(tx, request.payload, { eventId, actor, requestedBy: request.requestedBy }, "cancelled");
     await audit(tx, {
       eventId,
       actor,
@@ -169,7 +193,7 @@ export async function withdrawRequest(db: Database, eventId: string, requestId: 
   });
 }
 
-/** The requester sends a revised version after a Host asked for changes or rejected it. */
+/** The requester sends a revised version after a Host asked for changes. */
 export async function resubmitRequest(
   db: Database,
   input: { eventId: string; requestId: string; actor: Actor; title: string; payload: Record<string, unknown>; amountPaise?: number | null },
@@ -182,7 +206,8 @@ export async function resubmitRequest(
       .for("update");
     if (!request) throw new ApprovalError("not_found");
     if (request.requestedBy !== input.actor.userId) throw new ApprovalError("not_requester");
-    if (!["changes_requested", "rejected"].includes(request.status)) throw new ApprovalError("not_pending");
+    // A rejected request's staged rows are discarded, so only "changes requested" can be resubmitted.
+    if (request.status !== "changes_requested") throw new ApprovalError("not_pending");
     const [updated] = await tx
       .update(approvalRequests)
       .set({

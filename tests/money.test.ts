@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allocate, gstFor, isValidGstin, paiseToRupeesInput, rupeesToPaise, roundDiv, suggestGstType } from "@/lib/money";
+import { allocate, gstFor, percentToBps, isValidGstin, paiseToRupeesInput, rupeesToPaise, roundDiv, suggestGstType } from "@/lib/money";
 import { decryptField, encryptField, mask } from "@/lib/crypto";
 
 describe("money", () => {
@@ -33,10 +33,15 @@ describe("money", () => {
   });
 
   it("computes GST per type", () => {
-    expect(gstFor(10001, 18, "cgst_sgst")).toEqual({ cgst: 900, sgst: 900, igst: 0, tax: 1800, total: 11801 });
-    expect(gstFor(10001, 18, "igst")).toEqual({ cgst: 0, sgst: 0, igst: 1800, tax: 1800, total: 11801 });
-    expect(gstFor(10001, 18, "none").tax).toBe(0);
-    expect(gstFor(333, 5, "cgst_sgst").cgst).toBe(8);
+    expect(gstFor(10001, 1800, "cgst_sgst")).toEqual({ cgst: 900, sgst: 900, igst: 0, tax: 1800, total: 11801 });
+    expect(gstFor(10001, 1800, "igst")).toEqual({ cgst: 0, sgst: 0, igst: 1800, tax: 1800, total: 11801 });
+    expect(gstFor(10001, 1800, "none").tax).toBe(0);
+    expect(gstFor(333, 500, "cgst_sgst").cgst).toBe(8);
+    expect(gstFor(1000, 25, "igst").igst).toBe(3);
+    expect(gstFor(-10001, 1800, "igst").igst).toBe(-1800);
+    expect(percentToBps("18")).toBe(1800);
+    expect(percentToBps("2.5")).toBe(250);
+    expect(percentToBps("abc")).toBeNull();
   });
 
   it("validates GSTIN check digit and suggests the GST type", () => {
