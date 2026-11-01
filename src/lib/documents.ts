@@ -8,7 +8,12 @@ import { audit, type Actor } from "./audit";
  * Contracts, quotes, invoices and receipts (VND-09, PAY-01/03). Stored in Postgres behind this
  * module (ADR-0018) until object storage arrives with the gallery (M7).
  */
-export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+/**
+ * Per-file limit. 20 MB by default; 4 MB on Vercel, whose functions refuse request bodies over
+ * 4.5 MB (ADR-0021). Override with MAX_DOCUMENT_MB. Larger files need object storage (M7).
+ */
+export const MAX_DOCUMENT_MB = Math.max(1, Math.min(20, Number(process.env.MAX_DOCUMENT_MB) || (process.env.VERCEL ? 4 : 20)));
+export const MAX_DOCUMENT_BYTES = MAX_DOCUMENT_MB * 1024 * 1024;
 export const MAX_EVENT_DOCUMENT_BYTES = 500 * 1024 * 1024;
 
 export class DocumentError extends Error {

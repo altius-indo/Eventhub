@@ -93,6 +93,10 @@ In development, codes and invitations aren't really sent. They're written to a d
 | `npm run jobs:reminders` | Remind assignees of tasks due by tomorrow or overdue (run daily, e.g. 08:00 IST) |
 | `npm run jobs:rsvp-reminders` | Remind families who haven't replied, in the 14 days before the RSVP deadline, every 3 days (run daily) |
 
+### Deploying to Vercel
+
+See [ADR-0021](docs/adr/0021-hosting-on-vercel.md). In the Vercel project, set `DATABASE_URL` (Neon pooled connection string), `AUTH_SECRET`, `DATA_ENCRYPTION_KEY`, `CRON_SECRET`, `APP_URL` and email settings (`EMAIL_PROVIDER=smtp`, `SMTP_URL`, `EMAIL_FROM`). Each deploy runs the migrations, then builds. Vercel Cron calls `/api/cron/daily` every morning (08:01 IST) for the reminders and the purge. On Vercel, documents are limited to 4 MB.
+
 ### Message delivery
 
 | Setting | Values |

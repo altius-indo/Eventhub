@@ -25,3 +25,4 @@ decisions with the `adr` skill (`.claude/skills/adr`) using [template.md](templa
 | [0018](0018-documents-in-postgres.md) | Documents in Postgres behind a small module (interim) | Accepted |
 | [0019](0019-vendor-field-encryption.md) | Field encryption for vendor bank details and PAN | Accepted |
 | [0020](0020-money-arithmetic.md) | Money arithmetic and derived payment statuses | Accepted |
+| [0021](0021-hosting-on-vercel.md) | Hosting on Vercel with Neon Postgres | Accepted |

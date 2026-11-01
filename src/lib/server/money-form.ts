@@ -2,6 +2,7 @@ import "server-only";
 import type { Payer } from "@/db/schema";
 import { formatInr, type Locale, type MessageKey, type Translator } from "@/i18n/core";
 import type { SubmitResult } from "../approvals";
+import { MAX_DOCUMENT_MB } from "../documents";
 import { rupeesToPaise, percentToBps } from "../money";
 import { payerFromForm } from "../services";
 import { todayIn } from "../tasks";
@@ -132,7 +133,7 @@ export function documentLabels(t: Translator, title: string, sp: { doc?: string 
     upload: t("documents.upload"),
     file: t("documents.file"),
     kind: t("documents.kind"),
-    help: t("documents.help"),
+    help: t("documents.help", { size: MAX_DOCUMENT_MB }),
     empty: t("documents.empty"),
     remove: t("common.remove"),
     deleteConfirm: t("documents.deleteConfirm"),
@@ -144,7 +145,7 @@ export function documentLabels(t: Translator, title: string, sp: { doc?: string 
       brief: t("documents.kinds.brief"),
       other: t("documents.kinds.other"),
     },
-    error: code ? t(`documents.errors.${code}` as MessageKey) : undefined,
+    error: code ? t(`documents.errors.${code}` as MessageKey, { size: MAX_DOCUMENT_MB }) : undefined,
     saved: sp.doc === "ok" ? t("common.saved") : undefined,
   };
 }
