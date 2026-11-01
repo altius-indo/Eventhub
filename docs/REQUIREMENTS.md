@@ -54,7 +54,7 @@
 | Itinerary / functions | RW | RW | RW | R | RW (own functions) | Assigned functions | Invited functions |
 | Run sheet | RW | R | RW | R | RW (own functions) | Own items | – |
 | Tasks | RW | RW | RW | Own/assigned | Own functions | Own tasks | – |
-| Services & requirements | RW | RW (propose) | RW + approve | R + propose | R + propose (own functions) | Services they're invited to quote for or booked on | – |
+| Services & requirements | RW | RW | RW + approve | R + propose | R + propose (own functions) | Services they're invited to quote for or booked on | – |
 | Vendors & quotes | RW | RW | RW | R | R (own functions) | Own | – |
 | Contracts & documents | RW | RW | RW | – | – | Own | – |
 | Budget | RW | RW (approve) | RW | R (own side payer)* | – | – | – |
@@ -143,7 +143,7 @@ Event
 - **SVC-08 (S)** Mark requirements **delivered** after the function (by the service owner, optionally confirmed by the vendor). This can release the final payment milestone.
 - **SVC-09 (S)** Copy services and requirements from one function to another, or from an event template.
 - **SVC-10 (M)** **Proposal & approval workflow**:
-  - **Who proposes**: Side Coordinators (any function, tagged with their side) and Function Coordinators (their own functions) can **propose** new requirements, new services, or changes to existing requirements (quantity, specs, timing, estimate). Hosts can also propose.
+  - **Who proposes**: Side Coordinators (any function, tagged with their side) and Function Coordinators (their own functions) can **propose** new requirements, new services, or changes to existing requirements (quantity, specs, timing, estimate).
   - **Who approves**: the **Planner** reviews proposals and can approve, reject (with reason) or request changes. The Owner can also approve, as a fallback when no Planner is assigned.
   - **Before approval**: proposed items are visible but excluded from budget *planned* totals (shown separately as "pending proposals" with their estimated impact). They can't be sent for quotes or booked.
   - **Changes to booked requirements**: changes to a requirement that's already booked also need approval. Once approved, the booked vendor is notified, and any cost change goes through budget approval (BGT-04).
