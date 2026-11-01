@@ -1627,6 +1627,7 @@ const en = {
       nothing_to_hand_over: "There's no cash to hand over.",
     },
     envelope: {
+      offline: "You're offline. Envelopes will be saved when you're back online.",
       title: "Envelope mode",
       open: "Envelope mode",
       choose: "Choose the function where you're collecting shagun.",

@@ -31,7 +31,7 @@ export default async function EnvelopePage({ params }: PageProps<"/events/[event
     search: t("checkin.search"),
     searchButton: t("checkin.searchButton"),
     noResults: t("checkin.noResults"),
-    offline: t("checkin.offline"),
+    offline: t("gifts.envelope.offline"),
     signInAgain: t("checkin.signInAgain"),
     logIn: t("checkin.logIn"),
     invalidPass: t("checkin.invalidPass"),
