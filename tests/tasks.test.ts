@@ -12,6 +12,7 @@ import {
   listTasks,
   sendTaskReminders,
   setTaskStatus,
+  taskCounts,
   taskSchema,
   TaskError,
   taskSummary,
@@ -36,6 +37,29 @@ describe("tasks", () => {
     expect(bucketOf({ status: "todo", dueDate: "2026-11-09" }, today)).toBe("later");
     expect(bucketOf({ status: "todo", dueDate: null }, today)).toBe("noDate");
     expect(bucketOf({ status: "done", dueDate: "2026-10-01" }, today)).toBe("done");
+  });
+
+  it("searches and filters tasks, and counts per status for the tabs (ITN-05)", async () => {
+    const { host, event } = await setup();
+    const a = actorOf(host);
+    const today = "2026-11-01";
+    const dj = await createTask(db(), event.id, a, input({ title: "Book DJ", description: "Sangeet night", dueDate: "2026-10-30", priority: "high" }));
+    await createTask(db(), event.id, a, input({ title: "Order flowers", dueDate: "2026-11-05", assigneeId: host.id }));
+    await createTask(db(), event.id, a, input({ title: "Print menus 100%_done", dueDate: "2026-12-01" }));
+    await setTaskStatus(db(), event.id, dj.id, "done");
+    const titles = async (f: Parameters<typeof listTasks>[2]) => (await listTasks(db(), event.id, { today, ...f })).map((r) => r.task.title).sort();
+
+    expect(await titles({ status: "all", q: "sangeet" })).toEqual(["Book DJ"]); // description matches
+    expect(await titles({ status: "all", q: "book  dj" })).toEqual(["Book DJ"]); // every word must match
+    expect(await titles({ status: "all", q: "%" })).toEqual(["Print menus 100%_done"]); // LIKE wildcards are literal
+    expect(await titles({ status: "all", due: "overdue" })).toEqual(["Book DJ"]);
+    expect(await titles({ status: "open", due: "week" })).toEqual(["Order flowers"]);
+    expect(await titles({ status: "all", highOnly: true })).toEqual(["Book DJ"]);
+    expect(await titles({ status: "open", assignee: "none" })).toEqual(["Print menus 100%_done"]);
+
+    expect(await taskCounts(db(), event.id)).toEqual({ open: 2, done: 1, all: 3 });
+    expect(await taskCounts(db(), event.id, { q: "o" })).toEqual({ open: 2, done: 1, all: 3 });
+    expect(await taskCounts(db(), event.id, { q: "flowers" })).toEqual({ open: 1, done: 0, all: 1 });
   });
 
   it("only assigns to team members and tracks completion and comments", async () => {

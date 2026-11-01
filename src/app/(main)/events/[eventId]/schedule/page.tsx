@@ -51,7 +51,7 @@ export default async function SchedulePage({ params }: PageProps<"/events/[event
                 {day.functions.map((fn) => {
                   const c = counts.get(fn.id) ?? { guests: 0, households: 0, adults: 0, children: 0, infants: 0 };
                   return (
-                    <li key={fn.id} className="relative">
+                    <li key={fn.id} id={`fn-${fn.id}`} className="relative scroll-mt-20 target:[&>section]:ring-2 target:[&>section]:ring-primary">
                       <span aria-hidden className="absolute -left-[1.4rem] top-5 h-2.5 w-2.5 rounded-full border-2 border-primary bg-surface" />
                       <Card>
                         <div className="flex flex-wrap items-start justify-between gap-2">

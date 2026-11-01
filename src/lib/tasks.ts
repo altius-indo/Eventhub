@@ -140,7 +140,51 @@ export async function listComments(db: Tx, taskId: string) {
     .orderBy(asc(taskComments.createdAt));
 }
 
-export type TaskFilters = { status?: "open" | "done" | "all"; assignee?: string; fn?: string };
+export type TaskFilters = {
+  status?: "open" | "done" | "all";
+  assignee?: string;
+  fn?: string;
+  /** Words to find in the title or description (case-insensitive). */
+  q?: string;
+  /** Overdue, or due within the next 7 days (incl. overdue), relative to `today`. */
+  due?: "overdue" | "week";
+  /** YYYY-MM-DD in the event timezone; needed for `due`. */
+  today?: string;
+  highOnly?: boolean;
+};
+
+const escapeLike = (s: string) => s.replace(/[\\%_]/g, "\\$&");
+
+/** Conditions shared by the list and the tab counts (everything except status). */
+function taskConditions(eventId: string, f: TaskFilters) {
+  const words = (f.q ?? "").trim().split(/\s+/).filter(Boolean).slice(0, 5);
+  return [
+    eq(tasks.eventId, eventId),
+    f.assignee === "none" ? isNull(tasks.assigneeId) : f.assignee ? eq(tasks.assigneeId, f.assignee) : undefined,
+    f.fn ? eq(tasks.functionId, f.fn) : undefined,
+    ...words.map((w) => {
+      const p = `%${escapeLike(w)}%`;
+      return sql`(${tasks.title} ilike ${p} or coalesce(${tasks.description}, '') ilike ${p})`;
+    }),
+    f.due && f.today ? isNotNull(tasks.dueDate) : undefined,
+    f.due === "overdue" && f.today ? sql`${tasks.dueDate} < ${f.today}` : undefined,
+    f.due === "week" && f.today ? lte(tasks.dueDate, addDays(f.today, 7)) : undefined,
+    f.highOnly ? eq(tasks.priority, "high") : undefined,
+  ];
+}
+
+/** Counts per status tab for the current (non-status) filters. */
+export async function taskCounts(db: Tx, eventId: string, f: TaskFilters = {}) {
+  const [row] = await db
+    .select({
+      open: sql<number>`count(*) filter (where ${tasks.status} <> 'done')::int`,
+      done: sql<number>`count(*) filter (where ${tasks.status} = 'done')::int`,
+      all: sql<number>`count(*)::int`,
+    })
+    .from(tasks)
+    .where(and(...taskConditions(eventId, f)));
+  return row ?? { open: 0, done: 0, all: 0 };
+}
 
 export async function listTasks(db: Tx, eventId: string, f: TaskFilters = {}) {
   const status = f.status ?? "open";
@@ -156,10 +200,8 @@ export async function listTasks(db: Tx, eventId: string, f: TaskFilters = {}) {
     .leftJoin(functions, eq(functions.id, tasks.functionId))
     .where(
       and(
-        eq(tasks.eventId, eventId),
+        ...taskConditions(eventId, f),
         status === "open" ? ne(tasks.status, "done") : status === "done" ? eq(tasks.status, "done") : undefined,
-        f.assignee === "none" ? isNull(tasks.assigneeId) : f.assignee ? eq(tasks.assigneeId, f.assignee) : undefined,
-        f.fn ? eq(tasks.functionId, f.fn) : undefined,
       ),
     )
     .orderBy(

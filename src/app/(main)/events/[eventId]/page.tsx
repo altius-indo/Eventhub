@@ -83,8 +83,8 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
           {t("dashboard.nextFunction")}
         </CardTitle>
         {next ? (
-          <>
-            <p className="font-medium">{next.name}</p>
+          <Link href={`${base}/schedule#fn-${next.id}`} className="-mx-2 block min-h-11 rounded-lg px-2 py-1 hover:bg-primary-soft">
+            <p className="font-medium text-primary">{next.name}</p>
             <p className="text-sm text-muted">
               {[formatDay(locale, next.date!, { weekday: "short", day: "numeric", month: "short" }), next.startTime && formatTime(locale, next.startTime), next.venueName]
                 .filter(Boolean)
@@ -93,7 +93,7 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
             <p className="mt-1 text-sm text-muted">
               {t("schedule.invitedCount", { guests: invited.get(next.id)?.guests ?? 0, households: invited.get(next.id)?.households ?? 0 })}
             </p>
-          </>
+          </Link>
         ) : (
           <p className="text-sm text-muted">{t("dashboard.noFunctions")}</p>
         )}
