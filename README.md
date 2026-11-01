@@ -62,6 +62,17 @@ A web app for planning large, multi-day Indian weddings: itinerary, guests and l
 - Budget by function, service type, vendor and who pays (bride's family, groom's family, or shared), with planned, booked, invoiced and paid, lakh/crore figures and over-plan highlights. Other costs (e.g. return gifts) can be added.
 - Invoices with GST (CGST+SGST or IGST, suggested from the vendor's GSTIN), payments (UPI, bank, cheque, cash, card), statuses per milestone and invoice, a payables list with Excel export, and daily payment reminders (`npm run jobs:payment-reminders`, `npm run jobs:approval-reminders`).
 
+**Milestone 6 (Communication)** is built:
+
+- Chat: a team channel, a thread per function and per vendor, with @mentions, attachments and unread counts (refreshes every few seconds).
+- Guest broadcasts to a segment (side, tag, function, RSVP status, travel, hotel) by WhatsApp, email or SMS, with a recipient and quota estimate before sending, delivery stats and a one-click unsubscribe. Each family gets its own guest link.
+- Notification centre with a bell, plus email preferences per category. A usage page shows messages sent against each channel's limit, with warnings at 80% and 95%.
+- Vendor portal: invite a vendor by phone or email; they log in with a one-time code to see their requests and briefs, submit and revise quotes, follow bookings and payment status, upload invoices, see their run-sheet items and chat with the team.
+- Caterers see the live headcount for the functions they're booked on (totals only, no names), get alerts when it moves, can acknowledge it and export it. Planners can lock a final count before the function.
+- Gifts (Hosts, or Planners with gift access): gift register, a fast envelope mode that works offline, cash hand-over with discrepancy alerts, tally-sheet import, summaries and families with no gift recorded.
+- Thank-you notes: tracker, templates in English and Hindi (amounts are never included), review and bulk send, printed-card labels, and a reminder 4 weeks after the wedding.
+- Messages are sent through a retrying queue. Email works via Resend; WhatsApp and SMS show "not connected" until provider accounts are set up.
+
 ## Tech
 
 Next.js 16 (App Router, server actions) · TypeScript · PostgreSQL · Drizzle ORM · Tailwind CSS 4 · Vitest.

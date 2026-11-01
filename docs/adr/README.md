@@ -27,3 +27,10 @@ decisions with the `adr` skill (`.claude/skills/adr`) using [template.md](templa
 | [0020](0020-money-arithmetic.md) | Money arithmetic and derived payment statuses | Accepted |
 | [0021](0021-hosting-on-vercel.md) | Hosting on Vercel with Neon Postgres | Accepted |
 | [0022](0022-admin-passwords.md) | Optional passwords for App Admins | Accepted |
+| [0023](0023-vendor-portal-logins.md) | Vendor portal logins via vendor contacts | Accepted |
+| [0024](0024-outbox-for-outgoing-messages.md) | Outbox table for outgoing messages | Accepted |
+| [0025](0025-messaging-quotas.md) | Per-event messaging quotas reserved at enqueue | Accepted |
+| [0026](0026-chat-by-polling.md) | In-app chat by short polling | Accepted |
+| [0027](0027-offline-envelope-queue.md) | Offline envelope entry with client keys | Accepted |
+| [0028](0028-caterer-headcount-baseline-and-lock.md) | Caterer headcount: per-booking baseline, lazy freeze at the lock | Accepted |
+| [0029](0029-notifications-rendered-at-read.md) | Notifications stored as kind + data, rendered when read | Accepted |
