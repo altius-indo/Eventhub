@@ -178,6 +178,8 @@ export async function saveQuote(
   actor: Actor,
   target: { requestId: string; reviseQuoteId?: string | null },
   input: QuoteInput,
+  /** Vendor portal (VND-10): flags the quote as the vendor's own and runs `after` in the same transaction. */
+  opts: { submittedByVendor?: boolean; after?: (tx: Tx, quote: Quote) => Promise<void> } = {},
 ) {
   const lines = input.lines.filter((l) => l.amountPaise !== 0 || l.quantity);
   if (lines.length === 0) throw new QuoteError("no_lines");
@@ -233,7 +235,7 @@ export async function saveQuote(
     const id = randomUUID();
     const [q] = await tx
       .insert(quotes)
-      .values({ id, eventId, vendorId: request.vendorId, requestId: request.id, rootId: rootId ?? id, version, createdBy: actor.userId, ...head })
+      .values({ id, eventId, vendorId: request.vendorId, requestId: request.id, rootId: rootId ?? id, version, createdBy: actor.userId, submittedByVendor: !!opts.submittedByVendor, ...head })
       .returning();
     await tx.insert(quoteLines).values(
       lines.map((l, i) => ({
@@ -254,11 +256,12 @@ export async function saveQuote(
     await audit(tx, {
       eventId,
       actor,
-      action: version > 1 ? "quote.revised" : "quote.added",
+      action: opts.submittedByVendor ? "quote.vendor_submitted" : version > 1 ? "quote.revised" : "quote.added",
       entityType: "quote",
       entityId: q.id,
       data: { version },
     });
+    if (opts.after) await opts.after(tx, q);
     return q;
   });
 }

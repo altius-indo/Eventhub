@@ -18,6 +18,7 @@ import {
 } from "@/db/schema";
 import { createTranslator, isLocale } from "@/i18n/core";
 import { audit, type Actor } from "./audit";
+import { freezeDueLocks } from "./caterer-headcount";
 import { DeliveryError, sendMessage } from "./delivery";
 import { guestLinkUrl } from "./guest-links";
 import { addDays, todayIn } from "./tasks";
@@ -129,6 +130,8 @@ export async function saveRsvps(db: Database, input: SaveRsvpInput) {
     for (const a of input.answers) {
       if (!memberIds.has(a.guestId) || !invited.has(`${a.guestId}:${a.functionId}`)) throw new RsvpError("not_invited");
     }
+    // A caterer's final count locks at its guarantee time (RSV-07): freeze it before this change lands.
+    await freezeDueLocks(tx, event.id, [...new Set(invites.map((i) => i.functionId))], input.now);
     let changed = 0;
     for (const a of input.answers) {
       if (a.status === null) {

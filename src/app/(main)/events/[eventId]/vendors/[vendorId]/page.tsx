@@ -19,6 +19,9 @@ import { getEventContext } from "@/lib/server/event-context";
 import { documentLabels, eventToday, payTone, typeLabel, vendorLabels } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
 import { archiveVendorAction, deleteVendorAction, rateVendorAction, setSecretsAction, updateVendorAction } from "../actions";
+import { formatIdentifier } from "@/lib/identifiers";
+import { listVendorContacts } from "@/lib/vendor-access";
+import { inviteContactAction, revokeContactAction } from "./actions";
 
 export default async function VendorPage({ params, searchParams }: PageProps<"/events/[eventId]/vendors/[vendorId]">) {
   const { eventId, vendorId } = await params;
@@ -40,6 +43,7 @@ export default async function VendorPage({ params, searchParams }: PageProps<"/e
     listInvoices(db, eventId, today, { vendorId }),
     listDocuments(db, eventId, { vendorId }),
   ]);
+  const contacts = await listVendorContacts(db, eventId, vendorId);
   const canEdit = ctx.can("vendors.edit");
   const base = `/events/${eventId}/vendors`;
   return (
@@ -112,6 +116,38 @@ export default async function VendorPage({ params, searchParams }: PageProps<"/e
           )}
         </Card>
       </div>
+
+      <Card>
+        <CardTitle>{t("vendorPortal.staff.title")}</CardTitle>
+        <p className="mb-3 text-sm text-muted">{t("vendorPortal.staff.help")}</p>
+        {contacts.length === 0 ? (
+          <p className="text-sm text-muted">{t("vendorPortal.staff.empty")}</p>
+        ) : (
+          <ul className="divide-y divide-border text-sm">
+            {contacts.map((c) => (
+              <li key={c.id} className="flex flex-wrap items-center gap-2 py-1">
+                <span className="min-w-0 break-all">{formatIdentifier({ type: c.identifierType, value: c.identifierValue })}</span>
+                <Badge tone={c.acceptedAt ? "success" : "neutral"}>{c.acceptedAt ? t("vendorPortal.staff.joined") : t("vendorPortal.staff.invited")}</Badge>
+                {canEdit && (
+                  <SimpleForm action={revokeContactAction.bind(null, eventId, v.id, c.id)} className="ml-auto">
+                    <ConfirmButton variant="ghost" confirm={t("vendorPortal.staff.revokeConfirm")}>
+                      {t("vendorPortal.staff.revoke")}
+                    </ConfirmButton>
+                  </SimpleForm>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {canEdit && !v.archivedAt && (
+          <SimpleForm action={inviteContactAction.bind(null, eventId, v.id)} className="mt-3 flex flex-wrap items-end gap-2">
+            <Field label={t("vendorPortal.staff.identifier")} htmlFor="vp-identifier">
+              <Input id="vp-identifier" name="identifier" required maxLength={200} autoComplete="off" defaultValue={v.email ?? v.phone ?? ""} />
+            </Field>
+            <SubmitButton variant="secondary">{t("vendorPortal.staff.invite")}</SubmitButton>
+          </SimpleForm>
+        )}
+      </Card>
 
       {canEdit && (
         <Card>

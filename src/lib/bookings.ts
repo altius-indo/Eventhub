@@ -29,6 +29,7 @@ import { decide, ForbiddenError, type PolicySubject } from "./policy";
 import { allocatePackages, lineGst, splitGst } from "./quotes";
 import { payerSchema } from "./services";
 import { todayIn } from "./tasks";
+import { notifyVendorBooking } from "./vendor-portal";
 
 export class BookingError extends Error {
   constructor(
@@ -285,11 +286,15 @@ registerApprovalHandler("booking.create", {
       .set({ dueDate: today })
       .where(and(eq(paymentMilestones.bookingId, b.id), eq(paymentMilestones.kind, "advance"), lt(paymentMilestones.dueDate, today)));
     await audit(tx, { eventId, actor, action: "booking.confirmed", entityType: "booking", entityId: b.id, data: { amount: b.subtotalPaise + b.gstPaise } });
+    await notifyVendorBooking(tx, eventId, b.vendorId, b.id, "confirmed");
   },
   async onClosed(tx, payload, { eventId }, outcome) {
     const { bookingId } = bookingIdPayload.parse(payload);
     const b = await lockBooking(tx, eventId, bookingId).catch(() => null);
-    if (b?.status === "pending_approval") await cancelBookingRows(tx, b, outcome);
+    if (b?.status === "pending_approval") {
+      await cancelBookingRows(tx, b, outcome);
+      await notifyVendorBooking(tx, eventId, b.vendorId, b.id, "cancelled");
+    }
   },
   async autoApprove(tx, payload, eventId) {
     const { bookingId } = bookingIdPayload.parse(payload);
@@ -339,6 +344,7 @@ registerApprovalHandler("booking.cancel", {
     if (b.status === "cancelled") return;
     await cancelBookingRows(tx, b, reason);
     await audit(tx, { eventId, actor, action: "booking.cancelled", entityType: "booking", entityId: b.id, data: { reason } });
+    await notifyVendorBooking(tx, eventId, b.vendorId, b.id, "cancelled");
   },
 });
 
@@ -409,6 +415,7 @@ registerApprovalHandler("booking.change", {
       entityId: b.id,
       data: { from: b.subtotalPaise + b.gstPaise, to: total },
     });
+    await notifyVendorBooking(tx, eventId, b.vendorId, b.id, "changed");
   },
   async autoApprove(tx, payload, eventId) {
     const p = changePayload.parse(payload);

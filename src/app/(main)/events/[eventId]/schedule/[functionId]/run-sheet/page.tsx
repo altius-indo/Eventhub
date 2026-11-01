@@ -11,6 +11,7 @@ import { listMembers } from "@/lib/events";
 import { getFunction, NotFoundError } from "@/lib/functions";
 import { formatPhone } from "@/lib/guests";
 import { listItems, lockedOverlaps } from "@/lib/runsheet";
+import { listVendors } from "@/lib/vendors";
 import { getEventContext } from "@/lib/server/event-context";
 import { runItemLabels } from "@/lib/server/m4-labels";
 import { getTranslator } from "@/lib/server/session";
@@ -28,10 +29,11 @@ export default async function RunSheetPage({ params }: PageProps<"/events/[event
     if (e instanceof NotFoundError) notFound();
     throw e;
   });
-  const [rows, members] = await Promise.all([listItems(db, eventId, functionId), listMembers(db, eventId)]);
+  const [rows, members, vendorRows] = await Promise.all([listItems(db, eventId, functionId), listMembers(db, eventId), listVendors(db, eventId)]);
   const { t, locale } = await getTranslator();
   const canEdit = ctx.can("runsheet.edit");
   const memberOptions = members.map((m) => ({ id: m.user.id, name: m.user.name }));
+  const vendorOptions = vendorRows.map((v) => ({ id: v.id, name: v.name }));
   const overlaps = lockedOverlaps(rows.map((r) => r.item));
   const base = `/events/${eventId}/schedule/${functionId}/run-sheet`;
   const time = (d: Date) => formatWallClock(locale, d, { timeStyle: "short" });
@@ -72,7 +74,7 @@ export default async function RunSheetPage({ params }: PageProps<"/events/[event
         </Card>
       ) : (
         <ol className="space-y-2">
-          {rows.map(({ item, ownerUserName }) => (
+          {rows.map(({ item, ownerUserName, ownerVendorName }) => (
             <li key={item.id}>
               <Card className={item.status === "done" ? "opacity-70" : undefined}>
                 <div className="flex flex-wrap items-start gap-3">
@@ -87,7 +89,7 @@ export default async function RunSheetPage({ params }: PageProps<"/events/[event
                       {item.timeLocked && <Badge tone="primary">🔒 {t("runsheet.locked")}</Badge>}
                     </p>
                     <p className="text-sm text-muted">
-                      {[item.location, ownerUserName, item.ownerName, formatPhone(item.ownerPhone)].filter(Boolean).join(" · ")}
+                      {[item.location, ownerUserName, ownerVendorName, item.ownerName, formatPhone(item.ownerPhone)].filter(Boolean).join(" · ")}
                     </p>
                     {item.notes && <p className="mt-1 whitespace-pre-line text-sm">{item.notes}</p>}
                   </div>
@@ -114,7 +116,7 @@ export default async function RunSheetPage({ params }: PageProps<"/events/[event
                   <details className="mt-2 border-t border-border pt-2">
                     <summary className="inline-flex min-h-10 cursor-pointer items-center text-sm text-primary">{t("runsheet.edit")}</summary>
                     <SimpleForm action={updateItemAction.bind(null, eventId, functionId, item.id)} className="mt-2 space-y-3">
-                      <RunItemFields labels={runItemLabels(t)} item={item} members={memberOptions} idBase={`i${item.id}_`} />
+                      <RunItemFields labels={runItemLabels(t)} item={item} members={memberOptions} idBase={`i${item.id}_`} vendors={vendorOptions} vendorLabel={t("vendorPortal.runOwnerVendor")} />
                       <SubmitButton variant="secondary">{t("common.save")}</SubmitButton>
                     </SimpleForm>
                     <SimpleForm action={shiftAction.bind(null, eventId, functionId, item.id)} className="mt-3 flex flex-wrap items-center gap-2 text-sm">
@@ -142,7 +144,7 @@ export default async function RunSheetPage({ params }: PageProps<"/events/[event
         <Card>
           <CardTitle>{t("runsheet.add")}</CardTitle>
           <SimpleForm action={createItemAction.bind(null, eventId, functionId)}>
-            <RunItemFields labels={runItemLabels(t)} members={memberOptions} idBase="new_" defaultStart={defaultStart} />
+            <RunItemFields labels={runItemLabels(t)} members={memberOptions} idBase="new_" defaultStart={defaultStart} vendors={vendorOptions} vendorLabel={t("vendorPortal.runOwnerVendor")} />
             <SubmitButton>{t("runsheet.add")}</SubmitButton>
           </SimpleForm>
         </Card>

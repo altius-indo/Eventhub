@@ -1,7 +1,7 @@
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
-import { eventMembers, functions, runSheetItems, runItemStatus, users, type RunItemStatus, type RunSheetItem } from "@/db/schema";
+import { eventMembers, functions, runSheetItems, runItemStatus, users, vendors, type RunItemStatus, type RunSheetItem } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 import { normalizePhone } from "./guests";
 import { addMinutes, parseWallClock } from "./wall-clock";
@@ -37,6 +37,13 @@ export const itemSchema = z.object({
     .optional()
     .or(z.literal(""))
     .transform((v) => v || null),
+  /** A vendor from the directory; the item then shows in their portal (VND-10). */
+  ownerVendorId: z
+    .string()
+    .uuid()
+    .optional()
+    .or(z.literal(""))
+    .transform((v) => v || null),
   ownerName: text(120),
   ownerPhone: text(30),
   location: text(160),
@@ -54,6 +61,13 @@ async function validate(tx: Tx, eventId: string, functionId: string, input: Item
       .from(eventMembers)
       .where(and(eq(eventMembers.eventId, eventId), eq(eventMembers.userId, input.ownerUserId)));
     if (!m) throw new RunSheetError("bad_owner");
+  }
+  if (input.ownerVendorId) {
+    const [v] = await tx
+      .select({ id: vendors.id })
+      .from(vendors)
+      .where(and(eq(vendors.id, input.ownerVendorId), eq(vendors.eventId, eventId), isNull(vendors.archivedAt)));
+    if (!v) throw new RunSheetError("bad_owner");
   }
   let ownerPhone = input.ownerPhone;
   if (ownerPhone) {
@@ -136,9 +150,10 @@ export async function shiftItems(db: Database, eventId: string, fromItemId: stri
 
 export async function listItems(db: Tx, eventId: string, functionId: string) {
   return db
-    .select({ item: runSheetItems, ownerUserName: users.name })
+    .select({ item: runSheetItems, ownerUserName: users.name, ownerVendorName: vendors.name })
     .from(runSheetItems)
     .leftJoin(users, eq(users.id, runSheetItems.ownerUserId))
+    .leftJoin(vendors, eq(vendors.id, runSheetItems.ownerVendorId))
     .where(and(eq(runSheetItems.eventId, eventId), eq(runSheetItems.functionId, functionId)))
     .orderBy(asc(runSheetItems.startsAt), asc(runSheetItems.sortOrder), asc(runSheetItems.createdAt));
 }

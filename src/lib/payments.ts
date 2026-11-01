@@ -106,7 +106,14 @@ export function invoiceTotals(lines: { amountPaise: number; gstRateBps: number }
   return { subtotal, cgst, sgst, igst, total: subtotal + cgst + sgst + igst };
 }
 
-export async function createInvoice(db: Database, eventId: string, actor: Actor, input: InvoiceInput) {
+export async function createInvoice(
+  db: Database,
+  eventId: string,
+  actor: Actor,
+  input: InvoiceInput,
+  /** Vendor portal uploads (VND-10): source "vendor", plus a hook run in the same transaction. */
+  opts: { source?: "team" | "vendor"; after?: (tx: Tx, invoice: typeof invoices.$inferSelect) => Promise<void> } = {},
+) {
   if (input.supplierGstin && !isValidGstin(input.supplierGstin)) throw new PaymentError("invalid_gstin");
   try {
     return await db.transaction(async (tx) => {
@@ -139,11 +146,20 @@ export async function createInvoice(db: Database, eventId: string, actor: Actor,
           igstPaise: t.igst,
           totalPaise: input.printedTotalPaise ?? t.total,
           notes: input.notes,
+          source: opts.source ?? "team",
           createdBy: actor.userId,
         })
         .returning();
       await tx.insert(invoiceLines).values(input.lines.map((l, i) => ({ eventId, invoiceId: inv.id, ...l, sortOrder: i + 1 })));
-      await audit(tx, { eventId, actor, action: "invoice.added", entityType: "invoice", entityId: inv.id, data: { number: inv.number, amount: inv.totalPaise } });
+      await audit(tx, {
+        eventId,
+        actor,
+        action: opts.source === "vendor" ? "invoice.vendor_uploaded" : "invoice.added",
+        entityType: "invoice",
+        entityId: inv.id,
+        data: { number: inv.number, amount: inv.totalPaise },
+      });
+      if (opts.after) await opts.after(tx, inv);
       return inv;
     });
   } catch (e) {

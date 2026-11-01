@@ -40,7 +40,7 @@ export default async function RunSheetPrint({ params }: PageProps<"/events/[even
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ item, ownerUserName }) => (
+          {rows.map(({ item, ownerUserName, ownerVendorName }) => (
             <tr key={item.id} className="border-b border-gray-300 align-top" style={{ breakInside: "avoid" }}>
               <td className="py-1 pr-2 tabular-nums">
                 {formatWallClock(locale, item.startsAt, { timeStyle: "short" })}
@@ -51,7 +51,7 @@ export default async function RunSheetPrint({ params }: PageProps<"/events/[even
                 <strong>{item.title}</strong>
                 {item.notes && <div className="whitespace-pre-line text-xs">{item.notes}</div>}
               </td>
-              <td className="py-1 pr-2">{[ownerUserName, item.ownerName, formatPhone(item.ownerPhone)].filter(Boolean).join(" · ")}</td>
+              <td className="py-1 pr-2">{[ownerUserName, ownerVendorName, item.ownerName, formatPhone(item.ownerPhone)].filter(Boolean).join(" · ")}</td>
               <td className="py-1">{item.location}</td>
             </tr>
           ))}

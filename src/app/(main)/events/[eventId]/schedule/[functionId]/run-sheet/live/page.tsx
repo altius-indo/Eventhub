@@ -25,7 +25,7 @@ export default async function LiveRunSheet({ params }: PageProps<"/events/[event
     throw e;
   });
   const rows = await listItems(db, eventId, functionId);
-  const owners = new Map(rows.map((r) => [r.item.id, r.ownerUserName]));
+  const owners = new Map(rows.map((r) => [r.item.id, [r.ownerUserName, r.ownerVendorName].filter(Boolean).join(" · ") || null]));
   const { t, locale } = await getTranslator();
   const now = wallClockNow(ctx.event.timezone);
   const view = liveView(
