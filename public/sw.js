@@ -3,6 +3,7 @@
  * - Static build assets: cache-first (they are content-hashed).
  * - Day-of pages only (live run sheet, check-in desk): network-first, falling back to the last
  *   cached copy of that page, so they open at a venue with no signal (ITN-03, SEAT-04, ADR-0034).
+ *   Those pages also post `cache-page` when they mount, so a visit through an in-app link counts.
  * - Every other page: network only, falling back to /offline. Other personal pages (guest lists,
  *   budgets, gifts, the guest portal) are never written to the cache.
  * The check-in desk keeps its own data (snapshot and queue) in localStorage; this worker
@@ -78,9 +79,32 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
+/**
+ * A day-of page asks to be stored (`{ type: "cache-page", path }`), because pages opened by an
+ * in-app link never pass through the navigation handler above. Only the two day-of paths, with no
+ * query string, from a window of this origin; the fetch carries the user's cookies, and a
+ * redirect (e.g. to /login) or an error stores nothing.
+ */
+async function cachePage(path) {
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || /[?#\\]/.test(path) || !cacheable(path)) return;
+  const url = new URL(path, self.location.origin);
+  if (url.origin !== self.location.origin || url.pathname !== path) return;
+  const res = await fetch(url.href, { credentials: "same-origin", cache: "no-store", headers: { Accept: "text/html" } });
+  if (!res.ok || res.type !== "basic" || res.redirected) return;
+  const cache = await caches.open(PAGE_CACHE);
+  await cache.put(url.origin + url.pathname, res);
+}
+
 // Signing out clears cached pages so the next person on a shared device can't see them.
 self.addEventListener("message", (event) => {
-  if (event.data === "clear-pages") {
+  const data = event.data;
+  if (data && typeof data === "object" && data.type === "cache-page") {
+    const from = event.source && "url" in event.source ? new URL(event.source.url) : null;
+    if (!from || from.origin !== self.location.origin) return;
+    event.waitUntil(cachePage(data.path).catch(() => undefined));
+    return;
+  }
+  if (data === "clear-pages") {
     event.waitUntil(
       caches
         .open(PAGE_CACHE)

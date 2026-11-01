@@ -4,7 +4,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { Alert, Badge, buttonClass, Card, CardTitle, Field, Input } from "@/components/ui";
 import { getDb } from "@/db";
 import { formatDate, formatDay } from "@/i18n/core";
-import { listArchiveParts } from "@/lib/archive";
+import { ARCHIVE_DOWNLOADS_PER_DAY, listArchiveParts } from "@/lib/archive";
 import { getRetention, listErasureRequests } from "@/lib/retention";
 import { eventFormLabels } from "@/lib/server/event-form";
 import { getEventContext } from "@/lib/server/event-context";
@@ -13,7 +13,7 @@ import { deleteEventAction, updateEventAction, updateRsvpDeadlineAction } from "
 
 export default async function SettingsPage({ params, searchParams }: PageProps<"/events/[eventId]/settings">) {
   const { eventId } = await params;
-  const { erased } = await searchParams;
+  const { erased, archiveLimit } = await searchParams;
   const ctx = await getEventContext(eventId);
   const { t, locale } = await getTranslator();
   const canEdit = ctx.can("event.update");
@@ -62,13 +62,20 @@ export default async function SettingsPage({ params, searchParams }: PageProps<"
         )}
         <p className="text-sm text-muted">{t("retention.dataHelp")}</p>
         <p className="mt-2 text-sm font-medium">
-          {retention.deletionDate ? t("retention.deletionOn", { date: formatDay(locale, retention.deletionDate, { dateStyle: "long" }) }) : t("retention.deletionNever")}
+          {retention.deletionDate
+            ? t(retention.fallback ? "retention.deletionFallback" : "retention.deletionOn", { date: formatDay(locale, retention.deletionDate, { dateStyle: "long" }) })
+            : t("retention.deletionNever")}
         </p>
 
         <h3 className="mt-5 mb-1 text-sm font-semibold">{t("retention.archiveTitle")}</h3>
         {canExport ? (
           <>
             <p className="mb-3 text-sm text-muted">{t("retention.archiveHelp")}</p>
+            {archiveLimit && (
+              <div className="mb-3">
+                <Alert tone="warning">{t("retention.archiveLimit", { count: ARCHIVE_DOWNLOADS_PER_DAY })}</Alert>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {parts.map((p) => (
                 <a key={p.id} href={`/events/${eventId}/settings/archive?part=${p.id}`} className={buttonClass(p.id === "main" ? "primary" : "secondary")}>
@@ -92,7 +99,7 @@ export default async function SettingsPage({ params, searchParams }: PageProps<"
                 {erasures.map(({ request: r }) => (
                   <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                     <span>
-                      <span className="font-medium">{r.householdName}</span>
+                      <span className="font-medium">{r.processedAt ? t("retention.erasedFamily", { ref: r.id.slice(0, 8) }) : r.householdName}</span>
                       <span className="text-muted"> · {t("retention.erasureRequested", { date: formatDate(locale, r.requestedAt) })}</span>
                     </span>
                     {r.processedAt ? (

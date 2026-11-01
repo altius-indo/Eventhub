@@ -20,7 +20,7 @@ if curl -s -o /dev/null "http://localhost:$PORT/login"; then echo "Port $PORT is
 LOG="$(mktemp)"
 # Production mode requires a field-encryption key (ADR-0019); a throwaway one per run is fine here.
 export DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")}"
-DATABASE_URL="$E2E_DB_URL" ALLOW_DEV_DELIVERY=1 APP_URL="http://localhost:$PORT" PORT="$PORT" setsid "$ROOT/node_modules/.bin/next" start >"$LOG" 2>&1 &
+DATABASE_URL="$E2E_DB_URL" ALLOW_DEV_DELIVERY=1 STORAGE_DRIVER=fs APP_URL="http://localhost:$PORT" PORT="$PORT" setsid "$ROOT/node_modules/.bin/next" start >"$LOG" 2>&1 &
 SERVER=$!
 # Kill the whole process group: next-server outlives its parent, and a leftover server
 # would make the next run silently test the old build.

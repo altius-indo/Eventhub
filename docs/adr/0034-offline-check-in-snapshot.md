@@ -59,3 +59,19 @@ The desk works from a cold start without signal, as long as it was opened once o
 device for that function. Other screens no longer open offline (they show the offline page), which
 is intended. If offline needs grow (envelope mode search, run-sheet edits), move to IndexedDB with
 the same "minimal fields, cleared on sign-out" rules.
+
+## Amendments (M7 review, 2026-11-01)
+
+- **Pages opened by in-app links**: the worker only saw real navigations, so a desk or live run
+  sheet reached by a client-side link was never cached. Both pages now post
+  `{ type: "cache-page", path: location.pathname }` on mount; the worker accepts it only from a
+  same-origin window, for a path matching one of the two day-of patterns with no query string, and
+  stores the response only if it's a plain 200 (no redirect to /login).
+- **Snapshot expiry**: the snapshot carries `expiresAt` = the end of the day after the function in
+  the event's timezone, or 24 h after download, whichever is later. The desk deletes and ignores
+  expired copies (also an in-memory copy that expires while the page is open).
+- **No session, no copies**: the login page (rendered only without a session; the proxy sends
+  expired sessions there) and the desk on a 401/403/404 clear the cached day-of pages and every
+  snapshot. Queued check-ins (guest ids and times only, keyed by user id) are kept on those paths
+  so check-ins scanned while a session expired still sync after the same person logs back in;
+  explicit sign-out still clears them, after a warning.

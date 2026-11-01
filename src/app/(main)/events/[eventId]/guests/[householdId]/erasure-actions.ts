@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { processErasureRequest, recordErasureRequest, RetentionError } from "@/lib/retention";
 import { getEventContext } from "@/lib/server/event-context";
-import { getTranslator } from "@/lib/server/session";
+import { getTranslator, requireStepUp } from "@/lib/server/session";
 
 type State = { error?: string; info?: string };
 
@@ -34,7 +34,11 @@ export async function recordErasureAction(eventId: string, householdId: string, 
   return { info: t("common.saved") };
 }
 
-/** EVT-09: erase the family now (records the request first if there isn't one). */
+/**
+ * EVT-09: erase the family now (records the request first if there isn't one). Irreversible, so it
+ * needs a fresh OTP (EVT-01d); after re-verifying, the user comes back to the family page (which
+ * now shows the recorded request) and confirms again.
+ */
 export async function eraseNowAction(eventId: string, householdId: string, _prev: State, fd: FormData): Promise<State> {
   const ctx = await getEventContext(eventId);
   const { t } = await getTranslator();
@@ -44,6 +48,8 @@ export async function eraseNowAction(eventId: string, householdId: string, _prev
   const db = getDb();
   try {
     const req = await recordErasureRequest(db, eventId, householdId, ctx.actor, { requestedAt: requestedAt ?? undefined, note: String(fd.get("note") ?? "") });
+    // Recorded first, so the request is on file even if the user leaves at the OTP step.
+    await requireStepUp(ctx, `/events/${eventId}/guests/${householdId}`);
     await processErasureRequest(db, eventId, req.id, ctx.actor);
   } catch (e) {
     if (e instanceof RetentionError) return { error: t(`retention.errors.${e.code}`) };

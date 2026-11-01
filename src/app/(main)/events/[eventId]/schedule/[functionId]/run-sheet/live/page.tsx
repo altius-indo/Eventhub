@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AutoRefresh } from "@/components/auto-refresh";
+import { CacheThisPage } from "@/components/offline-pages";
 import { SubmitButton } from "@/components/submit-button";
 import { Badge, Card } from "@/components/ui";
 import { getDb } from "@/db";
@@ -61,6 +62,7 @@ export default async function LiveRunSheet({ params }: PageProps<"/events/[event
   return (
     <div className="space-y-5">
       <AutoRefresh seconds={30} />
+      <CacheThisPage />
       <div>
         <Link href={`/events/${eventId}/schedule/${functionId}/run-sheet`} className="text-sm text-primary hover:underline">
           ← {t("runsheet.forFunction", { name: fn.name })}

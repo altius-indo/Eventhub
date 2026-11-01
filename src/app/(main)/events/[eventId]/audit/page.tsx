@@ -30,6 +30,8 @@ export default async function AuditPage({ params }: PageProps<"/events/[eventId]
           {rows.map(({ log, actorName }) => {
             const data = (log.data ?? {}) as Record<string, string>;
             const vars = {
+              // Erased families (EVT-09) leave rows without a name.
+              name: t("audit.erasedName"),
               ...data,
               role: data.role ? t(data.role === "host" ? "roles.host" : "roles.planner") : "",
               kind: data.kind === "pickup" || data.kind === "drop" || data.kind === "shuttle" ? t(`transfers.kinds.${data.kind}`) : (data.kind ?? ""),

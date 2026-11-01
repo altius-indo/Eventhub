@@ -19,7 +19,7 @@ export async function resetDb() {
       caterer_headcount_state, outbound_messages, thank_yous, thank_you_templates, gift_imports, cash_handovers, gifts,
       message_opt_outs, event_limit_overrides, platform_settings, message_usage, broadcasts, notification_prefs,
       notifications, thread_reads, messages, threads, vendor_contacts,
-      storage_usage, storage_household_usage, event_storage_overrides, storage_deletions, event_metrics,
+      storage_usage, storage_household_usage, storage_reservations, event_storage_overrides, storage_deletions, event_metrics,
       retention_notices, guest_erasure_requests
     RESTART IDENTITY CASCADE
   `);

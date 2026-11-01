@@ -1,10 +1,11 @@
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
-import { checkIns, functionInvites, functions, guests, households, rsvps, users, type Guest, type Household, type RsvpStatus } from "@/db/schema";
+import { checkIns, events, functionInvites, functions, guests, households, rsvps, users, type Guest, type Household, type RsvpStatus } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 import { freezeDueLocks } from "./caterer-headcount";
 import { sha256 } from "./crypto";
 import { makePassToken, resolveGuestToken, resolvePassToken } from "./guest-links";
+import { wallClockNow } from "./wall-clock";
 
 export class CheckInError extends Error {
   constructor(public code: "invalid_pass" | "wrong_event" | "function_not_found" | "not_invited" | "not_found") {
@@ -303,7 +304,29 @@ export type SnapshotHousehold = {
   passHash: string | null;
   members: SnapshotMember[];
 };
-export type CheckInSnapshot = { functionId: string; generatedAt: string; households: SnapshotHousehold[] };
+export type CheckInSnapshot = {
+  functionId: string;
+  generatedAt: string;
+  /** The device must not use this copy after this time (ADR-0034); see `snapshotExpiry`. */
+  expiresAt: string;
+  households: SnapshotHousehold[];
+};
+
+/** UTC instant of 00:00 on a `YYYY-MM-DD` day in a time zone. */
+export function zonedMidnight(isoDate: string, timeZone: string): Date {
+  const guess = Date.parse(`${isoDate}T00:00:00Z`);
+  const offset = wallClockNow(timeZone, new Date(guess)).getTime() - guess;
+  return new Date(guess - offset);
+}
+
+/**
+ * How long an offline copy may be used: until the end of the day after the function (event time
+ * zone, so late-night functions are covered), or 24 h after it was made, whichever is later.
+ */
+export function snapshotExpiry(functionDate: string | null, timeZone: string, now: Date): Date {
+  const dayAfterEnds = functionDate ? zonedMidnight(new Date(Date.parse(`${functionDate}T00:00:00Z`) + 2 * 86_400_000).toISOString().slice(0, 10), timeZone).getTime() : 0;
+  return new Date(Math.max(dayAfterEnds, now.getTime() + 24 * 3600_000));
+}
 
 /**
  * What the check-in desk caches on the device so pass lookup and name search still work when it
@@ -312,7 +335,9 @@ export type CheckInSnapshot = { functionId: string; generatedAt: string; househo
  * addresses, notes, travel or gift data. The pass is stored as a hash, never as a usable token.
  */
 export async function checkInSnapshot(db: Tx, eventId: string, functionId: string, now = new Date()): Promise<CheckInSnapshot> {
-  await checkFunction(db, eventId, functionId);
+  const fn = await checkFunction(db, eventId, functionId);
+  const [ev] = await db.select({ timezone: events.timezone }).from(events).where(eq(events.id, eventId));
+  const expiresAt = snapshotExpiry(fn.date, ev?.timezone ?? "Asia/Kolkata", now).toISOString();
   const relevant = sql`(exists (select 1 from ${functionInvites} fi join ${guests} g2 on g2.id = fi.guest_id
       where g2.household_id = ${households.id} and fi.function_id = ${functionId})
     or exists (select 1 from ${checkIns} ci join ${guests} g3 on g3.id = ci.guest_id
@@ -353,5 +378,5 @@ export async function checkInSnapshot(db: Tx, eventId: string, functionId: strin
     }
     h.members.push({ id: r.id, name: r.name, ageGroup: r.ageGroup, invited: r.invited, rsvp: r.rsvp, checkedInAt: r.checkedInAt?.toISOString() ?? null });
   }
-  return { functionId, generatedAt: now.toISOString(), households: [...out.values()] };
+  return { functionId, generatedAt: now.toISOString(), expiresAt, households: [...out.values()] };
 }

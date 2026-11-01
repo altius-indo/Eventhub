@@ -99,7 +99,7 @@ export async function saveDocument(
         .from(documents)
         .where(eq(documents.eventId, eventId));
       if (used + input.data.length > MAX_EVENT_DOCUMENT_BYTES) throw new DocumentError("quota");
-      await reserve(tx, eventId, input.data.length, input.audience ?? "member");
+      const reservation = await reserve(tx, eventId, input.data.length, input.audience ?? "member");
       const [doc] = await tx
         .insert(documents)
         .values({
@@ -118,7 +118,7 @@ export async function saveDocument(
       // Upload last, inside the transaction: if it fails nothing is recorded.
       await store.put(key, input.data, mime);
       stored = true;
-      await commit(tx, eventId, input.data.length);
+      await commit(tx, eventId, input.data.length, input.data.length, { reservationId: reservation.id });
       await audit(tx, { eventId, actor, action: "document.uploaded", entityType: "document", entityId: doc.id, data: { name: doc.filename, kind: doc.kind } });
       return doc;
     });

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
 import { documents, events, storageDeletions, storageUsage } from "@/db/schema";
 import { reconcileUsage } from "./storage-quota";
@@ -81,7 +81,9 @@ export async function processStorageDeletions(db: Database, store: ObjectStore, 
  * delete document objects no row points at any more (their row went with a cascaded delete, e.g.
  * a vendor or invoice). Objects younger than a day are left alone (uploads in flight).
  */
-export async function reconcileStorage(db: Database, store: ObjectStore, now = new Date(), opts: { limit?: number } = {}) {
+export async function reconcileStorage(db: Database, store: ObjectStore, now = new Date(), opts: { limit?: number; budgetMs?: number } = {}) {
+  const started = Date.now();
+  const overBudget = () => opts.budgetMs != null && Date.now() - started > opts.budgetMs;
   const due = await db
     .select({ id: events.id })
     .from(events)
@@ -91,14 +93,25 @@ export async function reconcileStorage(db: Database, store: ObjectStore, now = n
     .limit(opts.limit ?? 25);
   let n = 0;
   for (const { id } of due) {
+    if (overBudget()) break;
     await db.transaction((tx) => reconcileUsage(tx, id, now));
     const known = new Set(
       (await db.select({ k: documents.storageKey }).from(documents).where(and(eq(documents.eventId, id), sql`${documents.storageKey} is not null`))).map((r) => r.k!),
     );
     for await (const o of store.list(documentsPrefix(id))) {
+      if (overBudget()) break;
       if (!known.has(o.key) && now.getTime() - o.uploadedAt.getTime() > 24 * 3600_000) await store.delete(o.key);
     }
     n++;
   }
   return n;
+}
+
+/** Deletions that keep failing (this many attempts or more) are shown to the App Admin. */
+export const STUCK_ATTEMPTS = 5;
+
+/** App Admin dashboard: how many queued storage deletions keep failing (store outage, bad prefix). */
+export async function stuckStorageDeletions(db: Tx): Promise<number> {
+  const [r] = await db.select({ n: count() }).from(storageDeletions).where(gte(storageDeletions.attempts, STUCK_ATTEMPTS));
+  return r?.n ?? 0;
 }
