@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { approvalRequests, auditLogs, budgetLines, eventMembers, events, functions, requirements, serviceTypes, vendors } from "@/db/schema";
+import { approvalRequests, auditLogs, budgetLines, eventMembers, events, functions, paymentMilestones, requirements, serviceTypes, vendors } from "@/db/schema";
 import "@/lib/approval-handlers";
 import { decideRequest, withdrawRequest } from "@/lib/approvals";
 import { addBudgetLine, updateBudgetLine, budgetFacts, byPayer, categoryTotals, groupFacts, sumFacts } from "@/lib/budget";
@@ -395,6 +395,9 @@ describe("payments, invoices and statuses (PAY)", () => {
 
   it("lists payables and sends payment reminders once a day", async () => {
     const c = await confirmedBooking();
+    // Confirmation moves an earlier advance to the real current date; pin it to TODAY so the test
+    // doesn't depend on the wall clock.
+    await db().update(paymentMilestones).set({ dueDate: TODAY }).where(and(eq(paymentMilestones.bookingId, c.booking.id), eq(paymentMilestones.kind, "advance")));
     const rows = await payables(db(), c.event.id, TODAY, "2026-11-07");
     expect(rows).toHaveLength(1);
     expect(rows[0].kind).toBe("advance");
