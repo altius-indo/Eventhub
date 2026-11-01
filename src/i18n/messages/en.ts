@@ -793,6 +793,7 @@ const en = {
     roomType: "Room type",
     roomTypePlaceholder: "Deluxe double",
     maxOccupancy: "People per room",
+    perRoom: "Per room: {count}",
     blockedCount: "Rooms blocked",
     rate: "Rate per night (₹)",
     rateHelp: "For your records only; never shown to guests.",

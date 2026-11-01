@@ -16,10 +16,13 @@ npx tsx scripts/migrate.ts "$E2E_DB_URL" >/dev/null
 psql "$E2E_DB_URL" -qc "TRUNCATE users, events, otp_challenges, dev_outbox, audit_logs, rate_events RESTART IDENTITY CASCADE" 2>/dev/null
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then npm run build >/dev/null; fi
+if curl -s -o /dev/null "http://localhost:$PORT/login"; then echo "Port $PORT is already in use (a leftover server?). Stop it first."; exit 1; fi
 LOG="$(mktemp)"
-DATABASE_URL="$E2E_DB_URL" ALLOW_DEV_DELIVERY=1 APP_URL="http://localhost:$PORT" PORT="$PORT" npx next start >"$LOG" 2>&1 &
+DATABASE_URL="$E2E_DB_URL" ALLOW_DEV_DELIVERY=1 APP_URL="http://localhost:$PORT" PORT="$PORT" setsid "$ROOT/node_modules/.bin/next" start >"$LOG" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null || true' EXIT
+# Kill the whole process group: next-server outlives its parent, and a leftover server
+# would make the next run silently test the old build.
+trap 'kill -- -$SERVER 2>/dev/null || kill $SERVER 2>/dev/null || true' EXIT
 for _ in $(seq 1 40); do curl -s -o /dev/null "http://localhost:$PORT/login" && break; sleep 0.5; done
 
 NODE_PATH="$ROOT/node_modules:$(npm root -g)" E2E_BASE="http://localhost:$PORT" E2E_DATABASE_URL="$E2E_DB_URL" node "$SCRIPT"

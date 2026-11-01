@@ -16,7 +16,7 @@ export default async function CheckInPage({ params, searchParams }: PageProps<"/
     if (e instanceof NotFoundError) notFound();
     throw e;
   });
-  const { t } = await getTranslator();
+  const { t, locale } = await getTranslator();
   const keys = [
     "scan", "stopScan", "scanHelp", "cameraUnavailable", "search", "searchButton", "noResults", "markArrived", "arrivedAt", "by",
     "notInvited", "declined", "undo", "walkIn", "walkInName", "walkInCount", "walkInAdd", "expected", "arrived", "maybe", "noReply",
@@ -40,6 +40,8 @@ export default async function CheckInPage({ params, searchParams }: PageProps<"/
         apiUrl={`/events/${eventId}/logistics/check-in/${functionId}/api`}
         functionId={functionId}
         userId={ctx.actor.userId}
+        timeZone={ctx.event.timezone}
+        locale={locale}
         labels={labels}
         initialPass={typeof pass === "string" && /^[A-Za-z0-9_-]{44}$/.test(pass) ? pass : undefined}
       />

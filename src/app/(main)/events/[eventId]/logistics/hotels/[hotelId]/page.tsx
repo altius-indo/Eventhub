@@ -57,7 +57,7 @@ export default async function HotelPage({ params }: PageProps<"/events/[eventId]
           {blocks.map((b) => (
             <Card key={b.id}>
               <CardTitle action={<Badge>{t("hotels.dates", { in: day(b.checkIn), out: day(b.checkOut) })}</Badge>}>
-                {b.roomType} · {b.maxOccupancy}
+                {b.roomType} · {t("hotels.perRoom", { count: b.maxOccupancy })}
                 {b.ratePaise != null && <span className="ml-2 text-sm font-normal text-muted">{formatInr(locale, b.ratePaise)}</span>}
               </CardTitle>
               <ul className="grid gap-2 sm:grid-cols-2">

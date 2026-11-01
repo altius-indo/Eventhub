@@ -795,6 +795,7 @@ const hi: Messages = {
     roomType: "कमरे का प्रकार",
     roomTypePlaceholder: "डीलक्स डबल",
     maxOccupancy: "एक कमरे में कितने लोग",
+    perRoom: "हर कमरे में: {count}",
     blockedCount: "ब्लॉक किए कमरे",
     rate: "प्रति रात किराया (₹)",
     rateHelp: "सिर्फ़ आपके रिकॉर्ड के लिए; मेहमानों को कभी नहीं दिखेगा।",

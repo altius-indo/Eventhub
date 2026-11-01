@@ -23,7 +23,7 @@ export function RunItemFields({
       <Field label={labels.itemTitle} htmlFor={id("title")}>
         <Input id={id("title")} name="title" required maxLength={200} defaultValue={item?.title ?? ""} />
       </Field>
-      <div className="grid grid-cols-[1fr_6rem] gap-2">
+      <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-2">
         <Field label={labels.startsAt} htmlFor={id("startsAt")}>
           <Input id={id("startsAt")} name="startsAt" type="datetime-local" required defaultValue={item ? toWallClockInput(item.startsAt) : (defaultStart ?? "")} />
         </Field>

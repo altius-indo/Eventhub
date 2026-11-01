@@ -123,12 +123,13 @@ export async function getHotel(db: Tx, eventId: string, hotelId: string) {
 }
 
 export async function listHotels(db: Tx, eventId: string) {
+  // Single-table selects render columns unqualified, so the correlated subqueries name hotels.id explicitly.
   return db
     .select({
       hotel: hotels,
-      blocked: sql<number>`coalesce((select sum(${roomBlocks.blockedCount})::int from ${roomBlocks} where ${roomBlocks.hotelId} = ${hotels.id}), 0)`,
-      roomsUsed: sql<number>`(select count(distinct ra.room_id)::int from ${roomAssignments} ra join ${rooms} r on r.id = ra.room_id join ${roomBlocks} b on b.id = r.block_id where b.hotel_id = ${hotels.id})`,
-      guests: sql<number>`(select count(distinct ra.guest_id)::int from ${roomAssignments} ra join ${rooms} r on r.id = ra.room_id join ${roomBlocks} b on b.id = r.block_id where b.hotel_id = ${hotels.id})`,
+      blocked: sql<number>`coalesce((select sum(${roomBlocks.blockedCount})::int from ${roomBlocks} where ${roomBlocks.hotelId} = "hotels"."id"), 0)`,
+      roomsUsed: sql<number>`(select count(distinct ra.room_id)::int from ${roomAssignments} ra join ${rooms} r on r.id = ra.room_id join ${roomBlocks} b on b.id = r.block_id where b.hotel_id = "hotels"."id")`,
+      guests: sql<number>`(select count(distinct ra.guest_id)::int from ${roomAssignments} ra join ${rooms} r on r.id = ra.room_id join ${roomBlocks} b on b.id = r.block_id where b.hotel_id = "hotels"."id")`,
     })
     .from(hotels)
     .where(eq(hotels.eventId, eventId))

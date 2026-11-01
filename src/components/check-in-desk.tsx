@@ -35,7 +35,24 @@ function readQueue(key: string): Queued[] {
   }
 }
 
-export function CheckInDesk({ apiUrl, functionId, userId, labels, initialPass }: { apiUrl: string; functionId: string; userId: string; labels: DeskLabels; initialPass?: string }) {
+export function CheckInDesk({
+  apiUrl,
+  functionId,
+  userId,
+  timeZone,
+  locale,
+  labels,
+  initialPass,
+}: {
+  apiUrl: string;
+  functionId: string;
+  userId: string;
+  /** Event time zone, so arrival times read the same on every device (L10N-03). */
+  timeZone: string;
+  locale: string;
+  labels: DeskLabels;
+  initialPass?: string;
+}) {
   const [households, setHouseholds] = useState<Household[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [source, setSource] = useState<"scan" | "manual">("manual");
@@ -235,7 +252,8 @@ export function CheckInDesk({ apiUrl, functionId, userId, labels, initialPass }:
     let left = await flush();
     // If a flush was already running, it didn't include these; send them now.
     if (left && readQueue(storageKey).some((i) => items.some((n) => n.guestId === i.guestId && n.at === i.at))) left = await flush();
-    setMessage((m) => m ?? (left ? { tone: "warning", text: labels.retrying } : { tone: "success", text: labels.saved }));
+    // While items wait, the "waiting to save" banner already says so.
+    setMessage((m) => m ?? (left ? null : { tone: "success", text: labels.saved }));
     refreshCounts();
   }
 
@@ -326,12 +344,12 @@ export function CheckInDesk({ apiUrl, functionId, userId, labels, initialPass }:
   }
 
   const anyUninvitedSelected = households.some((h) => h.members.some((m) => selected[m.id] && !m.invited));
-  const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const time = (iso: string) => new Date(iso).toLocaleTimeString(locale === "hi" ? "hi-IN" : "en-IN", { hour: "numeric", minute: "2-digit", timeZone });
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
       <div className="space-y-4">
-        {!online && <Alert tone="warning">{labels.offline}</Alert>}
+        {!online && queueSize === 0 && <Alert tone="warning">{labels.offline}</Alert>}
         {signedOut && (
           <Alert tone="danger">
             <p>{labels.signInAgain}</p>
@@ -340,7 +358,12 @@ export function CheckInDesk({ apiUrl, functionId, userId, labels, initialPass }:
             </a>
           </Alert>
         )}
-        {queueSize > 0 && <Alert tone="warning">{labels.pending.replace("{count}", String(queueSize))}</Alert>}
+        {queueSize > 0 && (
+          <Alert tone="warning">
+            {labels.pending.replace("{count}", String(queueSize))}
+            {!online && ` ${labels.offline}`}
+          </Alert>
+        )}
 
         <Card>
           <div className="flex flex-wrap gap-2">

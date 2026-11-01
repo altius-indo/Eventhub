@@ -12,6 +12,7 @@ import {
   blockSchema,
   createBlock,
   createHotel,
+  listHotels,
   HotelError,
   roomingList,
   roomsForHousehold,
@@ -166,6 +167,8 @@ describe("hotels and rooms", () => {
     await updateBlock(db(), event.id, b.id, block({ blockedCount: 4, rate: "8000" }), actor);
     view = await allocationView(db(), event.id, hotel.id);
     expect(view[0].rooms).toHaveLength(4);
+    const [listed] = await listHotels(db(), event.id);
+    expect(listed).toMatchObject({ blocked: 4, roomsUsed: 2 });
   });
 
   it("counts occupancy per night and lists different stays in a room separately", async () => {
