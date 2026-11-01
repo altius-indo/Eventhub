@@ -52,6 +52,16 @@ A web app for planning large, multi-day Indian weddings: itinerary, guests and l
 - Run sheet per function: timed items with owner, place, notes and status. Fixed-time items (e.g. the muhurat) stay put when later items are moved. A live "now / next / running late" view for the day, and print pages for the run sheet and the full itinerary.
 - Families see their pickup, room and table on their personal page only if the event chooses to share them.
 
+**Milestone 5 (Services, vendors and money)** is built:
+
+- Services per function from a catalogue (catering, decor, photography and more, plus your own), each with requirements: quantity, details, timing and place, estimate, priority and who pays. Status comes from bookings: open, quoting, partly booked, booked, delivered. A gap view lists what's still to book, soonest first.
+- Planner changes to services, requirements, bookings, budget and payments go to a Host for approval. Proposals show straight away but stay out of the totals. Hosts can set a per-category limit below which Planner changes apply automatically (₹0 by default); anything over plan always needs a Host, and so do payments (with a one-time code). Hosts get a daily reminder about waiting requests.
+- Vendor directory with GSTIN, PAN and bank details. PAN and bank details are encrypted, shown masked, and shown in full only after a one-time code (logged).
+- Quote requests for one or many services across functions, with a brief to print or send on WhatsApp. Quotes are entered per requirement, with service extras and package-level discounts or charges spread over services; revisions are versioned. Compare quotes per service, or a package against the cheapest separate quotes.
+- Booking a whole quote or part of it, split across vendors, with package conditions (all-or-nothing, minimum functions). A booking creates the commitment and a payment schedule, plus a place for contract terms, key dates (reminded as tasks) and documents (PDFs/photos up to 20 MB).
+- Budget by function, service type, vendor and who pays (bride's family, groom's family, or shared), with planned, booked, invoiced and paid, lakh/crore figures and over-plan highlights. Other costs (e.g. return gifts) can be added.
+- Invoices with GST (CGST+SGST or IGST, suggested from the vendor's GSTIN), payments (UPI, bank, cheque, cash, card), statuses per milestone and invoice, a payables list with Excel export, and daily payment reminders (`npm run jobs:payment-reminders`, `npm run jobs:approval-reminders`).
+
 ## Tech
 
 Next.js 16 (App Router, server actions) · TypeScript · PostgreSQL · Drizzle ORM · Tailwind CSS 4 · Vitest.

@@ -20,3 +20,8 @@ decisions with the `adr` skill (`.claude/skills/adr`) using [template.md](templa
 | [0013](0013-retention-and-deletion.md) | Event deletion: soft delete, undo window, cascade purge | Accepted |
 | [0014](0014-checkin-pass-and-scanning.md) | Separate check-in pass, browser QR scanning, idempotent check-in | Accepted |
 | [0015](0015-printable-html-instead-of-pdf.md) | Printable HTML pages instead of server-generated PDFs | Accepted |
+| [0016](0016-proposals-as-rows.md) | Planner proposals as rows; edits as versioned diffs | Accepted |
+| [0017](0017-auto-approve-thresholds.md) | Auto-approve thresholds inside the approval engine | Accepted |
+| [0018](0018-documents-in-postgres.md) | Documents in Postgres behind a small module (interim) | Accepted |
+| [0019](0019-vendor-field-encryption.md) | Field encryption for vendor bank details and PAN | Accepted |
+| [0020](0020-money-arithmetic.md) | Money arithmetic and derived payment statuses | Accepted |
