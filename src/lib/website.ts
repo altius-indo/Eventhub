@@ -32,8 +32,8 @@ export const RESERVED_SLUGS = new Set([
   "privacy", "terms", "support", "www", "app", "static", "vendor", "notifications", "u",
 ]);
 
-export const SITE_THEMES = ["traditional", "modern", "minimal"] as const;
-export const SITE_ACCENTS = ["#8a1c2b", "#b4532a", "#9a7b2c", "#2f6b4f", "#2c5d8a", "#5b3f8c", "#3d4f7c", "#c0507d", "#792943", "#c65b83"] as const;
+export const SITE_THEMES = ["ornate", "traditional", "modern", "minimal"] as const;
+export const SITE_ACCENTS = ["#8a1c2b", "#b4532a", "#9a7b2c", "#2f6b4f", "#2c5d8a", "#5b3f8c", "#3d4f7c", "#c0507d", "#792943", "#c65b83", "#9b111e", "#b3122f", "#b0175a"] as const;
 export const MAX_SITE_IMAGES = 30;
 export const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
 
@@ -59,8 +59,8 @@ const lt = (en = "", hi = ""): LocalizedText => ({ en, hi });
 export function defaultContent(event: Pick<Event, "name" | "coupleNames">): SiteContent {
   const names = event.coupleNames || event.name;
   return {
-    theme: "traditional",
-    accent: SITE_ACCENTS[0],
+    theme: "ornate",
+    accent: "#9b111e",
     monogram: names
       .split(/\s*(?:&|and|weds|\+)\s*/i)
       .map((p) => p.trim()[0] ?? "")

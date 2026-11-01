@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { FloralDivider, RoseCorner, Toran } from "@/components/site-ornaments";
 import { notFound } from "next/navigation";
 import QRCode from "qrcode";
 import type { CSSProperties, ReactNode } from "react";
@@ -34,9 +35,16 @@ import {
 type Props = PageProps<"/[slug]">;
 
 const themes = {
-  traditional: { wrap: "bg-[#fbf6ee] text-[#2a1f1a]", heading: "font-serif", card: "bg-white/80 border border-[#eadfcd]", hero: "text-center" },
-  modern: { wrap: "bg-white text-[#141414]", heading: "font-sans font-bold uppercase tracking-wide", card: "bg-[#f6f6f6]", hero: "text-center" },
-  minimal: { wrap: "bg-[#fafafa] text-[#222]", heading: "font-sans font-light", card: "bg-white border border-[#e6e6e6]", hero: "text-left" },
+  ornate: {
+    wrap: "site-ornate text-[#3b0a14]",
+    heading: "font-serif",
+    card: "bg-white/90 border border-[#f0c46a] shadow-[0_8px_28px_-14px_rgba(155,17,30,0.45)]",
+    hero: "text-center",
+    deco: true,
+  },
+  traditional: { wrap: "bg-[#fbf6ee] text-[#2a1f1a]", heading: "font-serif", card: "bg-white/80 border border-[#eadfcd]", hero: "text-center", deco: false },
+  modern: { wrap: "bg-white text-[#141414]", heading: "font-sans font-bold uppercase tracking-wide", card: "bg-[#f6f6f6]", hero: "text-center", deco: false },
+  minimal: { wrap: "bg-[#fafafa] text-[#222]", heading: "font-sans font-light", card: "bg-white border border-[#e6e6e6]", hero: "text-left", deco: false },
 } as const;
 
 async function load(props: Props) {
@@ -67,10 +75,11 @@ export async function generateMetadata(props: Props): Promise<Metadata> {
 
 function Section({ id, title, theme, children }: { id: string; title: string; theme: (typeof themes)[keyof typeof themes]; children: ReactNode }) {
   return (
-    <section id={id} className="mx-auto max-w-3xl px-4 py-10">
-      <h2 className={`mb-5 text-2xl sm:text-3xl ${theme.heading}`} style={{ color: "var(--accent)" }}>
+    <section id={id} className={`mx-auto max-w-3xl px-4 py-10 ${theme.deco ? "text-center [&_details]:text-left [&_li]:text-left [&_form]:text-left [&_form]:mx-auto" : ""}`}>
+      <h2 className={`${theme.deco ? "mb-1" : "mb-5"} text-2xl sm:text-3xl ${theme.heading}`} style={{ color: "var(--accent)" }}>
         {title}
       </h2>
+      {theme.deco && <FloralDivider className="mx-auto mb-5" />}
       {children}
     </section>
   );
@@ -265,6 +274,7 @@ export default async function WeddingSite(props: Props) {
   return (
     <div lang={locale} style={style} className={`min-h-dvh ${theme.wrap}`}>
       {preview && <div className="bg-amber-100 px-4 py-2 text-center text-sm text-amber-900">{t("site.preview")}</div>}
+      {theme.deco && <Toran />}
 
       <header className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
         <span className={`text-lg ${theme.heading}`} style={{ color: "var(--accent)" }}>
@@ -275,6 +285,12 @@ export default async function WeddingSite(props: Props) {
 
       {/* Hero / welcome */}
       <section className={`relative mx-auto max-w-3xl px-4 pb-8 ${theme.hero}`}>
+        {theme.deco && !banner && (
+          <>
+            <RoseCorner className="pointer-events-none absolute left-0 top-0 h-16 w-16 sm:h-24 sm:w-24" />
+            <RoseCorner flip className="pointer-events-none absolute right-0 top-0 h-16 w-16 sm:h-24 sm:w-24" />
+          </>
+        )}
         {content.coverImageId &&
           (banner ? (
             // Artwork with the couple's names: shown whole, never cropped.
@@ -323,6 +339,7 @@ export default async function WeddingSite(props: Props) {
         </Section>
       )}
 
+      {theme.deco && <FloralDivider className="mx-auto mt-6" />}
       <footer className="py-10 text-center text-xs opacity-60">{t("site.madeWith")}</footer>
     </div>
   );

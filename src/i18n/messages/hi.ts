@@ -895,7 +895,7 @@ const hi: Messages = {
     publishHostOnly: "सिर्फ़ होस्ट पब्लिश कर सकते हैं। आपके बदलाव ड्राफ़्ट में सहेजे गए हैं।",
     look: "रूप",
     theme: "थीम",
-    themes: { traditional: "पारंपरिक", modern: "आधुनिक", minimal: "सादा" },
+    themes: { ornate: "सजावटी (गेंदा और गुलाब)", traditional: "पारंपरिक", modern: "आधुनिक", minimal: "सादा" },
     accent: "रंग",
     monogram: "मोनोग्राम",
     cover: "कवर फ़ोटो",

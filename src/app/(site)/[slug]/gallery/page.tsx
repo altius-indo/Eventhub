@@ -8,6 +8,7 @@ import { isUuid } from "@/lib/ids";
 import { ACCEPT_GUEST, guestGallery, uploaderLabels } from "@/lib/server/gallery";
 import { getSiteContext, siteLocale } from "@/lib/server/site-context";
 import { accentBtn, outlineBtn, siteLook } from "./site-theme";
+import { Toran } from "@/components/site-ornaments";
 
 export const metadata = { robots: { index: false } };
 
@@ -30,6 +31,7 @@ export default async function GuestGalleryPage({ params, searchParams }: PagePro
     // Scanned the venue QR without the family's link on this phone (no anonymous uploads).
     return (
       <div lang={locale} style={look.style} className={`min-h-dvh ${look.wrap}`}>
+      {look.ornate && <Toran />}
         <div className="mx-auto max-w-md space-y-4 px-4 py-16 text-center">
           <h1 className="text-2xl" style={{ color: "var(--accent)" }}>
             {t("gallery.site.title")}
@@ -60,6 +62,7 @@ export default async function GuestGalleryPage({ params, searchParams }: PagePro
 
   return (
     <div lang={locale} style={look.style} className={`min-h-dvh ${look.wrap}`}>
+      {look.ornate && <Toran />}
       <div className="mx-auto max-w-3xl space-y-6 px-4 py-6">
         <nav className="flex flex-wrap gap-3 text-sm">
           <Link href={`/${slug}`} className="inline-flex min-h-11 items-center underline">

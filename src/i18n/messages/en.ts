@@ -893,7 +893,7 @@ const en = {
     publishHostOnly: "Only Hosts can publish. Your changes are saved as a draft.",
     look: "Look",
     theme: "Theme",
-    themes: { traditional: "Traditional", modern: "Modern", minimal: "Minimal" },
+    themes: { ornate: "Ornate (marigolds & roses)", traditional: "Traditional", modern: "Modern", minimal: "Minimal" },
     accent: "Colour",
     monogram: "Monogram",
     cover: "Cover photo",

@@ -483,7 +483,7 @@ export const siteVisibility = pgEnum("site_visibility", ["unlisted", "passcode",
 
 export type LocalizedText = { en?: string; hi?: string };
 export type SiteContent = {
-  theme: "traditional" | "modern" | "minimal";
+  theme: "ornate" | "traditional" | "modern" | "minimal";
   accent: string;
   monogram: string;
   coverImageId: string | null;

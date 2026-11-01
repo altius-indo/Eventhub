@@ -11,6 +11,7 @@ import { guestGallery } from "@/lib/server/gallery";
 import { siteLocale } from "@/lib/server/site-context";
 import { commentAction, deleteOwnAction, likeAction, removalAction } from "../../actions";
 import { accentBtn, outlineBtn, siteLook } from "../../site-theme";
+import { Toran } from "@/components/site-ornaments";
 
 export const metadata = { robots: { index: false } };
 
@@ -34,6 +35,7 @@ export default async function GuestPhotoPage({ params, searchParams }: PageProps
 
   return (
     <div lang={locale} style={look.style} className={`min-h-dvh ${look.wrap}`}>
+      {look.ornate && <Toran />}
       <div className="mx-auto max-w-3xl space-y-4 px-4 py-6">
         <Link href={`${base}?fn=${item.functionId}`} className="inline-flex min-h-11 items-center text-sm underline">
           ← {t("gallery.site.backToPhotos")}
