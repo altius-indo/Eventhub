@@ -20,6 +20,7 @@
 | Staff & vendor login | **Passwordless OTP** to phone (SMS / WhatsApp) **or** email; no passwords |
 | Guest access | Magic link per household, no account or password |
 | Payments | **Tracking only**; money moves outside the app |
+| Photo gallery | **Post-event gallery** per function: photographers, family and guests upload; guests see photos from functions they were invited to |
 | Wedding website | **Public wedding microsite** per event; shows only what the family marks public, with a personalised view when opened via a guest's magic link |
 | Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to the receiving family |
 | Spend approvals | **Per-category thresholds**; a cost is approved by the family/families paying it, so **shared costs need both families** |
@@ -67,6 +68,7 @@
 | Reports | RW | R | R | Own side | Own functions | – | – |
 | Gifts / shagun & thank-yous | RW | RW (own family side) | – (grantable) | Record + view own entries | – | – | – |
 | Wedding website | RW + publish | RW + publish | RW (publish needs Owner/Host) | – | – | – | View (+ personalised view via magic link) |
+| Photo gallery | RW + moderate | RW + moderate | RW + moderate | Upload + view | Upload + view (own functions) | Photographers/videographers: upload to booked functions | View invited functions; upload (if enabled) |
 
 
 
@@ -193,6 +195,7 @@ Event
 - **VND-10 (M)** **Vendor portal**: the vendor logs in with passwordless phone or email OTP (EVT-01) to see services they're invited to quote on or booked for. From there they:
   - submit and revise quotes;
   - see their requirements, functions and run-sheet items;
+  - (photographers/videographers) upload photo and video deliveries to the gallery (GAL-02);
   - (caterers) see live headcount for their booked functions (RSV-06);
   - upload invoices;
   - view the payment schedule and status;
@@ -314,6 +317,33 @@ Event
 - **WEB-12 (S)** Basic visit analytics (views, link opens, "find my invitation" attempts), privacy-friendly and cookie-less.
 - **WEB-13 (C)** Digital shagun via a UPI QR shown on the site (display only; the app does not process the payment). Deferred; see §8.
 
+### 3.16 Post-event Photo Gallery (`GAL`)
+- **GAL-01 (M)** **Event gallery** organised by **function** (Mehendi, Sangeet, …), with albums inside a function (e.g. "Baraat", "Pheras", "Family portraits"), sorted by capture time (EXIF). A typical wedding is 5,000–20,000 photos plus video.
+- **GAL-02 (M)** **Professional deliveries**:
+  - **Upload**: photographers and videographers booked for a function upload directly through the vendor portal. Bulk, resumable uploads handle thousands of files and large videos. This replaces Drive/WeTransfer links.
+  - **Tracking**: each upload is tied to the booking, so the service owner can mark the requirement **delivered** (SVC-08).
+  - **Drafts**: the vendor can upload a "sneak peek" set first and the full delivery later. Deliveries stay private to the family until **released**.
+- **GAL-03 (M)** **Family & guest uploads**:
+  - **Who**: members upload from the app; guests upload from their magic link / the personalised website, or by scanning a per-function upload QR displayed at the venue.
+  - **Attribution**: every upload is tied to a household or member.
+  - **Settings**: guest uploads can be turned on or off per event.
+- **GAL-04 (M)** **Moderation**: guest uploads go to a moderation queue (Owner/Host/Planner approve or hide) before others can see them. Auto-approve can be switched on per event. Anyone can **request removal** of a photo they appear in; requests go to the family.
+- **GAL-05 (M)** **Access**:
+  - **Guests**: they see only galleries for functions they were **invited to**, following the same per-function invite rules (private functions stay private), plus their own uploads.
+  - **Family**: members see everything, subject to release state.
+  - **Website**: the family can pick **highlights** to show on the public wedding website (WEB-02); nothing else is public.
+- **GAL-06 (M)** **Viewing & downloads**:
+  - **Viewing**: fast grid and full-screen viewer on mobile, and videos stream in the browser.
+  - **Downloads**: guests download single photos at web resolution. Originals and **download-all / per-album ZIP** are for the family by default; they can also be enabled for guests.
+- **GAL-07 (M)** **Favourites & album selection**: family members mark favourites and build a **selection for the printed album**. The selection is shared with the photographer through the vendor portal as a list (file names) with a deadline, so it can be designed and printed.
+- **GAL-08 (S)** **Likes and comments** on photos for invited guests; family can disable.
+- **GAL-09 (S)** **"Find my photos" (face search)**: a guest takes a selfie and sees photos they appear in.
+  - **Consent**: strictly **opt-in** with explicit consent (biometric data under the DPDP Act).
+  - **Data handling**: the selfie is processed only for matching, and face data is deleted after the gallery closes or on request.
+  - **Switch**: the family can disable the feature entirely.
+- **GAL-10 (S)** **Watermark** option for guest-downloadable images (e.g. the couple's monogram or the photographer's credit).
+- **GAL-11 (S)** **Guest notifications**: "Your photos from the Sangeet are ready" broadcast with a link, sent when a function's gallery is released.
+
 ## 4. Non-Functional Requirements
 
 | Area | Requirement |
@@ -326,7 +356,7 @@ Event
 | **Reliability** | Daily backups with point-in-time recovery; 99.5% uptime target; message sending through a retryable job queue. |
 | **Auditability** | Immutable audit log for money, RSVP and permission changes. |
 | **Accessibility** | WCAG 2.1 AA for guest-facing pages; large tap targets and readable fonts for elderly guests. |
-| **Files** | Uploads (contracts, invoices, receipts) up to 20 MB, stored in object storage with signed URLs. |
+| **Files** | Documents (contracts, invoices, receipts) up to 20 MB; gallery photos (JPEG/HEIC/PNG) up to 50 MB each, videos up to 4 GB via resumable/chunked upload. Stored in object storage with signed URLs. Images get thumbnails and web-size renditions served through a CDN, with HEIC converted for browsers. |
 
 ---
 
@@ -366,6 +396,9 @@ Function ─< Service (type, owner, brief, payer allocation)
       ─ Website (slug, visibility, passcode_hash, theme, locales[], published_version, custom_domain?)
               ├─< WebsiteSection (type, order, visible, content per locale, media)
               └─ per-Function settings: public|private, venue visibility
+      ─< GalleryAlbum (function, title, release state)
+              └─< MediaItem (uploader: Member|Vendor|Household, type photo|video, original + renditions, taken_at, status pending|approved|hidden, favourites, album_selection)
+      ─< MediaRemovalRequest / FaceConsent (opt-in, S)
       ─< Gift (household|free-text giver, type, amount|item, function, received_for, recorded_by, envelope_no, side)
       ─< CashHandover (collector, function, recorded vs counted, handed_to)
       ─< ThankYou (household, status, channel, template, sent_at, sent_by)
@@ -382,7 +415,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 4. **Logistics**: Planner reviews the arrivals board → creates pickup runs → allocates rooms → exports rooming lists to hotels.
 5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → above the category threshold, the paying family approves (both families for shared costs) → vendor uploads invoice in the portal → payer records payment → vendor sees "Paid".
 6. **Day-of**: Coordinators open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests → shagun collectors log envelopes in envelope mode and reconcile cash after each function.
-7. **After the wedding**: Family reviews gift summaries → drafts personalised thank-you notes from templates → sends via WhatsApp/email or prints cards → tracker shows who is still to be thanked.
+7. **After the wedding**: Family reviews gift summaries → drafts personalised thank-you notes from templates → sends via WhatsApp/email or prints cards → tracker shows who is still to be thanked. Photographers upload deliveries → family reviews and releases each function's gallery → guests are notified and browse/download their functions' photos → family picks album selections for the photographer.
 
 ---
 
@@ -392,7 +425,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 - **Database**: PostgreSQL via Prisma. Every event-scoped table carries `event_id`; authorisation is centralised in a policy layer (role + side/function scope).
 - **Auth**: passwordless OTP via phone (SMS through an Indian DLT-compliant provider such as MSG91 or Twilio Verify, plus WhatsApp authentication templates) or email. Implemented as a custom OTP provider on Auth.js, or a managed service. Database-backed sessions; signed, revocable tokens for guest household links.
 - **Background jobs**: Queue (e.g. BullMQ/Redis or pg-boss) for messaging, reminders, imports and exports.
-- **Integrations**: WhatsApp BSP, email provider (Resend/SES), SMS provider with DLT templates, object storage (S3-compatible).
+- **Integrations**: WhatsApp BSP, email provider (Resend/SES), SMS provider with DLT templates, object storage (S3-compatible) with a CDN and an image-processing pipeline (e.g. `sharp` workers for thumbnails/renditions, video transcoding via a managed service); tus/S3 multipart for resumable uploads.
 - **Realtime**: Chat and live check-in counts via WebSockets/SSE (e.g. Pusher/Ably or self-hosted).
 - **i18n**: `next-intl`; message templates stored per locale.
 - **PWA**: Service worker caching for run sheet, guest lookup and check-in queue.
@@ -426,7 +459,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 | **M4 Logistics** | Travel, transfers, hotels/room blocks, room allocation, seating plans, QR check-in |
 | **M5 Services, Vendors & Money** | Service catalogue, services & requirements per function, fulfilment/gap view, vendor directory, quotes per service and comparison, contracts, budget (categories/functions/payer), approvals, invoices with GST, payment schedules/status |
 | **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders, gift register & envelope mode, thank-you notes |
-| **M7 Hardening** | Run sheet live mode, offline check-in, reports/exports, performance, security review, UAT on a real wedding dataset |
+| **M7 Post-event & Hardening** | Photo gallery (deliveries, guest uploads, moderation, album selection), run sheet live mode, offline check-in, reports/exports, performance, security review, UAT on a real wedding dataset |
 
 **Lead-time risk:** WhatsApp Business API approval (Meta business verification, template approval) and SMS **DLT registration** take days to weeks. Start these during M1. **Phone OTP login depends on them**, so email OTP ships first in M1 and phone OTP switches on as soon as the DLT template is approved.
 
@@ -443,7 +476,6 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Photo sharing / gallery** after the event: in scope?
-2. **Data retention**: how long are guest and personal data kept after the event ends?
-3. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-4. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+1. **Data retention**: how long are guest and personal data kept after the event ends?
+2. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+3. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email) and **gallery storage**: is there a per-event storage cap (e.g. 200 GB) or video size limit? Photo/video storage and bandwidth will be the largest running cost.
