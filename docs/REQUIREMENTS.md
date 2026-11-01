@@ -25,7 +25,7 @@
 | Monetisation | Free / personal use; no billing in v1 |
 | Tech stack | Next.js (TypeScript) + PostgreSQL + Prisma + Tailwind |
 | Planning structure | **Event → Function → Service → Requirement**; vendors are booked to meet requirements (one or more vendors per requirement, with split) |
-| Quotes | Vendors quote **per service**, with line items mapped to that service's requirements |
+| Quotes | Vendors quote **per service** or as a **combined quote across functions** (e.g. Catering for Mehendi + Sangeet + Reception); every line maps to a specific service's requirement |
 | Release scope | **All modules in Phase 1** (sequenced as internal milestones; see §9) |
 
 ---
@@ -145,19 +145,28 @@ Event
 
 ### 3.8 Vendors & Quotes (`VND`)
 - **VND-01 (M)** Vendor directory: service types offered (one vendor can offer several), contacts, GSTIN, PAN, bank details (masked), rating, notes.
-- **VND-02 (M)** **Request quotes per service**: invite one or more vendors to quote for a service. The vendor sees the service brief and all its requirements.
-- **VND-03 (M)** **Quotes are per service**, with **line items mapped to requirements**. A line can cover a requirement fully or partially (quantity share), and can include extras not tied to a requirement (e.g. transport charges). Taxes (GST), validity date, terms and attachments are included.
-- **VND-04 (M)** **Quote comparison per service**: side by side, with totals and a per-requirement breakdown and coverage, highlighting requirements a quote doesn't cover.
-- **VND-05 (M)** **Booking**: accept a quote fully or for selected lines/requirements (enabling split fulfilment across vendors). Booking creates **fulfilment** records, the budget **commitment** and a draft **payment schedule** (§3.10).
-- **VND-06 (M)** **Revisions**: vendors can revise a quote (versioned); changes to booked lines after booking go through budget approval (BGT-04).
-- **VND-07 (M)** **Contracts & documents** per booking: upload (PDF/images), key terms (amount, cancellation policy, deliverables, deadlines), with reminders on key dates.
-- **VND-08 (M)** **Vendor portal**: the vendor logs in (email/phone OTP) to see services they're invited to quote on or booked for. From there they:
+- **VND-02 (M)** **Request quotes**: invite one or more vendors to quote for **one service or a group of services**. Groups are typically the same service type across several functions (e.g. Catering for Mehendi, Sangeet and Reception) but may mix types (e.g. Decor + Florals). The vendor sees each service's brief, function, date/venue and requirements.
+- **VND-03 (M)** **Quote structure**: a quote covers the requested service(s), with **line items mapped to requirements**, grouped by function. A line can cover a requirement fully or partially (quantity share). The quote also carries GST, validity date, terms and attachments. Lines not tied to one requirement are allowed:
+  - **Service-level extras**, e.g. transport charges for the Sangeet.
+  - **Package-level adjustments**, e.g. "10% off if all three functions are booked", travel or a team stay across functions.
+- **VND-04 (M)** **Combined (package) quotes**:
+  - **Allocation**: package-level amounts are allocated across the included services, proportionally to line amounts by default and editable. Every rupee therefore rolls up to a function, service and payer in the budget.
+  - **Package conditions**: the vendor can mark a quote *all-or-nothing* or set a minimum bundle (e.g. the discount applies only if ≥ 2 functions are booked). The app warns, and recalculates, when a partial booking breaks a condition.
+- **VND-05 (M)** **Quote comparison**:
+  - **Per service**: combined quotes appear alongside single-service quotes with their allocated amount, labelled *part of package*.
+  - **Per package**: compare package quotes against each other, and against the best mix of individual quotes for the same services.
+  - Both views show per-requirement breakdown and coverage, and highlight what a quote doesn't cover.
+- **VND-06 (M)** **Booking**: accept a quote fully, or select functions/lines/requirements (enabling split fulfilment across vendors). One combined quote produces **one booking** spanning several functions. Booking creates **fulfilment** records per requirement, the budget **commitment** (allocated per function/service/payer) and a draft **payment schedule** (§3.10), which is one schedule for the whole package.
+- **VND-07 (M)** **Revisions**: vendors can revise a quote (versioned); changes to booked lines after booking go through budget approval (BGT-04).
+- **VND-08 (M)** **Invoices on packages**: a vendor may invoice a package as one invoice or per function. Invoice lines are allocated to functions/services the same way as quotes, so budget actuals stay accurate per function.
+- **VND-09 (M)** **Contracts & documents** per booking: upload (PDF/images), key terms (amount, cancellation policy, deliverables, deadlines), with reminders on key dates.
+- **VND-10 (M)** **Vendor portal**: the vendor logs in (email/phone OTP) to see services they're invited to quote on or booked for. From there they:
   - submit and revise quotes;
   - see their requirements, functions and run-sheet items;
   - upload invoices;
   - view the payment schedule and status;
   - chat with the team.
-- **VND-09 (S)** Vendor performance rating after the event, per service delivered.
+- **VND-11 (S)** Vendor performance rating after the event, per service delivered.
 
 ### 3.9 Budget (`BGT`)
 - **BGT-01 (M)** Budget is **derived from the planning structure**: Requirement → Service → Function → Event. Each level shows:
@@ -231,11 +240,12 @@ Event ─< Function ─< RunSheetItem (owner: Member|Vendor)
 Function ─< Service (type, owner, brief, payer allocation)
               ├─< Requirement (qty, unit, specs, when/where, estimate, priority, status)
               │       └─< Fulfilment (vendor, booking, qty/% share, agreed amount)
-              └─< QuoteRequest >─ Vendor
-                      └─< Quote (versioned, GST, validity)
-                              └─< QuoteLine (→ Requirement?, qty share, amount)
+      ─< QuoteRequest (vendor) >─< Service   (one or many services, any functions)
+              └─< Quote (versioned, GST, validity, package conditions)
+                      ├─< QuoteLine (→ Requirement | Service | package-level, qty share, amount)
+                      └─< Allocation (package/service-level amount → Service %)
       ─< Vendor (service types offered, GSTIN, bank*)
-            └─< Booking (accepted quote lines → Fulfilments)
+            └─< Booking (may span functions; accepted quote lines → Fulfilments)
                     ├─< Contract / Document
                     ├─< PaymentMilestone ─< Payment
                     └─< Invoice ─< InvoiceLine (GST)
@@ -254,7 +264,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 2. **Build the guest list**: Coordinators import Excel → map columns → fix duplicates → tag side and groups → set per-function invites.
 3. **Invite & RSVP**: Send WhatsApp invites with magic links → guests RSVP per function and member, enter travel → reminders go to non-responders.
 4. **Logistics**: Planner reviews the arrivals board → creates pickup runs → allocates rooms → exports rooming lists to hotels.
-5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → vendor uploads invoice in the portal → host approves → payer records payment → vendor sees "Paid".
+5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → vendor uploads invoice in the portal → host approves → payer records payment → vendor sees "Paid".
 6. **Day-of**: Coordinators open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests.
 
 ---
@@ -324,6 +334,5 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 8. **Photo sharing / gallery** after the event: in scope?
 9. **Data retention**: how long are guest and personal data kept after the event ends?
 10. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-11. **Package quotes across functions**: the same caterer often serves 3–4 functions. Quotes are per service; should we also allow one combined quote covering the same service type across several functions (e.g. Catering for Mehendi + Sangeet + Reception)?
-12. **Who can create requirements**: can side or function coordinators add requirements, or only propose them for planner approval?
-13. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+11. **Who can create requirements**: can side or function coordinators add requirements, or only propose them for planner approval?
+12. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
