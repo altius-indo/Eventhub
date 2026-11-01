@@ -18,6 +18,8 @@ import { freezeDueLocks } from "./caterer-headcount";
 import { anonymiseGiftsOfHousehold } from "./gifts";
 import { assertFunctionsInEvent, NotFoundError } from "./functions";
 import { isUuid } from "./ids";
+import { householdPrefix } from "./storage";
+import { queueStorageDeletion } from "./storage-gc";
 
 export class GuestError extends Error {
   constructor(public code: "last_member" | "not_found") {
@@ -196,6 +198,8 @@ export async function deleteHousehold(db: Database, eventId: string, householdId
       .where(and(eq(households.id, householdId), eq(households.eventId, eventId)))
       .returning();
     if (!h) throw new GuestError("not_found");
+    // Their uploads (gallery, WP-B) live under the household's prefix (ADR-0030).
+    await queueStorageDeletion(tx, householdPrefix(eventId, h.id), "household_deleted");
     await audit(tx, { eventId, actor, action: "household.deleted", entityType: "household", entityId: h.id, data: { name: h.name } });
   });
 }

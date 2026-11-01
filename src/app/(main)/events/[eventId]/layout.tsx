@@ -2,13 +2,17 @@ import { EventTabs } from "@/components/event-tabs";
 import { Alert, Badge } from "@/components/ui";
 import { getDb } from "@/db";
 import { countPendingApprovals } from "@/lib/approvals";
+import { formatDay } from "@/i18n/core";
+import { getRetention } from "@/lib/retention";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 
 export default async function EventLayout({ children, params }: LayoutProps<"/events/[eventId]">) {
   const { eventId } = await params;
   const ctx = await getEventContext(eventId);
-  const { t } = await getTranslator();
+  const { t, locale } = await getTranslator();
+  // EVT-07: once the last function is over, show when the data goes.
+  const retention = await getRetention(getDb(), ctx.event);
   const pending = (await countPendingApprovals(getDb(), [eventId])).get(eventId) ?? 0;
   const base = `/events/${eventId}`;
   const tabs = [
@@ -35,6 +39,16 @@ export default async function EventLayout({ children, params }: LayoutProps<"/ev
       {ctx.viaAdmin && (
         <div className="mb-4">
           <Alert tone="warning">{t("dashboard.adminBanner")}</Alert>
+        </div>
+      )}
+      {retention.started && retention.deletionDate && (
+        <div className="mb-4">
+          <Alert tone="warning">
+            {t("retention.banner", { date: formatDay(locale, retention.deletionDate, { dateStyle: "long" }) })}{" "}
+            <a href={`${base}/settings#data`} className="font-medium underline">
+              {t("retention.bannerLink")}
+            </a>
+          </Alert>
         </div>
       )}
       <div className="mb-3 flex flex-wrap items-center gap-2">

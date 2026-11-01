@@ -1278,7 +1278,10 @@ export const payments = pgTable(
   ],
 );
 
-/** Uploaded files (contracts, quotes, invoices, receipts). Bytes live in document_blobs (ADR-0018). */
+/**
+ * Uploaded files (contracts, quotes, invoices, receipts). New bytes live in object storage at
+ * `storage_key` (ADR-0030); older rows without a key keep them in document_blobs (ADR-0018).
+ */
 export const documents = pgTable(
   "documents",
   {
@@ -1299,6 +1302,8 @@ export const documents = pgTable(
     mime: text("mime").notNull(),
     bytes: integer("bytes").notNull(),
     sha256: text("sha256").notNull(),
+    /** Object-store key (`events/<eventId>/documents/<id>`); null = bytes in document_blobs. */
+    storageKey: text("storage_key"),
     uploadedBy: uuid("uploaded_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
   },
@@ -1830,3 +1835,115 @@ export type Gift = typeof gifts.$inferSelect;
 export type CashHandover = typeof cashHandovers.$inferSelect;
 export type ThankYou = typeof thankYous.$inferSelect;
 export type ThankYouTemplate = typeof thankYouTemplates.$inferSelect;
+
+// [M7 storage]
+// ---------------------------------------------------------------------------
+// Object storage quota, retention and deletion — EVT-07..09, LIM-01/03 (milestone 7)
+// ---------------------------------------------------------------------------
+
+/** Bytes stored per event (LIM-01/03). `reserved_bytes` covers uploads in flight. */
+export const storageUsage = pgTable("storage_usage", {
+  eventId: uuid("event_id")
+    .primaryKey()
+    .references(() => events.id, { onDelete: "cascade" }),
+  usedBytes: bigint("used_bytes", { mode: "number" }).notNull().default(0),
+  reservedBytes: bigint("reserved_bytes", { mode: "number" }).notNull().default(0),
+  warned80At: ts("warned80_at"),
+  warned95At: ts("warned95_at"),
+  reconciledAt: ts("reconciled_at"),
+});
+
+/** Guest uploads per household (§4.1: 300 items / 5 GB by default). Includes reservations. */
+export const storageHouseholdUsage = pgTable(
+  "storage_household_usage",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id")
+      .primaryKey()
+      .references(() => households.id, { onDelete: "cascade" }),
+    items: integer("items").notNull().default(0),
+    bytes: bigint("bytes", { mode: "number" }).notNull().default(0),
+  },
+  (t) => [index("storage_household_usage_event_idx").on(t.eventId)],
+);
+
+/** App Admin overrides of the storage limits for one event (null = platform default). */
+export const eventStorageOverrides = pgTable("event_storage_overrides", {
+  eventId: uuid("event_id")
+    .primaryKey()
+    .references(() => events.id, { onDelete: "cascade" }),
+  storageBytes: bigint("storage_bytes", { mode: "number" }),
+  guestItems: integer("guest_items"),
+  guestBytes: bigint("guest_bytes", { mode: "number" }),
+});
+
+/**
+ * Object-store prefixes waiting to be deleted (EVT-07/09). Deliberately no event FK: rows must
+ * outlive the event they belonged to. Processed by the daily GC job.
+ */
+export const storageDeletions = pgTable(
+  "storage_deletions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    prefix: text("prefix").notNull(),
+    reason: text("reason").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    nextAttemptAt: ts("next_attempt_at").notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("storage_deletions_due_idx").on(t.nextAttemptAt)],
+);
+
+/** Anonymised counts kept after an event is purged (EVT-07). No names, no event FK. */
+export const eventMetrics = pgTable("event_metrics", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** Why the event went: "retention" (1 year) or "deleted" (Host/App Admin deletion). */
+  reason: text("reason").notNull(),
+  /** Month the event was created and the month of its last function (YYYY-MM), for cohorting. */
+  createdMonth: text("created_month"),
+  lastFunctionMonth: text("last_function_month"),
+  counts: jsonb("counts").$type<Record<string, number>>().notNull(),
+  purgedAt: ts("purged_at").notNull().defaultNow(),
+});
+
+/** Retention reminders already sent (EVT-08: 60, 30 and 7 days before deletion). */
+export const retentionNotices = pgTable(
+  "retention_notices",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    days: integer("days").notNull(),
+    deletionDate: date("deletion_date").notNull(),
+    sentAt: ts("sent_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.eventId, t.days] })],
+);
+
+/** A guest's request to erase their family's data (EVT-09, DPDP right to erasure). */
+export const guestErasureRequests = pgTable(
+  "guest_erasure_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id").references(() => households.id, { onDelete: "set null" }),
+    /** Name at the time of the request, so the log still reads after the family is erased. */
+    householdName: text("household_name").notNull(),
+    requestedAt: ts("requested_at").notNull(),
+    note: text("note"),
+    recordedBy: uuid("recorded_by").references(() => users.id, { onDelete: "set null" }),
+    processedBy: uuid("processed_by").references(() => users.id, { onDelete: "set null" }),
+    processedAt: ts("processed_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("guest_erasure_event_idx").on(t.eventId, t.createdAt)],
+);
+
+export type StorageUsageRow = typeof storageUsage.$inferSelect;
+export type GuestErasureRequest = typeof guestErasureRequests.$inferSelect;
+export type EventMetric = typeof eventMetrics.$inferSelect;

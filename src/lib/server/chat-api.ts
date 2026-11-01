@@ -86,7 +86,7 @@ export async function handlePost(req: Request, eventId: string, key: ThreadKey, 
     const { message, thread } = await postMessage(db, eventId, key, viewer, { body: String(fd.get("body") ?? ""), mentions, withAttachment: !!upload });
     if (upload) {
       try {
-        await saveDocument(db, eventId, actorOfViewer(viewer), { owner: { messageId: message.id }, kind: "other", filename: upload.name, data: upload.data });
+        await saveDocument(db, eventId, actorOfViewer(viewer), { owner: { messageId: message.id }, kind: "other", filename: upload.name, data: upload.data, audience: viewer.kind === "vendor" ? "vendor" : "member" });
       } catch (e) {
         if (!message.body) await discardMessage(db, eventId, message.id, viewer.userId);
         if (e instanceof DocumentError) return json({ error: e.code }, 422);

@@ -10,6 +10,9 @@ import { sendApprovalReminders, sendPaymentReminders } from "@/lib/payments";
 import { sendRsvpReminders } from "@/lib/rsvp";
 import { sendTaskReminders } from "@/lib/tasks";
 import { sendThankYouReminders } from "@/lib/thank-yous";
+import { purgeExpiredEvents, sendRetentionReminders } from "@/lib/retention";
+import { getStore } from "@/lib/storage";
+import { processStorageDeletions, reconcileStorage } from "@/lib/storage-gc";
 
 /** Long enough for a day's reminders across events. */
 export const maxDuration = 60;
@@ -34,6 +37,11 @@ export async function GET(req: Request) {
     ["rsvpReminders", () => sendRsvpReminders(db, appUrl, now)],
     ["paymentReminders", () => sendPaymentReminders(db, now, appUrl)],
     ["approvalReminders", () => sendApprovalReminders(db, now, appUrl)],
+    // [M7 retention jobs] (before the outbox drain, so reminders go out in this run)
+    ["retentionReminders", () => sendRetentionReminders(db, now, appUrl)],
+    ["retentionPurge", () => purgeExpiredEvents(db, now)],
+    ["storageDeletions", () => processStorageDeletions(db, getStore(), now, { budgetMs: 15_000 })],
+    ["storageReconcile", () => reconcileStorage(db, getStore(), now)],
     ["outbox", async () => (await processOutbox(db, { budgetMs: 20_000 })).processed],
     ["oldNotifications", () => purgeOldNotifications(db, now)],
     // [vendor-portal daily jobs]

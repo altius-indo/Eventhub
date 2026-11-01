@@ -2,7 +2,8 @@ import { count, desc, eq, ilike } from "drizzle-orm";
 import { Badge, Card, Input, LinkButton } from "@/components/ui";
 import { getDb } from "@/db";
 import { eventMembers, events } from "@/db/schema";
-import { formatDate } from "@/i18n/core";
+import { formatDate, formatDay } from "@/i18n/core";
+import { retentionByEvent } from "@/lib/retention";
 import { getTranslator, requireAppAdmin } from "@/lib/server/session";
 
 export default async function AdminEventsPage({ searchParams }: PageProps<"/admin/events">) {
@@ -18,6 +19,8 @@ export default async function AdminEventsPage({ searchParams }: PageProps<"/admi
     .groupBy(events.id)
     .orderBy(desc(events.createdAt))
     .limit(100);
+  // EVT-07: when each event's data goes; events without dates are never deleted automatically.
+  const retention = await retentionByEvent(getDb(), rows.map((r) => r.event.id));
 
   return (
     <div className="space-y-4">
@@ -38,9 +41,13 @@ export default async function AdminEventsPage({ searchParams }: PageProps<"/admi
                   <p className="flex flex-wrap items-center gap-2 font-medium">
                     {event.name}
                     {event.deletedAt && <Badge tone="danger">{t("admin.deletedBadge")}</Badge>}
+                    {!event.deletedAt && !retention.get(event.id)?.deletionDate && <Badge tone="warning">{t("admin.noRetentionDate")}</Badge>}
                   </p>
                   <p className="text-sm text-muted">
                     {t("admin.memberCount", { count: members })} · {t("admin.createdOn", { date: formatDate(locale, event.createdAt) })}
+                    {!event.deletedAt && retention.get(event.id)?.deletionDate && (
+                      <> · {t("admin.deletesOn", { date: formatDay(locale, retention.get(event.id)!.deletionDate!) })}</>
+                    )}
                   </p>
                 </div>
                 {!event.deletedAt && (

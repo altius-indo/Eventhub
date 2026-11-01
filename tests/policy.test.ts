@@ -59,4 +59,13 @@ describe("policy", () => {
     const full = { ...planner, membership: { role: "planner" as const, giftAccess: "full" as const } };
     expect(decide(full, "gifts.view")).toBe("allow");
   });
+
+  it("only Hosts and App Admins can download the full archive (EVT-08)", () => {
+    expect(decide(host, "event.export")).toBe("allow");
+    expect(decide(admin, "event.export")).toBe("allow");
+    expect(decide(planner, "event.export")).toBe("deny");
+    const fullGifts = { ...planner, membership: { role: "planner" as const, giftAccess: "full" as const } };
+    expect(decide(fullGifts, "event.export")).toBe("deny");
+    expect(decide({ isAppAdmin: false, membership: null, vendor: { vendorId: "v1" } }, "event.export")).toBe("deny");
+  });
 });
