@@ -22,6 +22,7 @@
 | Payments | **Tracking only**; money moves outside the app |
 | Photo gallery | **Post-event gallery** per function: photographers, family and guests upload; guests see photos from functions they were invited to |
 | Wedding website | **Public wedding microsite** per event; shows only what the family marks public, with a personalised view when opened via a guest's magic link |
+| Name & branding | Product name **EventHub** (final). No visual identity yet: v1 uses a neutral, themeable design system (colour/typography tokens) so branding can be applied later without rework |
 | Data retention | Event data kept for **1 year after the event's last function**, then permanently deleted (after export reminders) |
 | Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to the receiving family |
 | Spend approvals | **Per-category thresholds**; a cost is approved by the family/families paying it, so **shared costs need both families** |
@@ -489,5 +490,4 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-2. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email) and **gallery storage**: is there a per-event storage cap (e.g. 200 GB) or video size limit? Photo/video storage and bandwidth will be the largest running cost.
+1. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email) and **gallery storage**: is there a per-event storage cap (e.g. 200 GB) or video size limit? Photo/video storage and bandwidth will be the largest running cost.
