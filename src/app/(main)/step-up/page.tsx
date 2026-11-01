@@ -2,12 +2,12 @@ import { eq } from "drizzle-orm";
 import { CodeForm } from "@/components/code-form";
 import { SimpleForm } from "@/components/simple-form";
 import { SubmitButton } from "@/components/submit-button";
-import { Card } from "@/components/ui";
+import { Card, Field, Input } from "@/components/ui";
 import { getDb } from "@/db";
 import { userIdentifiers } from "@/db/schema";
 import { formatIdentifier } from "@/lib/identifiers";
 import { getTranslator, requireUser, safeNext } from "@/lib/server/session";
-import { resendStepUpCodeAction, sendStepUpCodeAction, verifyStepUpCodeAction } from "./actions";
+import { resendStepUpCodeAction, sendStepUpCodeAction, stepUpWithPasswordAction, verifyStepUpCodeAction } from "./actions";
 import { stepUpFlowTarget } from "./flow";
 
 export default async function StepUpPage({ searchParams }: PageProps<"/step-up">) {
@@ -43,6 +43,17 @@ export default async function StepUpPage({ searchParams }: PageProps<"/step-up">
               ))}
             </fieldset>
             <SubmitButton className="w-full">{t("stepUp.send")}</SubmitButton>
+          </SimpleForm>
+        )}
+        {!target && user.isAppAdmin && user.passwordHash && (
+          <SimpleForm action={stepUpWithPasswordAction} className="mt-5 space-y-3 border-t border-border pt-5">
+            <input type="hidden" name="next" value={safeNext(next)} />
+            <Field label={t("password.stepUpWithPassword")} htmlFor="stepup-pw">
+              <Input id="stepup-pw" name="password" type="password" required autoComplete="current-password" maxLength={128} />
+            </Field>
+            <SubmitButton variant="secondary" className="w-full">
+              {t("password.stepUpSubmit")}
+            </SubmitButton>
           </SimpleForm>
         )}
       </Card>

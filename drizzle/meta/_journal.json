@@ -43,6 +43,13 @@
       "when": 1793503939936,
       "tag": "0005_services_vendors_money",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793514105203,
+      "tag": "0006_admin_passwords",
+      "breakpoints": true
     }
   ]
 }

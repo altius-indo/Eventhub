@@ -29,7 +29,7 @@ const ts = (name: string) => timestamp(name, { withTimezone: true });
 // ---------------------------------------------------------------------------
 
 export const identifierType = pgEnum("identifier_type", ["email", "phone"]);
-export const otpPurpose = pgEnum("otp_purpose", ["login", "step_up", "add_identifier"]);
+export const otpPurpose = pgEnum("otp_purpose", ["login", "step_up", "add_identifier", "recovery_email"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -37,6 +37,14 @@ export const users = pgTable("users", {
   locale: text("locale").notNull().default("en"),
   isAppAdmin: boolean("is_app_admin").notNull().default(false),
   suspendedAt: ts("suspended_at"),
+  /** App Admins only (ADR-0022): scrypt hash, never the password. Everyone else signs in with codes. */
+  passwordHash: text("password_hash"),
+  passwordChangedAt: ts("password_changed_at"),
+  failedPasswordAttempts: integer("failed_password_attempts").notNull().default(0),
+  passwordLockedUntil: ts("password_locked_until"),
+  /** Where password-reset links also go; verified with a code before use. */
+  recoveryEmail: text("recovery_email"),
+  recoveryEmailVerifiedAt: ts("recovery_email_verified_at"),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
@@ -97,6 +105,23 @@ export const sessions = pgTable(
     revokedAt: ts("revoked_at"),
   },
   (t) => [uniqueIndex("sessions_token_uq").on(t.tokenHash), index("sessions_user_idx").on(t.userId)],
+);
+
+/** One-time password reset links (ADR-0022). Only the SHA-256 of the token is stored. */
+export const passwordResets = pgTable(
+  "password_resets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    usedAt: ts("used_at"),
+    ip: text("ip"),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("password_resets_token_uq").on(t.tokenHash), index("password_resets_user_idx").on(t.userId, t.createdAt)],
 );
 
 // ---------------------------------------------------------------------------

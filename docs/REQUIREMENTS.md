@@ -84,6 +84,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
   - **Delivery**: phone OTP goes by **SMS** (DLT-registered template), with **WhatsApp** (authentication template) as an alternative or fallback channel. Email OTP goes by transactional email.
   - **Code rules**: 6 digits, valid 5 minutes, at most 5 attempts per code. Resend cooldown of 30 s, plus rate limits per identifier, IP and device.
   - **Phone convenience**: Android SMS auto-read (WebOTP API) where supported.
+  - **Exception (decided 2026-11-01)**: App Admins may also set a password, with a reset link and a recovery email, as a fallback when code delivery is unavailable (ADR-0022). All other roles stay passwordless.
 - **EVT-01a (M)** **One account, multiple identifiers**: a user can link both a phone number and an email, each verified by OTP, and log in with either. Duplicate accounts are merged when an invite's identifier matches an existing user.
 - **EVT-01b (M)** **Invitations by phone or email**: members and vendors are invited by phone number or email. The first login with that identifier, verified by OTP, accepts the invite.
 - **EVT-01c (M)** **Sessions**: on a trusted device, a session lasts 30 days with a sliding expiry. Users can view and revoke active sessions and log out everywhere. Hosts can revoke a member's sessions when removing them.

@@ -14,7 +14,7 @@ export const OTP_MAX_PER_IDENTIFIER = 5; // per window
 export const OTP_IDENTIFIER_WINDOW_MS = 15 * 60 * 1000;
 export const OTP_MAX_PER_IP = 30; // per hour
 
-export type OtpPurpose = "login" | "step_up" | "add_identifier";
+export type OtpPurpose = "login" | "step_up" | "add_identifier" | "recovery_email";
 
 export type RequestOtpInput = {
   purpose: OtpPurpose;
@@ -90,7 +90,8 @@ export async function requestOtp(db: Tx, input: RequestOtpInput): Promise<Reques
   });
 
   const t = createTranslator(input.locale);
-  const templateKey = input.purpose === "login" ? "otp.login" : input.purpose === "step_up" ? "otp.stepUp" : "otp.addIdentifier";
+  const templateKey =
+    input.purpose === "login" ? "otp.login" : input.purpose === "step_up" ? "otp.stepUp" : input.purpose === "recovery_email" ? "otp.recoveryEmail" : "otp.addIdentifier";
   try {
     await sendMessage(db, { channel, to: identifier.value, subject: t("otp.subject"), text: t(templateKey, { code }) });
   } catch (err) {

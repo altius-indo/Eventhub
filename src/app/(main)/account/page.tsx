@@ -19,7 +19,10 @@ import {
   startAddIdentifierAction,
   verifyAddIdentifierAction,
 } from "./actions";
-import { readAddIdFlow } from "./flow";
+import { readAddIdFlow, readRecoveryFlow } from "./flow";
+import { removePasswordAction, removeRecoveryEmailAction, sendRecoveryCodeAction, setPasswordAction, verifyRecoveryCodeAction } from "./password-actions";
+import { ConfirmButton } from "@/components/confirm-button";
+import { Alert } from "@/components/ui";
 
 function describeDevice(ua: string | null): string {
   if (!ua) return "—";
@@ -30,12 +33,13 @@ function describeDevice(ua: string | null): string {
 
 export default async function AccountPage({ searchParams }: PageProps<"/account">) {
   const { user, session } = await requireUser();
-  const { verify } = await searchParams;
+  const { verify, recovery, recoverySaved } = await searchParams;
   const { t, locale } = await getTranslator();
   const db = getDb();
   const identifiers = await db.select().from(userIdentifiers).where(eq(userIdentifiers.userId, user.id));
   const sessions = await listActiveSessions(db, user.id);
   const flow = verify ? await readAddIdFlow() : null;
+  const recoveryFlow = user.isAppAdmin && recovery ? await readRecoveryFlow() : null;
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -89,6 +93,71 @@ export default async function AccountPage({ searchParams }: PageProps<"/account"
             </SimpleForm>
           )}
         </Card>
+
+        {user.isAppAdmin && (
+          <Card>
+            <CardTitle>{t("password.accountTitle")}</CardTitle>
+            <p className="mb-3 text-sm text-muted">{t("password.accountHelp")}</p>
+            <p className="mb-3 text-sm">{user.passwordHash && user.passwordChangedAt ? t("password.hasPassword", { date: formatDateTime(locale, user.passwordChangedAt) }) : t("password.noPassword")}</p>
+            <SimpleForm action={setPasswordAction} className="space-y-3">
+              {user.passwordHash && (
+                <Field label={t("password.current")} htmlFor="pw-current">
+                  <Input id="pw-current" name="current" type="password" required autoComplete="current-password" maxLength={128} />
+                </Field>
+              )}
+              <Field label={t("password.newPassword")} htmlFor="pw-new" hint={t("password.rules")}>
+                <Input id="pw-new" name="password" type="password" required minLength={10} maxLength={128} autoComplete="new-password" />
+              </Field>
+              <Field label={t("password.confirmPassword")} htmlFor="pw-confirm">
+                <Input id="pw-confirm" name="confirm" type="password" required minLength={10} maxLength={128} autoComplete="new-password" />
+              </Field>
+              <SubmitButton>{t("password.save")}</SubmitButton>
+            </SimpleForm>
+            {user.passwordHash && (
+              <SimpleForm action={removePasswordAction} className="mt-3 space-y-2">
+                <ConfirmButton variant="ghost" className="text-danger" confirm={t("password.removeConfirm")}>
+                  {t("password.remove")}
+                </ConfirmButton>
+              </SimpleForm>
+            )}
+          </Card>
+        )}
+
+        {user.isAppAdmin && (
+          <Card>
+            <CardTitle>{t("password.recoveryTitle")}</CardTitle>
+            <p className="mb-3 text-sm text-muted">{t("password.recoveryHelp")}</p>
+            {recoverySaved && (
+              <div className="mb-3">
+                <Alert tone="success">{t("password.recoverySaved")}</Alert>
+              </div>
+            )}
+            <p className="mb-3 break-all text-sm">
+              {user.recoveryEmail && user.recoveryEmailVerifiedAt ? t("password.recoveryCurrent", { email: user.recoveryEmail }) : t("password.recoveryNone")}
+            </p>
+            {recoveryFlow ? (
+              <SimpleForm action={verifyRecoveryCodeAction} className="space-y-3">
+                <p className="text-sm">{t("password.recoverySent", { email: recoveryFlow.email })}</p>
+                <Field label={t("password.recoveryCode")} htmlFor="rec-code">
+                  <Input id="rec-code" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required />
+                </Field>
+                <SubmitButton>{t("password.recoveryVerify")}</SubmitButton>
+              </SimpleForm>
+            ) : (
+              <SimpleForm action={sendRecoveryCodeAction} className="space-y-3">
+                <Field label={t("password.recoveryEmail")} htmlFor="rec-email">
+                  <Input id="rec-email" name="email" type="email" required maxLength={200} />
+                </Field>
+                <SubmitButton variant="secondary">{t("password.recoverySend")}</SubmitButton>
+              </SimpleForm>
+            )}
+            {user.recoveryEmail && !recoveryFlow && (
+              <SimpleForm action={removeRecoveryEmailAction} className="mt-2">
+                <SubmitButton variant="ghost">{t("password.recoveryRemove")}</SubmitButton>
+              </SimpleForm>
+            )}
+          </Card>
+        )}
 
         <Card>
           <CardTitle>{t("account.sessions")}</CardTitle>

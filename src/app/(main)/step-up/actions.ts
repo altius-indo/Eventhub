@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { userIdentifiers } from "@/db/schema";
 import { markStepUp } from "@/lib/auth-core";
+import { verifyPasswordStepUp } from "@/lib/passwords";
 import { maskIdentifier } from "@/lib/identifiers";
 import { requestOtp, verifyOtp } from "@/lib/otp";
 import { requestErrorMessage, verifyErrorMessage } from "@/lib/server/otp-errors";
@@ -68,3 +69,14 @@ export async function verifyStepUpCodeAction(_prev: State, formData: FormData): 
   redirect(safeNext(flow.next));
 }
 
+
+/** App Admins with a password may confirm with it instead of a code (ADR-0022). */
+export async function stepUpWithPasswordAction(_prev: State, formData: FormData): Promise<State> {
+  const ctx = await requireUser();
+  const { t } = await getTranslator();
+  const db = getDb();
+  const res = await verifyPasswordStepUp(db, ctx.user, String(formData.get("password") ?? ""));
+  if (res !== "ok") return { error: res === "locked" ? t("password.locked") : t("password.wrongCurrent") };
+  await markStepUp(db, ctx.session.id);
+  redirect(safeNext(formData.get("next")));
+}

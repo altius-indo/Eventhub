@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Card } from "@/components/ui";
 import { phoneLoginEnabled } from "@/lib/delivery";
@@ -30,6 +31,11 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
           }}
         />
       </Card>
+      <p className="mt-4 text-center text-sm">
+        <Link href={`/login/password${next ? `?next=${encodeURIComponent(safeNext(next))}` : ""}`} className="inline-flex min-h-11 items-center text-muted underline">
+          {t("password.adminLink")}
+        </Link>
+      </p>
     </div>
   );
 }
