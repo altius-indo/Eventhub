@@ -16,7 +16,7 @@ export function EventTabs({ tabs }: { tabs: { href: string; label: string; badge
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
                 className={`inline-flex min-h-11 items-center gap-1.5 border-b-2 px-3 text-sm ${
-                  active ? "border-primary font-medium text-text" : "border-transparent text-muted hover:text-text"
+                  active ? "border-brand font-medium text-text" : "border-transparent text-muted hover:text-text"
                 }`}
               >
                 {tab.label}

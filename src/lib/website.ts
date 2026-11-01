@@ -33,7 +33,7 @@ export const RESERVED_SLUGS = new Set([
 ]);
 
 export const SITE_THEMES = ["traditional", "modern", "minimal"] as const;
-export const SITE_ACCENTS = ["#8a1c2b", "#b4532a", "#9a7b2c", "#2f6b4f", "#2c5d8a", "#5b3f8c", "#3d4f7c", "#c0507d"] as const;
+export const SITE_ACCENTS = ["#8a1c2b", "#b4532a", "#9a7b2c", "#2f6b4f", "#2c5d8a", "#5b3f8c", "#3d4f7c", "#c0507d", "#792943", "#c65b83"] as const;
 export const MAX_SITE_IMAGES = 30;
 export const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
 
