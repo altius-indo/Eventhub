@@ -19,6 +19,7 @@ import {
   unique,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
@@ -45,6 +46,8 @@ export const users = pgTable("users", {
   /** Where password-reset links also go; verified with a code before use. */
   recoveryEmail: text("recovery_email"),
   recoveryEmailVerifiedAt: ts("recovery_email_verified_at"),
+  /** The event the user last opened (lands there after login). Membership is re-checked on use. */
+  lastEventId: uuid("last_event_id").references((): AnyPgColumn => events.id, { onDelete: "set null" }),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
@@ -153,6 +156,9 @@ export const events = pgTable("events", {
   /** Caterer headcount change alerts (RSV-06): whichever of % or absolute change triggers first. */
   headcountAlertPct: integer("headcount_alert_pct").notNull().default(5),
   headcountAlertAbs: integer("headcount_alert_abs").notNull().default(20),
+  /** Optional event logo: a 256px square WebP in the object store (`events/<id>/branding/...`). */
+  logoKey: text("logo_key"),
+  logoBytes: integer("logo_bytes").notNull().default(0),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),

@@ -1,6 +1,6 @@
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { Tx } from "@/db";
-import { documents, mediaItems } from "@/db/schema";
+import { documents, events, mediaItems } from "@/db/schema";
 
 /**
  * Usage sources: every kind of stored object that counts against an event's storage quota
@@ -55,3 +55,12 @@ const galleryBytes = async (db: Tx, eventId: string, kind: "member" | "vendor" |
 registerUsageSource({ key: "gallery.member", measure: (db, eventId) => galleryBytes(db, eventId, "member") });
 registerUsageSource({ key: "gallery.vendor", measure: (db, eventId) => galleryBytes(db, eventId, "vendor") });
 registerUsageSource({ key: "gallery.guest", measure: (db, eventId) => galleryBytes(db, eventId, "household") });
+
+// Event logo (256px WebP under `events/<id>/branding/`), see `event-logo.ts`.
+registerUsageSource({
+  key: "branding",
+  measure: async (db, eventId) => {
+    const [r] = await db.select({ n: events.logoBytes }).from(events).where(eq(events.id, eventId));
+    return r?.n ?? 0;
+  },
+});

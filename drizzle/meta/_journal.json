@@ -78,6 +78,13 @@
       "when": 1793563215289,
       "tag": "0010_m7_gallery",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793564536033,
+      "tag": "0011_event_logo_last_event",
+      "breakpoints": true
     }
   ]
 }
