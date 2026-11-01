@@ -22,6 +22,7 @@
 | Payments | **Tracking only**; money moves outside the app |
 | Photo gallery | **Post-event gallery** per function: photographers, family and guests upload; guests see photos from functions they were invited to |
 | Wedding website | **Public wedding microsite** per event; shows only what the family marks public, with a personalised view when opened via a guest's magic link |
+| Data retention | Event data kept for **1 year after the event's last function**, then permanently deleted (after export reminders) |
 | Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to the receiving family |
 | Spend approvals | **Per-category thresholds**; a cost is approved by the family/families paying it, so **shared costs need both families** |
 | Region | India: INR (lakh/crore formatting), GST on invoices |
@@ -93,6 +94,18 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **EVT-04 (M)** Invite members by email/phone with role and optional side/function scope; revoke access. Owners and Hosts carry a **family side** (bride / groom), which decides whose approval they give (BGT-04).
 - **EVT-05 (S)** Duplicate an event as a template: functions, task checklist, budget categories, vendor categories, but no guests.
 - **EVT-06 (M)** Audit log of key changes (who changed what, when) for budget, payments, RSVP and permissions.
+- **EVT-07 (M)** **Data retention: 1 year after the event.**
+  - **When**: the retention clock starts at the end of the event's **last function**. The event page shows a "data will be deleted on <date>" banner from then on.
+  - **What is deleted**: on the deletion date, all event data is **permanently deleted**: guests and households, RSVPs, travel and rooms, seating, messages and chat, broadcasts, services/requirements, quotes, contracts, invoices, payments, budget, gifts and thank-yous, the wedding website, the photo gallery (all media and face data), uploaded files and the event's audit log. Guest magic links, website URLs and vendor portal access to the event stop working.
+  - **What is kept**: only **anonymised aggregate counts** (e.g. number of guests, functions), for product metrics. **Templates** saved from the event (EVT-05), which contain no personal data, also stay. User accounts (login identities) remain, and their membership in the deleted event is removed.
+- **EVT-08 (M)** **Before deletion: reminders and export.**
+  - **Reminders**: Owner and Hosts are notified **60, 30 and 7 days** before deletion (in-app plus email/WhatsApp).
+  - **Full archive**: a one-click download of the whole event. It includes Excel files (guests, RSVPs, budget, payments, vendors, gifts and thank-yous), PDFs (run sheets, invoices, contracts) and a ZIP of gallery originals (split into parts if large).
+  - **Vendors**: vendors are reminded to download their own invoices and payment records for the event.
+- **EVT-09 (M)** **Earlier deletion**:
+  - **Whole event**: the Owner can delete the event at any time (with step-up OTP, EVT-01d, and a 7-day undo window).
+  - **One guest**: an individual guest can ask for their data to be deleted at any time (DPDP right to erasure). Coordinators process the request from the guest's record and it is logged.
+  - **Backups**: deleted data is purged from backups within **35 days** (the backup rotation window).
 
 ### 3.2 Functions & Itinerary (`ITN`)
 - **ITN-01 (M)** Define **functions** (sub-events): name, date, start/end time, venue (name, address, map link), dress code/theme, description, cover image.
@@ -273,7 +286,7 @@ Event
 - **GFT-03 (M)** **Cash reconciliation**: per collector and function, compare the recorded total with the counted cash and record the hand-over (to whom, when), with any discrepancy flagged.
 - **GFT-04 (M)** **Bulk import** of post-event tally sheets from Excel, matched to households with a review step for unmatched names.
 - **GFT-05 (M)** **Summaries**: totals by function, family side, received-for and gift type; a list of households with no gift recorded (for follow-up or data-entry checks). Gifts are tracked **separately from the wedding budget** and are not offset against expenses.
-- **GFT-06 (S)** **Gift history across events (*vyavhar* / *lena-dena*)**: since one account can hold multiple events, show a household's gifts given and received across the family's events, to inform reciprocal gifting. Past gifts *given* can be entered manually.
+- **GFT-06 (S)** **Gift history across events (*vyavhar* / *lena-dena*)**: since one account can hold multiple events, show a household's gifts given and received across the family's events, to inform reciprocal gifting. Past gifts *given* can be entered manually. Limited by retention (EVT-07): history only covers events still within their 1-year window, so the archive export is the family's long-term record.
 - **GFT-07 (M)** **Privacy**: gift data is visible only to the **Owner and Hosts of the receiving family side**. Side Coordinators can record gifts and see only their own entries. Planners have no access unless the Owner grants it. Guests and vendors never see gift data. Every edit is in the audit log.
 - **GFT-08 (M)** **Thank-you tracker**: per household, status *not started → drafted → sent* (plus *not needed*), channel, sent date and sent by. Households that attended but gave no gift can also be thanked.
 - **GFT-09 (M)** **Thank-you notes**:
@@ -339,7 +352,7 @@ Event
 - **GAL-08 (S)** **Likes and comments** on photos for invited guests; family can disable.
 - **GAL-09 (S)** **"Find my photos" (face search)**: a guest takes a selfie and sees photos they appear in.
   - **Consent**: strictly **opt-in** with explicit consent (biometric data under the DPDP Act).
-  - **Data handling**: the selfie is processed only for matching, and face data is deleted after the gallery closes or on request.
+  - **Data handling**: the selfie is processed only for matching, and face data is deleted when the family closes face search or on request, and always at the retention deadline (EVT-07).
   - **Switch**: the family can disable the feature entirely.
 - **GAL-10 (S)** **Watermark** option for guest-downloadable images (e.g. the couple's monogram or the photographer's credit).
 - **GAL-11 (S)** **Guest notifications**: "Your photos from the Sangeet are ready" broadcast with a link, sent when a function's gallery is released.
@@ -352,8 +365,8 @@ Event
 | **Performance** | Lists of 1,000 guests filter and search in under 300 ms (p95); pages interactive in under 2.5 s on 4G. The wedding website is statically generated/cached and loads in under 2 s on 3G-class connections, with images optimised and lazy-loaded. |
 | **Scale** | ~1,000 guests, 40 vendors and ~50 staff users per event; around 100 concurrent events at launch. |
 | **Security** | HTTPS everywhere; no passwords stored; OTPs are hashed, short-lived, attempt-limited and rate-limited; magic links are long, unguessable, revocable and rate-limited; role and scope checks enforced server-side; vendor bank/tax data encrypted at rest and masked in the UI. |
-| **Privacy** | Personal data (phones, travel) visible only to roles that need it. **No government ID data is collected or stored** (data minimisation). Data export and deletion per event. Aligned with India's DPDP Act 2023 (consent for messaging, purpose limitation). |
-| **Reliability** | Daily backups with point-in-time recovery; 99.5% uptime target; message sending through a retryable job queue. |
+| **Privacy** | Personal data (phones, travel) visible only to roles that need it. **No government ID data is collected or stored** (data minimisation). **Retention: 1 year after the event, then permanent deletion** (EVT-07–09); full export available before deletion. Aligned with India's DPDP Act 2023 (consent for messaging, purpose limitation). |
+| **Reliability** | Daily backups with point-in-time recovery (35-day rotation, so deletions propagate to backups within 35 days); 99.5% uptime target; message sending through a retryable job queue. |
 | **Auditability** | Immutable audit log for money, RSVP and permission changes. |
 | **Accessibility** | WCAG 2.1 AA for guest-facing pages; large tap targets and readable fonts for elderly guests. |
 | **Files** | Documents (contracts, invoices, receipts) up to 20 MB; gallery photos (JPEG/HEIC/PNG) up to 50 MB each, videos up to 4 GB via resumable/chunked upload. Stored in object storage with signed URLs. Images get thumbnails and web-size renditions served through a CDN, with HEIC converted for browsers. |
@@ -459,7 +472,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 | **M4 Logistics** | Travel, transfers, hotels/room blocks, room allocation, seating plans, QR check-in |
 | **M5 Services, Vendors & Money** | Service catalogue, services & requirements per function, fulfilment/gap view, vendor directory, quotes per service and comparison, contracts, budget (categories/functions/payer), approvals, invoices with GST, payment schedules/status |
 | **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders, gift register & envelope mode, thank-you notes |
-| **M7 Post-event & Hardening** | Photo gallery (deliveries, guest uploads, moderation, album selection), run sheet live mode, offline check-in, reports/exports, performance, security review, UAT on a real wedding dataset |
+| **M7 Post-event & Hardening** | Photo gallery (deliveries, guest uploads, moderation, album selection), retention jobs (reminders, full archive export, scheduled deletion incl. storage and backups), run sheet live mode, offline check-in, reports/exports, performance, security review, UAT on a real wedding dataset |
 
 **Lead-time risk:** WhatsApp Business API approval (Meta business verification, template approval) and SMS **DLT registration** take days to weeks. Start these during M1. **Phone OTP login depends on them**, so email OTP ships first in M1 and phone OTP switches on as soon as the DLT template is approved.
 
@@ -476,6 +489,5 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 11. Open Questions (to resolve before/during M1)
 
-1. **Data retention**: how long are guest and personal data kept after the event ends?
-2. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-3. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email) and **gallery storage**: is there a per-event storage cap (e.g. 200 GB) or video size limit? Photo/video storage and bandwidth will be the largest running cost.
+1. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
+2. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email) and **gallery storage**: is there a per-event storage cap (e.g. 200 GB) or video size limit? Photo/video storage and bandwidth will be the largest running cost.
