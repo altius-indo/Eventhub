@@ -29,7 +29,7 @@ export class WebsiteError extends Error {
 export const RESERVED_SLUGS = new Set([
   "events", "account", "admin", "login", "welcome", "step-up", "dev", "offline", "g", "c", "api", "site-images",
   "manifest.webmanifest", "sw.js", "icons", "favicon.ico", "robots.txt", "sitemap.xml", "_next", "about", "help",
-  "privacy", "terms", "support", "www", "app", "static",
+  "privacy", "terms", "support", "www", "app", "static", "vendor", "notifications", "u",
 ]);
 
 export const SITE_THEMES = ["traditional", "modern", "minimal"] as const;

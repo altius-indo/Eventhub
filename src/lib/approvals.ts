@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
 import { approvalDecisions, approvalRequests, type ApprovalRequest } from "@/db/schema";
 import { audit, type Actor } from "./audit";
+import { notify, notifyHosts } from "./notifications";
 import { decide, ForbiddenError, type Permission, type PolicySubject } from "./policy";
 
 /**
@@ -99,6 +100,14 @@ export async function submitChangeTx(tx: Tx, input: SubmitInput): Promise<Submit
         functionIds: input.functionIds ?? [],
       })
       .returning();
+    // Hosts see it in their notification centre; the daily reminder emails them (BGT-04).
+    await notifyHosts(tx, input.eventId, {
+      kind: "approval.requested",
+      data: { title: input.title, type: input.type },
+      href: `/events/${input.eventId}/approvals`,
+      exceptUserId: input.actor.userId,
+      noEmail: true,
+    });
     await audit(tx, {
       eventId: input.eventId,
       actor: input.actor,
@@ -157,6 +166,17 @@ export async function decideRequest(db: Database, input: DecideInput): Promise<A
       })
       .where(eq(approvalRequests.id, request.id))
       .returning();
+    // SVC-10: the Planner hears about the decision (in-app, and email unless turned off).
+    if (request.requestedBy) {
+      await notify(tx, {
+        userIds: [request.requestedBy],
+        eventId: request.eventId,
+        kind: `approval.${status}`,
+        data: { title: request.title, type: request.type, comment },
+        href: `/events/${request.eventId}/approvals`,
+        exceptUserId: input.actor.userId,
+      });
+    }
     await audit(tx, {
       eventId: request.eventId,
       actor: input.actor,

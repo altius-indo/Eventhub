@@ -35,6 +35,16 @@ export const permissions = [
   "invoices.edit",
   "payments.record",
   "messaging.send",
+  "chat.post",
+  "limits.view",
+  "headcount.lock",
+  "gifts.manage",
+  // Vendor portal (VND-10): only for a vendor login, never for members
+  "portal.view",
+  "portal.quote",
+  "portal.invoice",
+  "portal.chat",
+  "portal.headcount",
   "reports.view",
   "gifts.view",
   "gifts.record",
@@ -51,9 +61,12 @@ export type Decision = "allow" | "approval" | "deny";
 export type PolicySubject = {
   isAppAdmin: boolean;
   membership: { role: MemberRole; giftAccess: GiftAccess } | null;
+  /** A vendor's portal login (ADR-0023). Vendors are never event members. */
+  vendor?: { vendorId: string } | null;
 };
 
 const PLATFORM_ONLY: ReadonlySet<Permission> = new Set(["platform.manage"]);
+const PORTAL: ReadonlySet<Permission> = new Set(["portal.view", "portal.quote", "portal.invoice", "portal.chat", "portal.headcount"]);
 
 const PLANNER: Partial<Record<Permission, Decision>> = {
   "event.view": "allow",
@@ -73,6 +86,9 @@ const PLANNER: Partial<Record<Permission, Decision>> = {
   "invoices.edit": "allow",
   "contracts.edit": "allow",
   "messaging.send": "allow",
+  "chat.post": "allow",
+  "limits.view": "allow",
+  "headcount.lock": "allow",
   "reports.view": "allow",
   "website.edit": "allow",
   "gallery.moderate": "allow",
@@ -87,10 +103,12 @@ export function decide(subject: PolicySubject, permission: Permission): Decision
   if (subject.isAppAdmin) return "allow";
   if (PLATFORM_ONLY.has(permission)) return "deny";
   const m = subject.membership;
+  // Portal permissions belong to vendor logins only; staff use the staff pages.
+  if (PORTAL.has(permission)) return !m && subject.vendor ? "allow" : "deny";
   if (!m) return "deny";
   if (m.role === "host") return "allow";
 
-  if (permission === "gifts.view") return m.giftAccess === "full" ? "allow" : "deny";
+  if (permission === "gifts.view" || permission === "gifts.manage") return m.giftAccess === "full" ? "allow" : "deny";
   if (permission === "gifts.record") return m.giftAccess === "none" ? "deny" : "allow";
   return PLANNER[permission] ?? "deny";
 }

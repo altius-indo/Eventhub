@@ -11,8 +11,21 @@ describe("policy", () => {
     for (const p of permissions) expect(decide(admin, p)).toBe("allow");
   });
 
-  it("Hosts can do everything in their event but not platform settings", () => {
-    for (const p of permissions) expect(decide(host, p)).toBe(p === "platform.manage" ? "deny" : "allow");
+  it("Hosts can do everything in their event but not platform settings or the vendor portal", () => {
+    for (const p of permissions) expect(decide(host, p)).toBe(p === "platform.manage" || p.startsWith("portal.") ? "deny" : "allow");
+  });
+
+  it("vendor logins get the portal and nothing else (ADR-0023)", () => {
+    const vendor = { isAppAdmin: false, membership: null, vendor: { vendorId: "v1" } };
+    for (const p of permissions) expect(decide(vendor, p)).toBe(p.startsWith("portal.") ? "allow" : "deny");
+  });
+
+  it("gift management needs full gift access for Planners", () => {
+    const access = (giftAccess: "none" | "record" | "full") => ({ isAppAdmin: false, membership: { role: "planner" as const, giftAccess } });
+    expect(decide(access("none"), "gifts.record")).toBe("deny");
+    expect(decide(access("record"), "gifts.record")).toBe("allow");
+    expect(decide(access("record"), "gifts.manage")).toBe("deny");
+    expect(decide(access("full"), "gifts.manage")).toBe("allow");
   });
 
   it("non-members can do nothing", () => {

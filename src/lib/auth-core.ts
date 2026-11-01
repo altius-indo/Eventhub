@@ -2,6 +2,7 @@ import { and, eq, gt, inArray, isNull, ne, or } from "drizzle-orm";
 import type { Tx } from "@/db";
 import { eventInvitations, eventMembers, sessions, userIdentifiers, users, type User } from "@/db/schema";
 import { audit } from "./audit";
+import { acceptVendorInvites } from "./vendor-access";
 import { randomToken, sha256 } from "./crypto";
 import type { Identifier } from "./identifiers";
 
@@ -55,6 +56,7 @@ export async function signInWithIdentifier(
     await audit(db, { actor: null, action: "admin.bootstrap_granted", entityType: "user", entityId: user.id });
   }
   await acceptPendingInvitations(db, user.id);
+  await acceptVendorInvites(db, user.id);
   return { user, isNew };
 }
 

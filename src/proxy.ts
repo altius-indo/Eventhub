@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const SESSION_COOKIE = "eh_session";
 /** App areas that need a signed-in team member. Everything else (login, wedding sites, guest links) is public. */
-const PROTECTED_PREFIXES = ["/events", "/account", "/admin", "/welcome", "/step-up"];
+const PROTECTED_PREFIXES = ["/events", "/account", "/admin", "/welcome", "/step-up", "/vendor", "/notifications"];
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 
 /**

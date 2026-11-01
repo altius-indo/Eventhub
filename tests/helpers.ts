@@ -15,7 +15,10 @@ export async function resetDb() {
       transfer_passengers, transfer_runs, run_sheet_items,
       document_blobs, documents, booking_key_dates, payments, invoice_lines, invoices, payment_milestones,
       fulfilments, bookings, budget_lines, quote_lines, quotes, quote_request_services, quote_requests,
-      vendor_service_types, vendors, requirements, services, service_types
+      vendor_service_types, vendors, requirements, services, service_types,
+      caterer_headcount_state, outbound_messages, thank_yous, thank_you_templates, gift_imports, cash_handovers, gifts,
+      message_opt_outs, event_limit_overrides, platform_settings, message_usage, broadcasts, notification_prefs,
+      notifications, thread_reads, messages, threads, vendor_contacts
     RESTART IDENTITY CASCADE
   `);
 }

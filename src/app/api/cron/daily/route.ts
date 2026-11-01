@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/db";
 import { safeEqual } from "@/lib/crypto";
 import { purgeDeletedEvents } from "@/lib/events";
+import { purgeOldNotifications } from "@/lib/notifications";
+import { processOutbox } from "@/lib/outbox";
 import { sendApprovalReminders, sendPaymentReminders } from "@/lib/payments";
 import { sendRsvpReminders } from "@/lib/rsvp";
 import { sendTaskReminders } from "@/lib/tasks";
@@ -29,6 +31,10 @@ export async function GET(req: Request) {
     ["rsvpReminders", () => sendRsvpReminders(db, appUrl, now)],
     ["paymentReminders", () => sendPaymentReminders(db, now, appUrl)],
     ["approvalReminders", () => sendApprovalReminders(db, now, appUrl)],
+    ["outbox", async () => (await processOutbox(db, { budgetMs: 20_000 })).processed],
+    ["oldNotifications", () => purgeOldNotifications(db, now)],
+    // [vendor-portal daily jobs]
+    // [gifts daily jobs]
   ];
   const result: Record<string, number | string> = {};
   // One failing job must not stop the others.

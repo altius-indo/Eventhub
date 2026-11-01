@@ -150,6 +150,9 @@ export const events = pgTable("events", {
   placeOfSupply: text("place_of_supply"),
   /** Who gets payment reminders (PAY-05): "hosts" or "hosts_planners". */
   paymentRemindersTo: text("payment_reminders_to").notNull().default("hosts_planners"),
+  /** Caterer headcount change alerts (RSV-06): whichever of % or absolute change triggers first. */
+  headcountAlertPct: integer("headcount_alert_pct").notNull().default(5),
+  headcountAlertAbs: integer("headcount_alert_abs").notNull().default(20),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -333,6 +336,8 @@ export const households = pgTable(
     linkRevokedAt: ts("link_revoked_at"),
     linkSentAt: ts("link_sent_at"),
     rsvpRemindedAt: ts("rsvp_reminded_at"),
+    /** Preferred channel for guest messages (MSG-03); null = WhatsApp, then email, then SMS. */
+    preferredChannel: text("preferred_channel"),
     createdAt: createdAt(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
@@ -758,7 +763,9 @@ export const runSheetItems = pgTable(
     durationMin: integer("duration_min"),
     title: text("title").notNull(),
     ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
-    /** External contact (vendor, pandit, DJ…) until vendors exist in M5. */
+    /** A booked vendor who owns this item; it then shows in their portal (VND-10). */
+    ownerVendorId: uuid("owner_vendor_id").references(() => vendors.id, { onDelete: "set null" }),
+    /** External contact (vendor, pandit, DJ…) not in the vendor directory. */
     ownerName: text("owner_name"),
     ownerPhone: text("owner_phone"),
     location: text("location"),
@@ -1034,6 +1041,8 @@ export const quotes = pgTable(
     allOrNothing: boolean("all_or_nothing").notNull().default(false),
     minFunctions: integer("min_functions"),
     declinedAt: ts("declined_at"),
+    /** Entered by the vendor in the portal (VND-10) rather than by the team. */
+    submittedByVendor: boolean("submitted_by_vendor").notNull().default(false),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
   },
@@ -1206,6 +1215,8 @@ export const invoices = pgTable(
     igstPaise: bigint("igst_paise", { mode: "number" }).notNull().default(0),
     totalPaise: bigint("total_paise", { mode: "number" }).notNull(),
     notes: text("notes"),
+    /** "team" or "vendor" (uploaded in the portal, VND-10). */
+    source: text("source").notNull().default("team"),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
   },
@@ -1282,6 +1293,8 @@ export const documents = pgTable(
     invoiceId: uuid("invoice_id").references(() => invoices.id, { onDelete: "cascade" }),
     paymentId: uuid("payment_id").references(() => payments.id, { onDelete: "cascade" }),
     serviceId: uuid("service_id").references(() => services.id, { onDelete: "cascade" }),
+    messageId: uuid("message_id").references(() => messages.id, { onDelete: "cascade" }),
+    giftId: uuid("gift_id").references(() => gifts.id, { onDelete: "cascade" }),
     filename: text("filename").notNull(),
     mime: text("mime").notNull(),
     bytes: integer("bytes").notNull(),
@@ -1315,6 +1328,436 @@ export const bookingKeyDates = pgTable(
     taskId: uuid("task_id").references(() => tasks.id, { onDelete: "set null" }),
   },
   (t) => [index("booking_key_dates_booking_idx").on(t.bookingId)],
+);
+
+
+// ---------------------------------------------------------------------------
+// Communication — MSG, VND-10, RSV-06/07, GFT, LIM (milestone 6)
+// ---------------------------------------------------------------------------
+
+/** A login allowed into one vendor's portal (ADR-0023). Vendors are not event members. */
+export const vendorContacts = pgTable(
+  "vendor_contacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    vendorId: uuid("vendor_id").notNull(),
+    identifierType: identifierType("identifier_type").notNull(),
+    identifierValue: text("identifier_value").notNull(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    invitedBy: uuid("invited_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    acceptedAt: ts("accepted_at"),
+    revokedAt: ts("revoked_at"),
+  },
+  (t) => [
+    foreignKey({ name: "vendor_contacts_vendor_fk", columns: [t.vendorId, t.eventId], foreignColumns: [vendors.id, vendors.eventId] }).onDelete("cascade"),
+    uniqueIndex("vendor_contacts_open_uq").on(t.vendorId, t.identifierType, t.identifierValue).where(sql`revoked_at IS NULL`),
+    index("vendor_contacts_user_idx").on(t.userId),
+    index("vendor_contacts_identifier_idx").on(t.identifierType, t.identifierValue),
+  ],
+);
+
+export const threadKind = pgEnum("thread_kind", ["team", "vendor", "function"]);
+export const authorKind = pgEnum("author_kind", ["member", "vendor"]);
+
+/** Chat threads (MSG-01): one team thread, one per vendor, one per function; created lazily. */
+export const threads = pgTable(
+  "threads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    kind: threadKind("kind").notNull(),
+    vendorId: uuid("vendor_id"),
+    functionId: uuid("function_id"),
+    lastMessageAt: ts("last_message_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({ name: "threads_vendor_fk", columns: [t.vendorId, t.eventId], foreignColumns: [vendors.id, vendors.eventId] }).onDelete("cascade"),
+    foreignKey({ name: "threads_fn_fk", columns: [t.functionId, t.eventId], foreignColumns: [functions.id, functions.eventId] }).onDelete("cascade"),
+    uniqueIndex("threads_team_uq").on(t.eventId).where(sql`kind = 'team'`),
+    uniqueIndex("threads_vendor_uq").on(t.eventId, t.vendorId).where(sql`kind = 'vendor'`),
+    uniqueIndex("threads_fn_uq").on(t.eventId, t.functionId).where(sql`kind = 'function'`),
+    check(
+      "threads_kind_ck",
+      sql`(${t.kind} = 'team' and ${t.vendorId} is null and ${t.functionId} is null) or (${t.kind} = 'vendor' and ${t.vendorId} is not null and ${t.functionId} is null) or (${t.kind} = 'function' and ${t.functionId} is not null and ${t.vendorId} is null)`,
+    ),
+  ],
+);
+
+export const messages = pgTable(
+  "messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Monotonic cursor for polling (ADR-0026). */
+    seq: bigserial("seq", { mode: "number" }).notNull(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    authorUserId: uuid("author_user_id").references(() => users.id, { onDelete: "set null" }),
+    authorKind: authorKind("author_kind").notNull().default("member"),
+    body: text("body").notNull(),
+    mentionUserIds: uuid("mention_user_ids").array().notNull().default(sql`'{}'::uuid[]`),
+    createdAt: createdAt(),
+    deletedAt: ts("deleted_at"),
+  },
+  (t) => [uniqueIndex("messages_seq_uq").on(t.seq), index("messages_thread_idx").on(t.threadId, t.seq)],
+);
+
+export const threadReads = pgTable(
+  "thread_reads",
+  {
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    lastReadSeq: bigint("last_read_seq", { mode: "number" }).notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.threadId, t.userId] })],
+);
+
+/** In-app notifications (MSG-05). Text is rendered at read time from kind + data (ADR-0029). */
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    eventId: uuid("event_id").references(() => events.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    data: jsonb("data").$type<Record<string, string | number | null>>().notNull().default({}),
+    href: text("href"),
+    createdAt: createdAt(),
+    readAt: ts("read_at"),
+    emailedAt: ts("emailed_at"),
+  },
+  (t) => [index("notifications_user_idx").on(t.userId, t.readAt, t.createdAt)],
+);
+
+export const notificationPrefs = pgTable(
+  "notification_prefs",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    category: text("category").notNull(),
+    email: boolean("email").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.category] })],
+);
+
+export const messageChannel = pgEnum("message_channel", ["whatsapp", "email", "sms"]);
+export const broadcastStatus = pgEnum("broadcast_status", ["draft", "queued", "sending", "done", "cancelled"]);
+
+export type BroadcastSegment = {
+  sides?: string[];
+  tags?: string[];
+  functionIds?: string[];
+  rsvp?: ("attending" | "maybe" | "declined" | "pending")[];
+  travel?: ("needs_pickup" | "self" | "none")[];
+  hotelIds?: string[];
+  allAdults?: boolean;
+};
+
+/** Guest broadcasts (MSG-02). */
+export const broadcasts = pgTable(
+  "broadcasts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    body: jsonb("body").$type<{ en: string; hi?: string }>().notNull(),
+    segment: jsonb("segment").$type<BroadcastSegment>().notNull().default({}),
+    channels: messageChannel("channels").array().notNull().default(sql`'{whatsapp,email,sms}'::message_channel[]`),
+    status: broadcastStatus("status").notNull().default("draft"),
+    recipientCount: integer("recipient_count").notNull().default(0),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    queuedAt: ts("queued_at"),
+    finishedAt: ts("finished_at"),
+  },
+  (t) => [index("broadcasts_event_idx").on(t.eventId, t.createdAt)],
+);
+
+export const outboundStatus = pgEnum("outbound_status", [
+  "queued",
+  "sending",
+  "sent",
+  "delivered",
+  "failed",
+  "skipped_optout",
+  "skipped_quota",
+  "skipped_unavailable",
+  "superseded",
+]);
+
+/** Outgoing messages and their delivery record (ADR-0024). OTPs don't go through here. */
+export const outboundMessages = pgTable(
+  "outbound_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id").references(() => events.id, { onDelete: "cascade" }),
+    purpose: text("purpose").notNull(),
+    broadcastId: uuid("broadcast_id").references(() => broadcasts.id, { onDelete: "cascade" }),
+    thankYouId: uuid("thank_you_id").references(() => thankYous.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id").references(() => households.id, { onDelete: "cascade" }),
+    guestId: uuid("guest_id").references(() => guests.id, { onDelete: "set null" }),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    channel: messageChannel("channel").notNull(),
+    toAddress: text("to_address").notNull(),
+    locale: text("locale").notNull().default("en"),
+    templateKey: text("template_key").notNull(),
+    vars: jsonb("vars").$type<Record<string, string | number | null>>().notNull().default({}),
+    /** Bulk sends are refused as a whole at 100% of a limit; one-to-one messages still go (LIM-03). */
+    bulk: boolean("bulk").notNull().default(false),
+    status: outboundStatus("status").notNull().default("queued"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: ts("next_attempt_at").notNull().defaultNow(),
+    lockedUntil: ts("locked_until"),
+    fallbackOf: uuid("fallback_of"),
+    provider: text("provider"),
+    providerMessageId: text("provider_message_id"),
+    errorCode: text("error_code"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt: createdAt(),
+    sentAt: ts("sent_at"),
+  },
+  (t) => [
+    uniqueIndex("outbound_idem_uq").on(t.idempotencyKey),
+    index("outbound_due_idx").on(t.nextAttemptAt).where(sql`status = 'queued'`),
+    index("outbound_broadcast_idx").on(t.broadcastId, t.status),
+    index("outbound_event_idx").on(t.eventId, t.createdAt),
+  ],
+);
+
+/** Messages used and reserved per event and channel (LIM-01..03, ADR-0025). */
+export const messageUsage = pgTable(
+  "message_usage",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    channel: messageChannel("channel").notNull(),
+    used: integer("used").notNull().default(0),
+    reserved: integer("reserved").notNull().default(0),
+    warned80At: ts("warned80_at"),
+    warned95At: ts("warned95_at"),
+  },
+  (t) => [primaryKey({ columns: [t.eventId, t.channel] })],
+);
+
+/** Platform configuration (§4.1 defaults), e.g. key "limits". */
+export const platformSettings = pgTable("platform_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").$type<Record<string, unknown>>().notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export const eventLimitOverrides = pgTable(
+  "event_limit_overrides",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    channel: messageChannel("channel").notNull(),
+    limit: integer("limit").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.eventId, t.channel] })],
+);
+
+/** Guests who asked not to receive broadcasts on a channel (MSG-03 opt-out, DPDP consent). */
+export const messageOptOuts = pgTable(
+  "message_opt_outs",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    channel: messageChannel("channel").notNull(),
+    address: text("address").notNull(),
+    source: text("source").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.eventId, t.channel, t.address] })],
+);
+
+export const giftType = pgEnum("gift_type", ["cash", "upi", "cheque", "item", "gold", "voucher", "other"]);
+export const giftReceivedFor = pgEnum("gift_received_for", ["bride", "groom", "couple", "parents", "other"]);
+export const giftSource = pgEnum("gift_source", ["manual", "envelope", "import"]);
+
+/** Gift register (GFT-01). Private to Hosts and Planners with gift access (GFT-07). */
+export const gifts = pgTable(
+  "gifts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id").references(() => households.id, { onDelete: "set null" }),
+    guestId: uuid("guest_id").references(() => guests.id, { onDelete: "set null" }),
+    /** Free-text giver when not on the guest list (or after the guest was erased). */
+    giverName: text("giver_name"),
+    type: giftType("type").notNull(),
+    amountPaise: bigint("amount_paise", { mode: "number" }),
+    itemDescription: text("item_description"),
+    estValuePaise: bigint("est_value_paise", { mode: "number" }),
+    functionId: uuid("function_id").references(() => functions.id, { onDelete: "set null" }),
+    receivedFor: giftReceivedFor("received_for").notNull().default("couple"),
+    receivedForNote: text("received_for_note"),
+    envelopeNo: text("envelope_no"),
+    receivedOn: date("received_on"),
+    notes: text("notes"),
+    recordedBy: uuid("recorded_by").references(() => users.id, { onDelete: "set null" }),
+    source: giftSource("source").notNull().default("manual"),
+    /** Offline envelope entries carry a client-made id so retries are stored once (ADR-0027). */
+    clientKey: uuid("client_key"),
+    importId: uuid("import_id"),
+    handoverId: uuid("handover_id"),
+    version: integer("version").notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("gifts_client_key_uq").on(t.eventId, t.clientKey).where(sql`client_key IS NOT NULL`),
+    index("gifts_household_idx").on(t.eventId, t.householdId),
+    index("gifts_fn_collector_idx").on(t.eventId, t.functionId, t.recordedBy),
+    check("gifts_giver_ck", sql`${t.householdId} is not null or ${t.giverName} is not null`),
+  ],
+);
+
+/** Cash hand-over per collector and function (GFT-03). */
+export const cashHandovers = pgTable(
+  "cash_handovers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id").references(() => functions.id, { onDelete: "set null" }),
+    collectorUserId: uuid("collector_user_id").references(() => users.id, { onDelete: "set null" }),
+    recordedTotalPaise: bigint("recorded_total_paise", { mode: "number" }).notNull(),
+    countedPaise: bigint("counted_paise", { mode: "number" }).notNull(),
+    handedToUserId: uuid("handed_to_user_id").references(() => users.id, { onDelete: "set null" }),
+    handedToName: text("handed_to_name"),
+    handedAt: ts("handed_at").notNull().defaultNow(),
+    notes: text("notes"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("cash_handovers_event_idx").on(t.eventId, t.functionId)],
+);
+
+export type GiftImportRow = {
+  raw: Record<string, string>;
+  giverName: string;
+  amountPaise: number | null;
+  item: string | null;
+  envelopeNo: string | null;
+  functionId: string | null;
+  householdId: string | null;
+  decision: "match" | "free_text" | "skip";
+  error?: string;
+};
+
+export const giftImports = pgTable("gift_imports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventId: uuid("event_id")
+    .notNull()
+    .references(() => events.id, { onDelete: "cascade" }),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  filename: text("filename").notNull(),
+  rows: jsonb("rows").$type<GiftImportRow[]>().notNull(),
+  committedAt: ts("committed_at"),
+  createdAt: createdAt(),
+});
+
+/** Thank-you note templates per language (GFT-09). Merge fields never include amounts. */
+export const thankYouTemplates = pgTable("thank_you_templates", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventId: uuid("event_id")
+    .notNull()
+    .references(() => events.id, { onDelete: "cascade" }),
+  locale: text("locale").notNull().default("en"),
+  name: text("name").notNull(),
+  body: text("body").notNull(),
+  createdAt: createdAt(),
+});
+
+export const thankYouStatus = pgEnum("thank_you_status", ["not_started", "drafted", "sent", "not_needed"]);
+export const thankYouChannel = pgEnum("thank_you_channel", ["whatsapp", "email", "sms", "printed", "in_person"]);
+
+/** Thank-you tracker per household (GFT-08). No row = not started. */
+export const thankYous = pgTable(
+  "thank_yous",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    status: thankYouStatus("status").notNull().default("not_started"),
+    channel: thankYouChannel("channel"),
+    templateId: uuid("template_id").references(() => thankYouTemplates.id, { onDelete: "set null" }),
+    draftText: text("draft_text"),
+    sentAt: ts("sent_at"),
+    sentBy: uuid("sent_by").references(() => users.id, { onDelete: "set null" }),
+    version: integer("version").notNull().default(1),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("thank_yous_household_uq").on(t.householdId), index("thank_yous_event_idx").on(t.eventId, t.status)],
+);
+
+export type HeadcountSnapshot = {
+  confirmed: number;
+  maybe: number;
+  pending: number;
+  adults: number;
+  children: number;
+  infants: number;
+  diet: Record<string, number>;
+  allergies: number;
+};
+
+/** What a caterer last saw/acknowledged, and the final-guarantee lock (RSV-06/07, ADR-0028). */
+export const catererHeadcountState = pgTable(
+  "caterer_headcount_state",
+  {
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    bookingId: uuid("booking_id")
+      .notNull()
+      .references(() => bookings.id, { onDelete: "cascade" }),
+    functionId: uuid("function_id")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    baseline: jsonb("baseline").$type<HeadcountSnapshot>(),
+    baselineTotal: integer("baseline_total"),
+    baselineAt: ts("baseline_at"),
+    ackedAt: ts("acked_at"),
+    ackedBy: uuid("acked_by").references(() => users.id, { onDelete: "set null" }),
+    lastAlertedTotal: integer("last_alerted_total"),
+    lockAt: ts("lock_at"),
+    lockedSnapshot: jsonb("locked_snapshot").$type<HeadcountSnapshot>(),
+    frozenAt: ts("frozen_at"),
+    releasedAt: ts("released_at"),
+    releasedBy: uuid("released_by").references(() => users.id, { onDelete: "set null" }),
+  },
+  (t) => [primaryKey({ columns: [t.bookingId, t.functionId] })],
 );
 
 // ---------------------------------------------------------------------------
@@ -1376,3 +1819,14 @@ export type ApprovalState = (typeof approvalState.enumValues)[number];
 export type BookingStatus = (typeof bookingStatus.enumValues)[number];
 export type TaxType = (typeof taxType.enumValues)[number];
 export type PaymentMode = (typeof paymentMode.enumValues)[number];
+export type VendorContact = typeof vendorContacts.$inferSelect;
+export type Thread = typeof threads.$inferSelect;
+export type Message = typeof messages.$inferSelect;
+export type NotificationRow = typeof notifications.$inferSelect;
+export type Broadcast = typeof broadcasts.$inferSelect;
+export type OutboundMessage = typeof outboundMessages.$inferSelect;
+export type MessageChannel = (typeof messageChannel.enumValues)[number];
+export type Gift = typeof gifts.$inferSelect;
+export type CashHandover = typeof cashHandovers.$inferSelect;
+export type ThankYou = typeof thankYous.$inferSelect;
+export type ThankYouTemplate = typeof thankYouTemplates.$inferSelect;

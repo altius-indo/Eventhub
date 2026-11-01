@@ -3,7 +3,7 @@ import type { Tx } from "@/db";
 import { devOutbox } from "@/db/schema";
 
 export type Channel = "email" | "sms" | "whatsapp";
-export type OutgoingMessage = { channel: Channel; to: string; subject?: string; text: string };
+export type OutgoingMessage = { channel: Channel; to: string; subject?: string; text: string; idempotencyKey?: string };
 
 export class DeliveryError extends Error {}
 
@@ -39,7 +39,11 @@ export function resendProvider(apiKey: string, from: string, fetchImpl: typeof f
       try {
         res = await fetchImpl("https://api.resend.com/emails", {
           method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            ...(msg.idempotencyKey ? { "Idempotency-Key": msg.idempotencyKey.slice(0, 256) } : {}),
+          },
           body: JSON.stringify({ from, to: [msg.to], subject: msg.subject ?? "EventHub", text: msg.text }),
           signal: AbortSignal.timeout(15_000),
         });
@@ -99,4 +103,20 @@ export async function sendMessage(db: Tx, msg: OutgoingMessage): Promise<void> {
   const provider = providerFor(msg.channel);
   if (!provider) throw new DeliveryError(`No provider configured for ${msg.channel}`);
   await provider.send(db, msg);
+}
+
+/**
+ * Whether a channel can really deliver here (MSG-03/04). In production the dev outbox doesn't
+ * count, so WhatsApp and SMS stay "not connected" until a BSP / DLT provider is configured.
+ */
+export function channelConnected(channel: Channel): boolean {
+  const prod = process.env.NODE_ENV === "production" && process.env.ALLOW_DEV_DELIVERY !== "1";
+  if (channel === "email") {
+    const kind = process.env.EMAIL_PROVIDER ?? "dev";
+    if (kind === "dev") return !prod;
+    return kind === "smtp" ? !!process.env.SMTP_URL : kind === "resend" ? !!process.env.RESEND_API_KEY : false;
+  }
+  const kind = process.env.PHONE_PROVIDER ?? "dev";
+  if (kind === "disabled") return false;
+  return kind === "dev" ? !prod : false;
 }
