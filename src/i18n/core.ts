@@ -84,3 +84,15 @@ export function formatInr(locale: Locale, paise: number): string {
     maximumFractionDigits: paise % 100 === 0 ? 0 : 2,
   }).format(paise / 100);
 }
+
+/** "16:00" → "4:00 pm" (en-IN) / "4:00 pm" (hi-IN). */
+export function formatTime(locale: Locale, hhmm: string): string {
+  return new Intl.DateTimeFormat(intlLocale(locale), { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(
+    new Date(`1970-01-01T${hhmm.slice(0, 5)}:00Z`),
+  );
+}
+
+/** A plain calendar date ("2026-12-10") formatted without timezone shifts. */
+export function formatDay(locale: Locale, isoDate: string, opts: Intl.DateTimeFormatOptions = { dateStyle: "medium" }): string {
+  return new Intl.DateTimeFormat(intlLocale(locale), { ...opts, timeZone: "UTC" }).format(new Date(`${isoDate}T00:00:00Z`));
+}

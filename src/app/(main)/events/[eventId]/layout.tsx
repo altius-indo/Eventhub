@@ -13,6 +13,9 @@ export default async function EventLayout({ children, params }: LayoutProps<"/ev
   const base = `/events/${eventId}`;
   const tabs = [
     { href: base, label: t("nav.dashboard") },
+    { href: `${base}/guests`, label: t("nav.guests") },
+    { href: `${base}/schedule`, label: t("nav.schedule") },
+    { href: `${base}/tasks`, label: t("nav.tasks") },
     { href: `${base}/members`, label: t("nav.members") },
     { href: `${base}/approvals`, label: t("nav.approvals"), badge: ctx.can("approvals.decide") ? pending : 0 },
     ...(ctx.can("audit.view") ? [{ href: `${base}/audit`, label: t("nav.audit") }] : []),

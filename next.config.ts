@@ -5,6 +5,10 @@ const nextConfig: NextConfig = {
   // standard dynamic rendering model instead of Cache Components.
   cacheComponents: false,
   poweredByHeader: false,
+  experimental: {
+    // Guest spreadsheets can be up to 5 MB (see MAX_IMPORT_BYTES).
+    serverActions: { bodySizeLimit: "6mb" },
+  },
   turbopack: {
     rules: {
       "*.css": {

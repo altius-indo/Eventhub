@@ -17,6 +17,15 @@ A web app for planning large, multi-day Indian weddings: itinerary, guests and l
 - App Admin console: users (search, suspend, grant admin) and all events.
 - English and Hindi, an installable PWA shell with an offline page, and light/dark themes.
 
+**Milestone 2 (Guests & Itinerary)** is built:
+
+- Families (households) with members: relation, age group, phone, email, food preference, accessibility notes, tags; bride/groom/both sides; postal address.
+- Functions (Mehendi, Sangeet, …) with date, time, venue, map link and dress code. A day-by-day master schedule with invited headcounts, and calendar (.ics) export.
+- Invitations per function at family or member level. New members inherit the head's invitations. Bulk invite or remove everyone matching a filter.
+- Guest list search and filters (side, tag, function, "not invited", age, food), saved views, pagination by family.
+- Excel/CSV import: column matching (also Hindi headers), validation and duplicate report, then confirm. Excel export that can be imported back, plus a template.
+- Task checklist with due dates, assignees, function links, priority, comments, a standard 22-item wedding checklist, and daily reminders (`npm run jobs:reminders`).
+
 ## Tech
 
 Next.js 16 (App Router, server actions) · TypeScript · PostgreSQL · Drizzle ORM · Tailwind CSS 4 · Vitest.
@@ -45,6 +54,7 @@ In development, codes and invitations aren't really sent. They're written to a d
 | `npm run db:generate` | Generate a new SQL migration after editing `src/db/schema.ts` |
 | `npm run db:migrate` | Apply migrations |
 | `npm run jobs:purge` | Permanently delete events past their 7-day restore window (run daily) |
+| `npm run jobs:reminders` | Remind assignees of tasks due by tomorrow or overdue (run daily, e.g. 08:00 IST) |
 
 ### Message delivery
 
@@ -70,6 +80,10 @@ src/
     policy.ts          role permissions
     approvals.ts       Host approval engine
     events.ts          events, team, invitations
+    guests.ts          families, guests, invitations, filters, saved views
+    guest-import.ts    spreadsheet parsing, column mapping, preview, import, export
+    functions.ts       functions, master schedule, calendar export
+    tasks.ts           task checklist, default template, reminders
   lib/server/          Next.js glue: cookies, request context, event context
   proxy.ts             redirects signed-out visitors to /login
 drizzle/               SQL migrations

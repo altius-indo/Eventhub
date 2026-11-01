@@ -10,6 +10,7 @@ import {
   pgEnum,
   pgTable,
   text,
+  time,
   timestamp,
   uniqueIndex,
   uuid,
@@ -225,6 +226,182 @@ export const approvalDecisions = pgTable("approval_decisions", {
 });
 
 // ---------------------------------------------------------------------------
+// Functions (sub-events) — ITN-01
+// ---------------------------------------------------------------------------
+
+export const functions = pgTable(
+  "functions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    date: date("date"),
+    startTime: time("start_time"),
+    endTime: time("end_time"),
+    venueName: text("venue_name"),
+    venueAddress: text("venue_address"),
+    mapUrl: text("map_url"),
+    dressCode: text("dress_code"),
+    description: text("description"),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("functions_event_idx").on(t.eventId, t.date, t.startTime)],
+);
+
+// ---------------------------------------------------------------------------
+// Guests — GST-01..05
+// ---------------------------------------------------------------------------
+
+export const side = pgEnum("side", ["bride", "groom", "both"]);
+export const ageGroup = pgEnum("age_group", ["adult", "child", "infant"]);
+export const diet = pgEnum("diet", ["veg", "non_veg", "jain", "vegan", "other"]);
+
+export const households = pgTable(
+  "households",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    side: side("side").notNull().default("both"),
+    address: text("address"),
+    city: text("city"),
+    postalCode: text("postal_code"),
+    notes: text("notes"),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("households_event_idx").on(t.eventId, t.name)],
+);
+
+export const guests = pgTable(
+  "guests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    isHead: boolean("is_head").notNull().default(false),
+    relation: text("relation"),
+    ageGroup: ageGroup("age_group").notNull().default("adult"),
+    phone: text("phone"),
+    email: text("email"),
+    diet: diet("diet"),
+    dietNotes: text("diet_notes"),
+    accessibilityNotes: text("accessibility_notes"),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("guests_household_idx").on(t.householdId, t.sortOrder),
+    index("guests_event_idx").on(t.eventId),
+    index("guests_phone_idx").on(t.eventId, t.phone),
+    index("guests_email_idx").on(t.eventId, t.email),
+    index("guests_tags_idx").using("gin", t.tags),
+  ],
+);
+
+/** A guest invited to a function (GST-03). Household-level invites are stored per member. */
+export const functionInvites = pgTable(
+  "function_invites",
+  {
+    functionId: uuid("function_id")
+      .notNull()
+      .references(() => functions.id, { onDelete: "cascade" }),
+    guestId: uuid("guest_id")
+      .notNull()
+      .references(() => guests.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("function_invites_pk").on(t.functionId, t.guestId), index("function_invites_guest_idx").on(t.guestId)],
+);
+
+/** Saved guest-list filters (GST-05). */
+export const savedViews = pgTable(
+  "saved_views",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    filters: jsonb("filters").$type<Record<string, string>>().notNull(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("saved_views_event_idx").on(t.eventId)],
+);
+
+/** A parsed spreadsheet waiting for column mapping and confirmation (GST-04). */
+export const guestImports = pgTable("guest_imports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventId: uuid("event_id")
+    .notNull()
+    .references(() => events.id, { onDelete: "cascade" }),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  filename: text("filename").notNull(),
+  headers: jsonb("headers").$type<string[]>().notNull(),
+  rows: jsonb("rows").$type<string[][]>().notNull(),
+  mapping: jsonb("mapping").$type<Record<string, number>>(),
+  completedAt: ts("completed_at"),
+  createdAt: createdAt(),
+});
+
+// ---------------------------------------------------------------------------
+// Tasks — ITN-05
+// ---------------------------------------------------------------------------
+
+export const taskStatus = pgEnum("task_status", ["todo", "in_progress", "done"]);
+export const taskPriority = pgEnum("task_priority", ["low", "normal", "high"]);
+
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    dueDate: date("due_date"),
+    assigneeId: uuid("assignee_id").references(() => users.id, { onDelete: "set null" }),
+    functionId: uuid("function_id").references(() => functions.id, { onDelete: "set null" }),
+    priority: taskPriority("priority").notNull().default("normal"),
+    status: taskStatus("status").notNull().default("todo"),
+    completedAt: ts("completed_at"),
+    lastRemindedOn: date("last_reminded_on"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("tasks_event_idx").on(t.eventId, t.status, t.dueDate), index("tasks_assignee_idx").on(t.assigneeId, t.status)],
+);
+
+export const taskComments = pgTable(
+  "task_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id").references(() => users.id, { onDelete: "set null" }),
+    body: text("body").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("task_comments_task_idx").on(t.taskId, t.createdAt)],
+);
+
+// ---------------------------------------------------------------------------
 // Development outbox: messages "sent" by the dev delivery provider.
 // ---------------------------------------------------------------------------
 
@@ -244,3 +421,12 @@ export type MemberRole = (typeof memberRole.enumValues)[number];
 export type GiftAccess = (typeof giftAccess.enumValues)[number];
 export type IdentifierType = (typeof identifierType.enumValues)[number];
 export type ApprovalRequest = typeof approvalRequests.$inferSelect;
+export type EventFunction = typeof functions.$inferSelect;
+export type Household = typeof households.$inferSelect;
+export type Guest = typeof guests.$inferSelect;
+export type Side = (typeof side.enumValues)[number];
+export type AgeGroup = (typeof ageGroup.enumValues)[number];
+export type Diet = (typeof diet.enumValues)[number];
+export type Task = typeof tasks.$inferSelect;
+export type TaskStatus = (typeof taskStatus.enumValues)[number];
+export type TaskPriority = (typeof taskPriority.enumValues)[number];
