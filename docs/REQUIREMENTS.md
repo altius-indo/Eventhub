@@ -24,6 +24,8 @@
 | Tenancy | One account can own/collaborate on **multiple events**; events can be copied as templates |
 | Monetisation | Free / personal use; no billing in v1 |
 | Tech stack | Next.js (TypeScript) + PostgreSQL + Prisma + Tailwind |
+| Planning structure | **Event → Function → Service → Requirement**; vendors are booked to meet requirements (one or more vendors per requirement, with split) |
+| Quotes | Vendors quote **per service**, with line items mapped to that service's requirements |
 | Release scope | **All modules in Phase 1** (sequenced as internal milestones; see §9) |
 
 ---
@@ -52,7 +54,8 @@
 | Itinerary / functions | RW | RW | RW | R | RW (own functions) | Assigned functions | Invited functions |
 | Run sheet | RW | R | RW | R | RW (own functions) | Own items | – |
 | Tasks | RW | RW | RW | Own/assigned | Own functions | Own tasks | – |
-| Vendors & quotes | RW | RW | RW | R | R | Own | – |
+| Services & requirements | RW | RW | RW | R | RW (own functions) | Services they're invited to quote for or booked on | – |
+| Vendors & quotes | RW | RW | RW | R | R (own functions) | Own | – |
 | Contracts & documents | RW | RW | RW | – | – | Own | – |
 | Budget | RW | RW (approve) | RW | R (own side payer)* | – | – | – |
 | Invoices & payments | RW | RW (approve) | RW | R (own side payer)* | – | Own (upload, view status) | – |
@@ -113,23 +116,61 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **SEAT-03 (M)** **Check-in**: QR code per household/member (in magic link), scanner on a mobile browser, manual search fallback; live arrived vs expected count.
 - **SEAT-04 (S)** Offline-tolerant check-in (queue scans and sync later).
 
-### 3.7 Vendors (`VND`)
-- **VND-01 (M)** Vendor directory: category (caterer, decor, photography, videography, DJ/music, makeup, mehendi artist, venue, transport, hotel, florist, priest/pandit, lighting, security, …), contacts, GSTIN, PAN, bank details (masked), rating, notes.
-- **VND-02 (M)** Assign vendors to functions with a **brief/scope of work**.
-- **VND-03 (M)** **Quotes**: request and record multiple quotes per need, with line items, taxes and validity; **side-by-side comparison**; shortlist → book (converts to a budget commitment).
-- **VND-04 (M)** **Contracts & documents**: upload (PDF/images), key terms (amount, cancellation policy, deliverables, deadlines), with reminders on key dates.
-- **VND-05 (M)** **Vendor portal**: vendor logs in (email/phone OTP) to see assigned functions, brief and their run-sheet items; upload quotes and invoices; view payment schedule and status; chat with the team.
-- **VND-06 (S)** Vendor performance rating after the event.
+### 3.7 Services & Requirements (`SVC`)
 
-### 3.8 Budget (`BGT`)
-- **BGT-01 (M)** Budget structure: **category → line items**, each with planned, committed (booked/contracted) and actual (invoiced/paid) amounts.
-- **BGT-02 (M)** Allocate line items to **functions** (one or many, with split %).
-- **BGT-03 (M)** Allocate to **payer/side**: bride's family / groom's family / shared (split % or fixed amounts).
+The planning backbone: **every function has services, every service has requirements, and vendors are booked to meet requirements.**
+
+```
+Event
+ └─ Function (e.g. Sangeet)
+     └─ Service (e.g. Catering)
+         └─ Requirement (e.g. "Dinner buffet, 400 pax, veg + Jain counter")
+             └─ Fulfilment ← Vendor (one or more, each covering a share)
+```
+
+- **SVC-01 (M)** **Service catalogue** per event: service types (Catering, Decor, Photography, Videography, DJ/Music, Makeup, Mehendi artist, Venue, Transport, Hotel, Florist, Pandit, Lighting, Security, …). Planners can add custom types. Each type can carry **requirement templates** (e.g. Catering → meal, counters, staff, crockery).
+- **SVC-02 (M)** Add **services to each function**, e.g. Sangeet → Catering, Decor, DJ, Photography. A function shows all its services and their fulfilment status at a glance.
+- **SVC-03 (M)** Each service has an **owner** (planner or function coordinator), notes/brief, reference images, and a status rolled up from its requirements.
+- **SVC-04 (M)** **Requirements** under a service, each with:
+  - **Quantity, unit and specs**: e.g. 400 plates, 20 cars, 2 cameras, 4K; free-text specs and attachments (menu, mood board).
+  - **Date/time and venue**: default from the function, overridable (e.g. decor set-up the evening before).
+  - **Budget estimate**: planned cost, which feeds the budget (§3.9).
+  - **Priority**: must-have / nice-to-have.
+  - **Status**: open → quoting → partially booked → booked → delivered (or cancelled).
+- **SVC-05 (S)** **Quantity-linked requirements**: a requirement's quantity can be linked to live data, such as catering pax = RSVP headcount for the function + buffer %, or cars = guests needing pickup / car capacity. Changes flag the requirement and the booked vendor for review.
+- **SVC-06 (M)** **Fulfilment**: a requirement is met by **one or more vendors**, each covering a share (quantity or %) at an agreed amount. The requirement shows coverage, e.g. "20 / 30 cars covered", and stays *partially booked* until fully covered.
+- **SVC-07 (M)** **Gap view**: across the event, list requirements not fully covered, sorted by function date and priority, with days remaining.
+- **SVC-08 (S)** Mark requirements **delivered** after the function (by the service owner, optionally confirmed by the vendor). This can release the final payment milestone.
+- **SVC-09 (S)** Copy services and requirements from one function to another, or from an event template.
+
+### 3.8 Vendors & Quotes (`VND`)
+- **VND-01 (M)** Vendor directory: service types offered (one vendor can offer several), contacts, GSTIN, PAN, bank details (masked), rating, notes.
+- **VND-02 (M)** **Request quotes per service**: invite one or more vendors to quote for a service. The vendor sees the service brief and all its requirements.
+- **VND-03 (M)** **Quotes are per service**, with **line items mapped to requirements**. A line can cover a requirement fully or partially (quantity share), and can include extras not tied to a requirement (e.g. transport charges). Taxes (GST), validity date, terms and attachments are included.
+- **VND-04 (M)** **Quote comparison per service**: side by side, with totals and a per-requirement breakdown and coverage, highlighting requirements a quote doesn't cover.
+- **VND-05 (M)** **Booking**: accept a quote fully or for selected lines/requirements (enabling split fulfilment across vendors). Booking creates **fulfilment** records, the budget **commitment** and a draft **payment schedule** (§3.10).
+- **VND-06 (M)** **Revisions**: vendors can revise a quote (versioned); changes to booked lines after booking go through budget approval (BGT-04).
+- **VND-07 (M)** **Contracts & documents** per booking: upload (PDF/images), key terms (amount, cancellation policy, deliverables, deadlines), with reminders on key dates.
+- **VND-08 (M)** **Vendor portal**: the vendor logs in (email/phone OTP) to see services they're invited to quote on or booked for. From there they:
+  - submit and revise quotes;
+  - see their requirements, functions and run-sheet items;
+  - upload invoices;
+  - view the payment schedule and status;
+  - chat with the team.
+- **VND-09 (S)** Vendor performance rating after the event, per service delivered.
+
+### 3.9 Budget (`BGT`)
+- **BGT-01 (M)** Budget is **derived from the planning structure**: Requirement → Service → Function → Event. Each level shows:
+  - **Planned**: sum of requirement budget estimates.
+  - **Committed**: sum of booked fulfilment amounts.
+  - **Actual**: invoiced and paid amounts.
+- **BGT-02 (M)** Cross-cutting views: by **service type** (e.g. total Catering across all functions), by **function**, by **vendor** and by **payer**. Extra costs not tied to a service (e.g. a gifts budget) can be added as standalone budget lines.
+- **BGT-03 (M)** Allocate services or requirements to a **payer/side**: bride's family / groom's family / shared (split % or fixed amounts).
 - **BGT-04 (M)** **Approval workflow**: spend above a configurable threshold, or any increase above the planned amount, needs Host/Owner approval; approve/reject with comment.
 - **BGT-05 (M)** Budget dashboard: total vs planned, by category, function and payer; variance highlights.
 - **BGT-06 (M)** INR formatting with Indian grouping (₹12,34,567) and lakh/crore short form.
 
-### 3.9 Invoices & Payment Tracking (`PAY`)
+### 3.10 Invoices & Payment Tracking (`PAY`)
 - **PAY-01 (M)** Invoices: vendor, number, date, line items, **GST** (CGST/SGST or IGST, rate, GSTIN), total, attachment; linked to a booking/budget line.
 - **PAY-02 (M)** **Payment schedule** per booking: advance / milestones / final, each with amount or %, due date and payer.
 - **PAY-03 (M)** Record payments: date, amount, mode (UPI, bank transfer, cheque, cash, card), reference no., payer, receipt upload.
@@ -138,7 +179,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **PAY-06 (M)** Payables report: what's due this week/month, by payer and vendor; export to Excel/PDF.
 - **PAY-07 (C)** In-app payment collection or payout via gateway (Razorpay); **out of scope for v1**.
 
-### 3.10 Messaging & Notifications (`MSG`)
+### 3.11 Messaging & Notifications (`MSG`)
 - **MSG-01 (M)** **In-app chat**: a team channel, a thread per vendor, a thread per function; attachments, @mentions, read state.
 - **MSG-02 (M)** **Guest broadcasts**: compose once, target a segment (side, tag, function invitees, RSVP status, travel group, hotel), choose channels; delivery stats.
 - **MSG-03 (M)** **WhatsApp Business API** integration (via a BSP such as Gupshup, Interakt or Twilio): invites with magic link, RSVP reminders, travel/pickup updates, day-of announcements using pre-approved templates. Opt-out handling.
@@ -146,11 +187,11 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **MSG-05 (M)** In-app notification centre plus user notification preferences.
 - **MSG-06 (S)** Guest replies on WhatsApp land in a shared inbox in the app.
 
-### 3.11 Dashboards & Reports (`RPT`)
+### 3.12 Dashboards & Reports (`RPT`)
 - **RPT-01 (M)** Event home dashboard: countdown, RSVP funnel, headcount per function, tasks due/overdue, budget burn, payments due, arrivals today.
 - **RPT-02 (M)** Exports: guest list, headcount per function, rooming list, transfer manifests, seating chart, run sheet, budget, payables (Excel and PDF).
 
-### 3.12 Localisation (`L10N`)
+### 3.13 Localisation (`L10N`)
 - **L10N-01 (M)** UI i18n framework from day one; **English + Hindi** in v1, structured to add regional languages (Bengali, Marathi, Tamil, Telugu, Gujarati, …).
 - **L10N-02 (M)** Guest-facing pages and message templates available per language; guest language preference per household.
 - **L10N-03 (M)** Timezone: event timezone (default Asia/Kolkata), shown consistently.
@@ -186,15 +227,20 @@ Event ─< Function ─< RunSheetItem (owner: Member|Vendor)
                          ├─ TravelLeg (arrival/departure)  >─ TransferRun
                          ├─ RoomAssignment >─ Room >─ RoomBlock >─ Hotel
                          └─ SeatAssignment >─ Table >─ Function
-      ─< Vendor (category, GSTIN, bank*)
-            ├─< VendorAssignment (function, brief)
-            ├─< Quote ─< QuoteLineItem
-            ├─< Contract / Document
-            └─< Booking ─< PaymentMilestone ─< Payment
-                       └─< Invoice ─< InvoiceLineItem (GST)
-      ─< BudgetCategory ─< BudgetLine (planned, committed, actual)
-                              ├─ allocations: Function %, Payer %
-                              └─< ApprovalRequest
+      ─< ServiceType (catalogue, requirement templates)
+Function ─< Service (type, owner, brief, payer allocation)
+              ├─< Requirement (qty, unit, specs, when/where, estimate, priority, status)
+              │       └─< Fulfilment (vendor, booking, qty/% share, agreed amount)
+              └─< QuoteRequest >─ Vendor
+                      └─< Quote (versioned, GST, validity)
+                              └─< QuoteLine (→ Requirement?, qty share, amount)
+      ─< Vendor (service types offered, GSTIN, bank*)
+            └─< Booking (accepted quote lines → Fulfilments)
+                    ├─< Contract / Document
+                    ├─< PaymentMilestone ─< Payment
+                    └─< Invoice ─< InvoiceLine (GST)
+      ─< BudgetLine (standalone costs) ─ payer allocation
+      ─< ApprovalRequest (booking, revision, overspend)
       ─< Thread (team|vendor|function) ─< Message
       ─< Broadcast (segment, channels) ─< Delivery (status per recipient)
       ─< AuditLog
@@ -208,7 +254,7 @@ Event ─< Function ─< RunSheetItem (owner: Member|Vendor)
 2. **Build the guest list**: Coordinators import Excel → map columns → fix duplicates → tag side and groups → set per-function invites.
 3. **Invite & RSVP**: Send WhatsApp invites with magic links → guests RSVP per function and member, enter travel → reminders go to non-responders.
 4. **Logistics**: Planner reviews the arrivals board → creates pickup runs → allocates rooms → exports rooming lists to hotels.
-5. **Vendors & money**: Request quotes → compare → book (creates budget commitment and payment schedule) → vendor uploads invoice in the portal → host approves → payer records payment → vendor sees "Paid".
+5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → vendor uploads invoice in the portal → host approves → payer records payment → vendor sees "Paid".
 6. **Day-of**: Coordinators open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests.
 
 ---
@@ -249,7 +295,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 | **M2 Guests & Itinerary** | Households/guests, import/export, tags/sides, functions, master schedule, per-function invites, tasks |
 | **M3 Guest Experience** | Magic links, RSVP, personalised itinerary, guest travel submission, Hindi guest pages |
 | **M4 Logistics** | Travel, transfers, hotels/room blocks, room allocation, seating plans, QR check-in |
-| **M5 Vendors & Money** | Vendor directory, quotes and comparison, contracts, budget (categories/functions/payer), approvals, invoices with GST, payment schedules/status |
+| **M5 Services, Vendors & Money** | Service catalogue, services & requirements per function, fulfilment/gap view, vendor directory, quotes per service and comparison, contracts, budget (categories/functions/payer), approvals, invoices with GST, payment schedules/status |
 | **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders |
 | **M7 Hardening** | Run sheet live mode, offline check-in, reports/exports, performance, security review, UAT on a real wedding dataset |
 
@@ -278,4 +324,6 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 8. **Photo sharing / gallery** after the event: in scope?
 9. **Data retention**: how long are guest and personal data kept after the event ends?
 10. **Branding**: product name "EventHub" final? Any visual identity or theme preferences (e.g. per-event colour themes for invites)?
-11. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
+11. **Package quotes across functions**: the same caterer often serves 3–4 functions. Quotes are per service; should we also allow one combined quote covering the same service type across several functions (e.g. Catering for Mehendi + Sangeet + Reception)?
+12. **Who can create requirements**: can side or function coordinators add requirements, or only propose them for planner approval?
+13. **Hosting/budget constraints** for third-party services (WhatsApp per-message cost, SMS, email)?
