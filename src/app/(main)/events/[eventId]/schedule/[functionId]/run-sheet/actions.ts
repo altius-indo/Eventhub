@@ -2,17 +2,18 @@
 
 import { revalidatePath } from "next/cache";
 import { getDb } from "@/db";
-import type { RunItemStatus } from "@/db/schema";
+import { runItemStatus, type RunItemStatus } from "@/db/schema";
 import { createItem, deleteItem, itemSchema, RunSheetError, setItemStatus, shiftItems, updateItem } from "@/lib/runsheet";
+import { isUuid } from "@/lib/ids";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 
 type State = { error?: string; info?: string };
 
-async function editor(eventId: string) {
+async function editor(eventId: string, ...ids: string[]) {
   const ctx = await getEventContext(eventId);
   const { t } = await getTranslator();
-  return { ctx, t, allowed: ctx.can("runsheet.edit") };
+  return { ctx, t, allowed: ctx.can("runsheet.edit") && ids.every(isUuid) };
 }
 const refresh = (eventId: string, functionId: string) => revalidatePath(`/events/${eventId}/schedule/${functionId}/run-sheet`, "layout");
 const parse = (fd: FormData) =>
@@ -29,7 +30,7 @@ const parse = (fd: FormData) =>
   });
 
 export async function createItemAction(eventId: string, functionId: string, _prev: State, fd: FormData): Promise<State> {
-  const { t, allowed } = await editor(eventId);
+  const { t, allowed } = await editor(eventId, functionId);
   if (!allowed) return { error: t("common.notAllowed") };
   const parsed = parse(fd);
   if (!parsed.success) return { error: t("runsheet.errors.invalid") };
@@ -44,7 +45,7 @@ export async function createItemAction(eventId: string, functionId: string, _pre
 }
 
 export async function updateItemAction(eventId: string, functionId: string, itemId: string, _prev: State, fd: FormData): Promise<State> {
-  const { t, allowed } = await editor(eventId);
+  const { t, allowed } = await editor(eventId, functionId, itemId);
   if (!allowed) return { error: t("common.notAllowed") };
   const parsed = parse(fd);
   if (!parsed.success) return { error: t("runsheet.errors.invalid") };
@@ -59,8 +60,8 @@ export async function updateItemAction(eventId: string, functionId: string, item
 }
 
 export async function setStatusAction(eventId: string, functionId: string, itemId: string, status: RunItemStatus) {
-  const { allowed } = await editor(eventId);
-  if (!allowed) return;
+  const { allowed } = await editor(eventId, functionId, itemId);
+  if (!allowed || !runItemStatus.enumValues.includes(status)) return;
   await setItemStatus(getDb(), eventId, itemId, status).catch((e) => {
     if (!(e instanceof RunSheetError)) throw e;
   });
@@ -68,7 +69,7 @@ export async function setStatusAction(eventId: string, functionId: string, itemI
 }
 
 export async function shiftAction(eventId: string, functionId: string, itemId: string, _prev: State, fd: FormData): Promise<State> {
-  const { t, allowed } = await editor(eventId);
+  const { t, allowed } = await editor(eventId, functionId, itemId);
   if (!allowed) return { error: t("common.notAllowed") };
   try {
     const n = await shiftItems(getDb(), eventId, itemId, Number(fd.get("minutes")));
@@ -81,7 +82,7 @@ export async function shiftAction(eventId: string, functionId: string, itemId: s
 }
 
 export async function deleteItemAction(eventId: string, functionId: string, itemId: string) {
-  const { ctx, allowed } = await editor(eventId);
+  const { ctx, allowed } = await editor(eventId, functionId, itemId);
   if (!allowed) return;
   await deleteItem(getDb(), eventId, itemId, ctx.actor).catch((e) => {
     if (!(e instanceof RunSheetError)) throw e;

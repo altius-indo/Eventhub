@@ -5,6 +5,7 @@ import { createTranslator, type Locale } from "@/i18n/core";
 import { generateOtpCode, hmac, safeEqual } from "./crypto";
 import { DeliveryError, phoneLoginEnabled, sendMessage, type Channel } from "./delivery";
 import type { Identifier } from "./identifiers";
+import { isUuid } from "./ids";
 
 export const OTP_TTL_MS = 5 * 60 * 1000;
 export const OTP_MAX_ATTEMPTS = 5;
@@ -117,7 +118,7 @@ export async function verifyOtp(
 ): Promise<VerifyOtpResult> {
   const now = input.now ?? new Date();
   const code = input.code.replace(/\s+/g, "");
-  if (!/^[0-9a-f-]{36}$/i.test(input.challengeId)) return { ok: false, error: "invalid" };
+  if (!isUuid(input.challengeId)) return { ok: false, error: "invalid" };
 
   const [challenge] = await db
     .update(otpChallenges)

@@ -140,7 +140,7 @@ export async function saveInvitesAction(eventId: string, householdId: string, _p
   const invites: Record<string, string[]> = {};
   for (const guestId of formData.getAll("guestIds").map(String)) invites[guestId] = [];
   for (const [key] of formData.entries()) {
-    const m = key.match(/^inv:([0-9a-f-]{36}):([0-9a-f-]{36})$/i);
+    const m = key.match(/^inv:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
     if (m && invites[m[1]]) invites[m[1]].push(m[2]);
   }
   try {
@@ -259,7 +259,7 @@ export async function recordRsvpAction(eventId: string, householdId: string, _pr
   const household = await householdFor(eventId, householdId);
   if (!household) return { error: t("common.somethingWrong") };
   const answers = [...formData.entries()].flatMap(([k, v]) => {
-    const m = k.match(/^rsvp:([0-9a-f-]{36}):([0-9a-f-]{36})$/i);
+    const m = k.match(/^rsvp:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
     if (!m) return [];
     const status: RsvpStatus | null = v === "attending" || v === "maybe" || v === "declined" ? v : null;
     return [{ guestId: m[1], functionId: m[2], status }];

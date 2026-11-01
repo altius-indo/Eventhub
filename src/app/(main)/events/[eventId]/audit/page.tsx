@@ -29,7 +29,11 @@ export default async function AuditPage({ params }: PageProps<"/events/[eventId]
         <ol className="divide-y divide-border">
           {rows.map(({ log, actorName }) => {
             const data = (log.data ?? {}) as Record<string, string>;
-            const vars = { ...data, role: data.role ? t(data.role === "host" ? "roles.host" : "roles.planner") : "" };
+            const vars = {
+              ...data,
+              role: data.role ? t(data.role === "host" ? "roles.host" : "roles.planner") : "",
+              kind: data.kind === "pickup" || data.kind === "drop" || data.kind === "shuttle" ? t(`transfers.kinds.${data.kind}`) : (data.kind ?? ""),
+            };
             const text = translateDynamic(locale, `audit.actions.${log.action}`, vars) ?? log.action;
             return (
               <li key={log.id} className="flex flex-col gap-0.5 py-2.5 sm:flex-row sm:items-baseline sm:gap-3">

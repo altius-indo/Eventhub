@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { checkIns } from "@/db/schema";
-import { addWalkIn, checkIn, checkInCounts, CheckInError, extractToken, lookupPass, searchForCheckIn, undoCheckIn } from "@/lib/checkin";
+import { auditLogs, checkIns } from "@/db/schema";
+import { addWalkIn, checkIn, checkInCounts, extractToken, lookupPass, searchForCheckIn, undoCheckIn } from "@/lib/checkin";
 import { createEvent } from "@/lib/events";
 import { createFunction } from "@/lib/functions";
 import { makeGuestToken, makePassToken, regenerateGuestLink } from "@/lib/guest-links";
@@ -21,7 +21,7 @@ import { decide } from "@/lib/policy";
 import { saveRsvps } from "@/lib/rsvp";
 import { createItem, itemSchema, liveView, listItems, lockedOverlaps, shiftItems } from "@/lib/runsheet";
 import { addTables, seatGuests, seatHousehold, seatingPlan, SeatingError } from "@/lib/seating";
-import { arrivalsBoard, assignToRun, createRun, getManifest, manifestText, runSchema, runsForHousehold, runWarnings, TransferError, updateRun } from "@/lib/transfers";
+import { arrivalsBoard, assignToRun, createRun, getManifest, listRuns, manifestText, runSchema, runsForHousehold, runWarnings, TransferError, updateRun } from "@/lib/transfers";
 import { saveTravel, travelSchema } from "@/lib/travel";
 import { parseWallClock, wallClockNow } from "@/lib/wall-clock";
 import { actorOf, db, makeUser, resetDb } from "./helpers";
@@ -84,6 +84,16 @@ describe("transfers", () => {
     expect(results.filter((x) => x.status === "fulfilled")).toHaveLength(1);
     expect(await getManifest(db(), event.id, r.id)).toHaveLength(3);
     await expect(updateRun(db(), event.id, r.id, run({ capacity: 2 }))).rejects.toMatchObject({ code: "capacity_below_load" });
+  });
+
+  it("creates a run with passengers atomically: a capacity error leaves no run behind", async () => {
+    const { event, sharma, verma } = await setup();
+    await expect(createRun(db(), event.id, run({ capacity: 2 }), [...sharma.members, ...verma.members].map((m) => m.id))).rejects.toMatchObject({
+      code: "over_capacity",
+    });
+    expect(await listRuns(db(), event.id)).toHaveLength(0);
+    const ok = await createRun(db(), event.id, run({ capacity: 5 }), [...sharma.members, ...verma.members].map((m) => m.id));
+    expect(await getManifest(db(), event.id, ok.id)).toHaveLength(5);
   });
 
   it("rejects guests from another event", async () => {
@@ -156,6 +166,22 @@ describe("hotels and rooms", () => {
     await updateBlock(db(), event.id, b.id, block({ blockedCount: 4, rate: "8000" }), actor);
     view = await allocationView(db(), event.id, hotel.id);
     expect(view[0].rooms).toHaveLength(4);
+  });
+
+  it("counts occupancy per night and lists different stays in a room separately", async () => {
+    const { event, sharma, verma } = await setup();
+    const hotel = await createHotel(db(), event.id, { name: "Rambagh", address: null, phone: null, mapUrl: null, notes: null });
+    await createBlock(db(), event.id, hotel.id, block({ maxOccupancy: 2, checkIn: "2026-12-08", checkOut: "2026-12-12" }));
+    const [room] = (await allocationView(db(), event.id, hotel.id))[0].rooms;
+    await assignRoom(db(), event.id, room.id, [sharma.members[0].id, sharma.members[1].id], { checkIn: "2026-12-08", checkOut: "2026-12-10" });
+    const res = await assignRoom(db(), event.id, room.id, [verma.members[0].id, verma.members[1].id], { checkIn: "2026-12-10", checkOut: "2026-12-12" });
+    expect(res.warnings).not.toContain("over_occupancy");
+    expect((await allocationView(db(), event.id, hotel.id))[0].rooms[0].over).toBe(false);
+    const rows = await roomingList(db(), event.id, hotel.id, "Room");
+    expect(rows.map((r) => [r.guestNames, r.checkIn, r.checkOut])).toEqual([
+      ["Rajesh, Sunita", "2026-12-08", "2026-12-10"],
+      ["Anil, Kavita", "2026-12-10", "2026-12-12"],
+    ]);
   });
 
   it("exports a rooming list with only names, room, dates and one phone", async () => {
@@ -250,11 +276,20 @@ describe("check-in", () => {
     const items = sharma.members.slice(0, 2).map((m) => ({ guestId: m.id, source: "scan" as const }));
     expect((await checkIn(db(), event.id, sangeet.id, actor, items)).created).toHaveLength(2);
     const again = await checkIn(db(), event.id, sangeet.id, actor, items);
-    expect(again).toEqual({ created: [], alreadyIn: items.map((i) => i.guestId) });
+    expect(again).toEqual({ created: [], alreadyIn: items.map((i) => i.guestId), rejected: [] });
     expect(await db().select().from(checkIns)).toHaveLength(2);
 
-    // Verma isn't invited to the wedding
-    await expect(checkIn(db(), event.id, wedding.id, actor, [{ guestId: verma.members[0].id, source: "manual" }])).rejects.toBeInstanceOf(CheckInError);
+    // Verma isn't invited to the wedding: reported per guest, the rest of the batch still saves
+    const mixed = await checkIn(db(), event.id, wedding.id, actor, [
+      { guestId: verma.members[0].id, source: "manual" },
+      { guestId: sharma.members[1].id, source: "manual" },
+      { guestId: "00000000-0000-4000-8000-000000000000", source: "manual" },
+    ]);
+    expect(mixed.created).toEqual([sharma.members[1].id]);
+    expect(mixed.rejected).toEqual([
+      { guestId: verma.members[0].id, code: "not_invited" },
+      { guestId: "00000000-0000-4000-8000-000000000000", code: "not_found" },
+    ]);
     await checkIn(db(), event.id, wedding.id, actor, [{ guestId: verma.members[0].id, source: "manual" }], { allowUninvited: true });
 
     await addWalkIn(db(), event.id, sangeet.id, actor, { name: "Mr Kapoor", side: "groom", count: 2 });
@@ -262,6 +297,8 @@ describe("check-in", () => {
     expect(c).toMatchObject({ expected: 3, arrived: 4, arrivedExpected: 2, walkIns: 2, noReply: 2 });
     expect(c.arrivedByAge).toEqual({ adult: 4, child: 0, infant: 0 });
     expect((await checkInCounts(db(), event.id, wedding.id)).arrivedUninvited).toBe(1);
+    const audits = (await db().select().from(auditLogs).where(eq(auditLogs.eventId, event.id))).map((a) => a.action);
+    expect(audits).toContain("checkin.walk_in");
 
     await undoCheckIn(db(), event.id, sangeet.id, sharma.members[0].id, actor);
     expect((await checkInCounts(db(), event.id, sangeet.id)).arrived).toBe(3);
@@ -298,9 +335,12 @@ describe("run sheet", () => {
     expect(v.late.map((i) => i.title)).toEqual(["Guests arrive"]);
     expect(v.next?.title).toBe("Muhurat");
 
-    expect(await shiftItems(db(), event.id, dance.id, 45)).toBe(3); // dance, dinner, DJ; muhurat stays
+    const parallel = await createItem(db(), event.id, sangeet.id, item({ title: "Welcome drinks", startsAt: "2026-12-10T19:30", durationMin: 30 }));
+    expect(await shiftItems(db(), event.id, dance.id, 45)).toBe(4); // dance + parallel drinks, dinner, DJ; muhurat stays
+    const drinks = (await listItems(db(), event.id, sangeet.id)).find((r) => r.item.id === parallel.id)!;
+    expect(drinks.item.startsAt.toISOString().slice(11, 16)).toBe("20:15");
     const after = (await listItems(db(), event.id, sangeet.id)).map((r) => [r.item.title, r.item.startsAt.toISOString().slice(11, 16)]);
-    expect(after).toEqual([
+    expect(after.filter(([title]) => title !== "Welcome drinks")).toEqual([
       ["Guests arrive", "19:00"],
       ["Family dances", "20:15"],
       ["Muhurat", "21:00"],
@@ -308,7 +348,7 @@ describe("run sheet", () => {
       ["DJ after midnight", "01:00"],
     ]);
     const overlaps = lockedOverlaps((await listItems(db(), event.id, sangeet.id)).map((r) => r.item));
-    expect(overlaps.map((o) => o.other.title)).toEqual(["Family dances"]);
+    expect(overlaps.map((o) => o.other.title).sort()).toEqual(["Family dances"]);
   });
 
   it("only allows team members as owners", async () => {

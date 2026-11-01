@@ -14,11 +14,12 @@ import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 import { taskFieldLabels } from "@/lib/server/task-labels";
 import { addCommentAction, deleteTaskAction, updateTaskAction } from "../actions";
+import { isUuid } from "@/lib/ids";
 
 export default async function TaskPage({ params }: PageProps<"/events/[eventId]/tasks/[taskId]">) {
   const { eventId, taskId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!/^[0-9a-f-]{36}$/i.test(taskId)) notFound();
+  if (!isUuid(taskId)) notFound();
   const db = getDb();
   const task = await getTask(db, eventId, taskId).catch((e) => {
     if (e instanceof TaskError) notFound();

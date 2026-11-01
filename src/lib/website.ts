@@ -17,6 +17,7 @@ import {
 import { audit, type Actor } from "./audit";
 import { hmac, safeEqual } from "./crypto";
 import { normalizeEmail, normalizePhone } from "./guests";
+import { isUuid } from "./ids";
 
 export class WebsiteError extends Error {
   constructor(public code: "slug_taken" | "slug_invalid" | "passcode_required" | "not_found" | "image_invalid" | "image_limit" | "too_many") {
@@ -244,7 +245,7 @@ export async function saveSiteImage(db: Tx, eventId: string, input: ArrayBuffer)
 }
 
 export async function getSiteImage(db: Tx, imageId: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(imageId)) return null;
+  if (!isUuid(imageId)) return null;
   const [img] = await db.select().from(siteImages).where(eq(siteImages.id, imageId));
   return img ?? null;
 }

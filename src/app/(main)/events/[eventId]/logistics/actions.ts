@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { events } from "@/db/schema";
+import { isUuid, uuids } from "@/lib/ids";
 import { assignToRun, createRun, deleteRun, runSchema, TransferError, unassignFromRun, updateRun } from "@/lib/transfers";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
@@ -59,10 +60,8 @@ export async function createRunAction(eventId: string, _prev: State, formData: F
   if (!parsed.success) return { error: t("transfers.errors.invalid") };
   let id: string;
   try {
-    const run = await createRun(getDb(), eventId, parsed.data);
+    const run = await createRun(getDb(), eventId, parsed.data, uuids(formData.getAll("guestIds")));
     id = run.id;
-    const guestIds = formData.getAll("guestIds").map(String);
-    if (guestIds.length) await assignToRun(getDb(), eventId, id, guestIds);
   } catch (err) {
     if (err instanceof TransferError) return { error: t(`transfers.errors.${err.code}`) };
     throw err;
@@ -73,7 +72,7 @@ export async function createRunAction(eventId: string, _prev: State, formData: F
 
 export async function updateRunAction(eventId: string, runId: string, _prev: State, formData: FormData): Promise<State> {
   const { t, allowed } = await editor(eventId);
-  if (!allowed) return { error: t("common.notAllowed") };
+  if (!allowed || !isUuid(runId)) return { error: t("common.notAllowed") };
   const parsed = parseRun(formData);
   if (!parsed.success) return { error: t("transfers.errors.invalid") };
   try {
@@ -88,7 +87,7 @@ export async function updateRunAction(eventId: string, runId: string, _prev: Sta
 
 export async function deleteRunAction(eventId: string, runId: string) {
   const { ctx, allowed } = await editor(eventId);
-  if (!allowed) return;
+  if (!allowed || !isUuid(runId)) return;
   try {
     await deleteRun(getDb(), eventId, runId, ctx.actor);
   } catch (err) {
@@ -102,13 +101,13 @@ export async function assignSelectedAction(eventId: string, _prev: State, formDa
   const { t, allowed } = await editor(eventId);
   if (!allowed) return { error: t("common.notAllowed") };
   const runId = String(formData.get("runId") ?? "");
-  const guestIds = formData.getAll("guestIds").map(String);
+  const guestIds = uuids(formData.getAll("guestIds"));
   if (guestIds.length === 0) return {};
   if (formData.get("op") === "new") {
     const q = new URLSearchParams({ guests: guestIds.join(","), kind: String(formData.get("kind") ?? "pickup") });
     redirect(`/events/${eventId}/logistics/transfers/new?${q.toString()}`);
   }
-  if (!runId) return {};
+  if (!isUuid(runId)) return {};
   try {
     const n = await assignToRun(getDb(), eventId, runId, guestIds);
     refresh(eventId);
@@ -121,7 +120,7 @@ export async function assignSelectedAction(eventId: string, _prev: State, formDa
 
 export async function unassignAction(eventId: string, runId: string, guestId: string) {
   const { allowed } = await editor(eventId);
-  if (!allowed) return;
+  if (!allowed || !isUuid(runId) || !isUuid(guestId)) return;
   await unassignFromRun(getDb(), eventId, runId, guestId);
   refresh(eventId);
 }

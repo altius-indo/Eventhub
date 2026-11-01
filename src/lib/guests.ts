@@ -15,6 +15,7 @@ import {
 } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 import { assertFunctionsInEvent, NotFoundError } from "./functions";
+import { isUuid } from "./ids";
 
 export class GuestError extends Error {
   constructor(public code: "last_member" | "not_found") {
@@ -341,13 +342,13 @@ function guestConditions(eventId: string, f: GuestFilters): SQL[] {
   if (f.tag) conds.push(sql`lower(${f.tag}) = any (select lower(t) from unnest(${guests.tags}) t)`);
   if (f.fn === "none") {
     conds.push(sql`not exists (select 1 from ${functionInvites} where ${functionInvites.guestId} = ${guests.id})`);
-  } else if (f.fn && /^[0-9a-f-]{36}$/i.test(f.fn)) {
+  } else if (f.fn && isUuid(f.fn)) {
     conds.push(
       sql`exists (select 1 from ${functionInvites} where ${functionInvites.guestId} = ${guests.id} and ${functionInvites.functionId} = ${f.fn})`,
     );
   }
   // RSVP status, for one function when `fn` is set, otherwise for any function
-  const fnId = f.fn && /^[0-9a-f-]{36}$/i.test(f.fn) ? f.fn : null;
+  const fnId = f.fn && isUuid(f.fn) ? f.fn : null;
   const fnClause = fnId ? sql`and fi.function_id = ${fnId}` : sql``;
   if (f.rsvp === "pending") {
     conds.push(sql`exists (select 1 from function_invites fi left join rsvps r on r.guest_id = fi.guest_id and r.function_id = fi.function_id

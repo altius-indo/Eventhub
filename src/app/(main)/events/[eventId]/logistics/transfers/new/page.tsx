@@ -11,6 +11,7 @@ import { getEventContext } from "@/lib/server/event-context";
 import { runFieldLabels } from "@/lib/server/m4-labels";
 import { getTranslator } from "@/lib/server/session";
 import { createRunAction } from "../../actions";
+import { isUuid } from "@/lib/ids";
 
 /** New run; when opened from the arrivals board, prefilled from the selected guests' travel. */
 export default async function NewRunPage({ params, searchParams }: PageProps<"/events/[eventId]/logistics/transfers/new">) {
@@ -20,7 +21,7 @@ export default async function NewRunPage({ params, searchParams }: PageProps<"/e
   if (!ctx.can("travel.edit")) notFound();
   const { t } = await getTranslator();
   const db = getDb();
-  const ids = (typeof sp.guests === "string" ? sp.guests.split(",") : []).filter((x) => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 100);
+  const ids = (typeof sp.guests === "string" ? sp.guests.split(",") : []).filter((x) => isUuid(x)).slice(0, 100);
   const kind = sp.kind === "drop" ? "drop" : "pickup";
   const selected = ids.length
     ? await db

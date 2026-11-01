@@ -31,7 +31,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
           )}
           <div className="ml-auto flex items-center gap-2">
             <LanguageSwitcher locale={locale} label={t("nav.language")} />
-            {ctx && <SignOutButton label={t("common.signOut")} />}
+            {ctx && <SignOutButton label={t("common.signOut")} unsavedWarning={t("checkin.unsavedSignOut")} />}
           </div>
         </div>
       </header>

@@ -5,12 +5,13 @@ import { getDb } from "@/db";
 import { getFunction, NotFoundError } from "@/lib/functions";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
+import { isUuid } from "@/lib/ids";
 
 export default async function CheckInPage({ params, searchParams }: PageProps<"/events/[eventId]/logistics/check-in/[functionId]">) {
   const { eventId, functionId } = await params;
   const { pass } = await searchParams;
   const ctx = await getEventContext(eventId);
-  if (!ctx.can("checkin.operate") || !/^[0-9a-f-]{36}$/i.test(functionId)) notFound();
+  if (!ctx.can("checkin.operate") || !isUuid(functionId)) notFound();
   const fn = await getFunction(getDb(), eventId, functionId).catch((e) => {
     if (e instanceof NotFoundError) notFound();
     throw e;
@@ -20,6 +21,7 @@ export default async function CheckInPage({ params, searchParams }: PageProps<"/
     "scan", "stopScan", "scanHelp", "cameraUnavailable", "search", "searchButton", "noResults", "markArrived", "arrivedAt", "by",
     "notInvited", "declined", "undo", "walkIn", "walkInName", "walkInCount", "walkInAdd", "expected", "arrived", "maybe", "noReply",
     "walkIns", "uninvited", "recent", "pending", "retrying", "saved", "allowUninvited", "invalidPass", "wrongEvent", "offline",
+    "signInAgain", "legacyPass", "rejected", "logIn",
   ] as const;
   const labels = {
     ...Object.fromEntries(keys.map((k) => [k, t(`checkin.${k}`, { time: "{time}", name: "{name}", count: "{count}" })])),
@@ -37,6 +39,7 @@ export default async function CheckInPage({ params, searchParams }: PageProps<"/
       <CheckInDesk
         apiUrl={`/events/${eventId}/logistics/check-in/${functionId}/api`}
         functionId={functionId}
+        userId={ctx.actor.userId}
         labels={labels}
         initialPass={typeof pass === "string" && /^[A-Za-z0-9_-]{44}$/.test(pass) ? pass : undefined}
       />

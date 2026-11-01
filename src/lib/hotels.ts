@@ -248,6 +248,10 @@ export async function assignRoom(
       .innerJoin(roomBlocks, eq(roomBlocks.id, rooms.blockId))
       .where(and(eq(rooms.id, roomId), eq(rooms.eventId, eventId)));
     if (!row) throw new HotelError("not_found");
+    // Same lock updateBlock takes, so shrinking a block can't delete this room mid-assignment.
+    await tx.select({ id: roomBlocks.id }).from(roomBlocks).where(eq(roomBlocks.id, row.block.id)).for("update");
+    const [stillThere] = await tx.select({ id: rooms.id }).from(rooms).where(eq(rooms.id, roomId));
+    if (!stillThere) throw new HotelError("not_found");
     const checkIn = dates?.checkIn ?? row.block.checkIn;
     const checkOut = dates?.checkOut ?? row.block.checkOut;
     if (!(checkOut > checkIn)) throw new HotelError("bad_dates");
@@ -281,12 +285,14 @@ export async function assignRoom(
       .returning();
 
     const occupants = await tx
-      .select({ guest: guests })
+      .select({ guest: guests, checkIn: roomAssignments.checkIn, checkOut: roomAssignments.checkOut })
       .from(roomAssignments)
       .innerJoin(guests, eq(guests.id, roomAssignments.guestId))
       .where(eq(roomAssignments.roomId, roomId));
     const warnings: AssignWarning[] = [];
-    if (occupants.filter((o) => o.guest.ageGroup !== "infant").length > row.block.maxOccupancy) warnings.push("over_occupancy");
+    if (peakOccupancy(occupants.map((o) => ({ ageGroup: o.guest.ageGroup, checkIn: o.checkIn, checkOut: o.checkOut }))) > row.block.maxOccupancy) {
+      warnings.push("over_occupancy");
+    }
     if (checkIn < row.block.checkIn || checkOut > row.block.checkOut) warnings.push("outside_block_dates");
     const households = new Set(locked.map((g) => g.householdId));
     const familyMembers = await tx
@@ -315,6 +321,16 @@ export async function unassignRoom(db: Database, eventId: string, roomId: string
   await db
     .delete(roomAssignments)
     .where(and(eq(roomAssignments.eventId, eventId), eq(roomAssignments.roomId, roomId), eq(roomAssignments.guestId, guestId)));
+}
+
+/** Most people (infants excluded) in a room on any single night, given their stays. */
+export function peakOccupancy(stays: { ageGroup: string; checkIn: string; checkOut: string }[]): number {
+  const counted = stays.filter((s) => s.ageGroup !== "infant");
+  let peak = 0;
+  for (const night of new Set(counted.map((s) => s.checkIn))) {
+    peak = Math.max(peak, counted.filter((s) => s.checkIn <= night && night < s.checkOut).length);
+  }
+  return peak;
 }
 
 export type RoomView = Room & { occupants: (Guest & { checkIn: string; checkOut: string; householdName: string })[]; over: boolean };
@@ -358,7 +374,7 @@ export async function allocationView(db: Tx, eventId: string, hotelId: string): 
       .filter((r) => r.blockId === b.id)
       .map((r) => {
         const occupants = occ.filter((o) => o.a.roomId === r.id).map((o) => ({ ...o.guest, checkIn: o.a.checkIn, checkOut: o.a.checkOut, householdName: o.householdName }));
-        return { ...r, occupants, over: occupants.filter((o) => o.ageGroup !== "infant").length > b.maxOccupancy };
+        return { ...r, occupants, over: peakOccupancy(occupants) > b.maxOccupancy };
       }),
   }));
 }
@@ -403,18 +419,21 @@ export async function roomingList(db: Tx, eventId: string, hotelId: string, room
   const rows: RoomingRow[] = [];
   for (const b of view) {
     for (const r of b.rooms) {
-      if (r.occupants.length === 0) continue;
-      const checkIn = r.occupants.map((o) => o.checkIn).sort()[0];
-      const checkOut = r.occupants.map((o) => o.checkOut).sort().at(-1)!;
-      rows.push({
-        roomType: b.roomType,
-        room: r.label ?? `${roomWord} ${r.sortOrder}`,
-        guestNames: r.occupants.map((o) => o.name).join(", "),
-        checkIn,
-        checkOut,
-        nights: Math.round((Date.parse(checkOut) - Date.parse(checkIn)) / 86_400_000),
-        contactPhone: phoneFor(r.occupants),
-      });
+      // One row per distinct stay in the room (different families on different nights stay separate).
+      const stays = new Map<string, RoomView["occupants"]>();
+      for (const o of r.occupants) stays.set(`${o.checkIn}|${o.checkOut}`, [...(stays.get(`${o.checkIn}|${o.checkOut}`) ?? []), o]);
+      for (const [key, group] of [...stays.entries()].sort()) {
+        const [checkIn, checkOut] = key.split("|");
+        rows.push({
+          roomType: b.roomType,
+          room: r.label ?? `${roomWord} ${r.sortOrder}`,
+          guestNames: group.map((o) => o.name).join(", "),
+          checkIn,
+          checkOut,
+          nights: Math.round((Date.parse(checkOut) - Date.parse(checkIn)) / 86_400_000),
+          contactPhone: phoneFor(group),
+        });
+      }
     }
   }
   return rows;

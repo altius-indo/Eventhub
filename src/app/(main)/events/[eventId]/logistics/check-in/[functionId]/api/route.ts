@@ -13,6 +13,8 @@ import {
   type CheckInHousehold,
 } from "@/lib/checkin";
 import { getEventContext } from "@/lib/server/event-context";
+import { getSessionContext } from "@/lib/server/session";
+import { isUuid } from "@/lib/ids";
 
 /**
  * JSON endpoint for the check-in desk (ADR-0014). A route handler rather than a server
@@ -52,12 +54,21 @@ function publicHousehold(h: CheckInHousehold) {
 export async function POST(req: Request, { params }: RouteContext<"/events/[eventId]/logistics/check-in/[functionId]/api">) {
   const origin = req.headers.get("origin");
   const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-  if (!origin || !host || new URL(origin).host !== host) return NextResponse.json({ error: "bad_origin" }, { status: 403 });
+  let originHost: string | null = null;
+  try {
+    originHost = origin ? new URL(origin).host : null;
+  } catch {
+    originHost = null;
+  }
+  if (!originHost || !host || originHost !== host) return NextResponse.json({ error: "bad_origin" }, { status: 403 });
 
   const { eventId, functionId } = await params;
+  // Check the session ourselves: a redirect to /login would look like success to fetch().
+  const session = await getSessionContext();
+  if (!session) return NextResponse.json({ error: "signed_out" }, { status: 401 });
+  if (!isUuid(eventId) || !isUuid(functionId)) return NextResponse.json({ error: "not_found" }, { status: 404 });
   const ctx = await getEventContext(eventId);
   if (!ctx.can("checkin.operate")) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  if (!/^[0-9a-f-]{36}$/i.test(functionId)) return NextResponse.json({ error: "function_not_found" }, { status: 404 });
 
   const parsed = body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "invalid" }, { status: 400 });
@@ -65,8 +76,10 @@ export async function POST(req: Request, { params }: RouteContext<"/events/[even
   const input = parsed.data;
   try {
     switch (input.op) {
-      case "lookup":
-        return NextResponse.json({ household: publicHousehold(await lookupPass(db, eventId, functionId, input.raw)) });
+      case "lookup": {
+        const found = await lookupPass(db, eventId, functionId, input.raw);
+        return NextResponse.json({ household: publicHousehold(found), legacy: found.legacy });
+      }
       case "search":
         return NextResponse.json({ households: (await searchForCheckIn(db, eventId, functionId, input.q)).map(publicHousehold) });
       case "checkin":

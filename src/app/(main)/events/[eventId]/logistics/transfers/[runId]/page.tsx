@@ -15,11 +15,12 @@ import { runFieldLabels } from "@/lib/server/m4-labels";
 import { getTranslator } from "@/lib/server/session";
 import { getManifest, getRun, manifestText, runWarnings, TransferError } from "@/lib/transfers";
 import { deleteRunAction, unassignAction, updateRunAction } from "../../actions";
+import { isUuid } from "@/lib/ids";
 
 export default async function RunPage({ params }: PageProps<"/events/[eventId]/logistics/transfers/[runId]">) {
   const { eventId, runId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!/^[0-9a-f-]{36}$/i.test(runId)) notFound();
+  if (!isUuid(runId)) notFound();
   const db = getDb();
   const run = await getRun(db, eventId, runId).catch((e) => {
     if (e instanceof TransferError) notFound();

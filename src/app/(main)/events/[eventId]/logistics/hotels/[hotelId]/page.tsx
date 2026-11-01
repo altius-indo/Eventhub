@@ -21,11 +21,12 @@ import {
   updateBlockAction,
   updateHotelAction,
 } from "../actions";
+import { isUuid } from "@/lib/ids";
 
 export default async function HotelPage({ params }: PageProps<"/events/[eventId]/logistics/hotels/[hotelId]">) {
   const { eventId, hotelId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!/^[0-9a-f-]{36}$/i.test(hotelId)) notFound();
+  if (!isUuid(hotelId)) notFound();
   const db = getDb();
   const hotel = await getHotel(db, eventId, hotelId).catch((e) => {
     if (e instanceof HotelError) notFound();

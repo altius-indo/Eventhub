@@ -39,6 +39,7 @@ import {
   updateGuestAction,
   updateHouseholdAction,
 } from "../actions";
+import { isUuid } from "@/lib/ids";
 
 function ConfirmForm({ action, label, confirm, tone }: { action: () => Promise<void>; label: string; confirm: string; tone?: "danger" }) {
   return (
@@ -54,7 +55,7 @@ export default async function HouseholdPage({ params, searchParams }: PageProps<
   const { eventId, householdId } = await params;
   const { created } = await searchParams;
   const ctx = await getEventContext(eventId);
-  if (!/^[0-9a-f-]{36}$/i.test(householdId)) notFound();
+  if (!isUuid(householdId)) notFound();
   const db = getDb();
   const household = await getHouseholdWithMembers(db, eventId, householdId).catch((e) => {
     if (e instanceof GuestError) notFound();

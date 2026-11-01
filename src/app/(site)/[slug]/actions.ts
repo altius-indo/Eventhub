@@ -37,9 +37,9 @@ export async function guestRsvpAction(slug: string, _prev: State, formData: Form
   const answers: { guestId: string; functionId: string; status: RsvpStatus | null }[] = [];
   const diets: { guestId: string; diet: Diet | null; dietNotes: string | null }[] = [];
   for (const [k, v] of formData.entries()) {
-    const r = k.match(/^r:([0-9a-f-]{36}):([0-9a-f-]{36})$/i);
+    const r = k.match(/^r:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
     if (r && (v === "attending" || v === "maybe" || v === "declined")) answers.push({ guestId: r[1], functionId: r[2], status: v });
-    const d = k.match(/^diet:([0-9a-f-]{36})$/i);
+    const d = k.match(/^diet:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
     if (d) {
       diets.push({
         guestId: d[1],

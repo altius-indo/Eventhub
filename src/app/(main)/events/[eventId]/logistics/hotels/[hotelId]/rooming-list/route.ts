@@ -3,12 +3,13 @@ import { audit } from "@/lib/audit";
 import { getHotel, roomingList, roomingListXlsx, type RoomingRow } from "@/lib/hotels";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
+import { isUuid } from "@/lib/ids";
 
 /** Rooming list for the hotel (TRV-05): names, room, dates and one phone; no ID data. Audited. */
 export async function GET(_req: Request, { params }: RouteContext<"/events/[eventId]/logistics/hotels/[hotelId]/rooming-list">) {
   const { eventId, hotelId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!ctx.can("travel.edit") || !/^[0-9a-f-]{36}$/i.test(hotelId)) return new Response("Not found", { status: 404 });
+  if (!ctx.can("travel.edit") || !isUuid(hotelId)) return new Response("Not found", { status: 404 });
   const db = getDb();
   const hotel = await getHotel(db, eventId, hotelId).catch(() => null);
   if (!hotel) return new Response("Not found", { status: 404 });

@@ -12,6 +12,7 @@ import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 import { taskFieldLabels } from "@/lib/server/task-labels";
 import { applyChecklistAction, createTaskAction, setStatusAction } from "./actions";
+import { isUuid } from "@/lib/ids";
 
 const bucketOrder: TaskBucket[] = ["overdue", "thisWeek", "later", "noDate", "done"];
 const bucketTone = { overdue: "danger", thisWeek: "warning", later: "neutral", noDate: "neutral", done: "success" } as const;
@@ -24,8 +25,8 @@ export default async function TasksPage({ params, searchParams }: PageProps<"/ev
   const db = getDb();
   const status = sp.status === "done" || sp.status === "all" ? sp.status : "open";
   const assignee = typeof sp.assignee === "string" ? (sp.assignee === "me" ? ctx.user.id : sp.assignee) : undefined;
-  const fn = typeof sp.fn === "string" && /^[0-9a-f-]{36}$/i.test(sp.fn) ? sp.fn : undefined;
-  const filters: TaskFilters = { status, assignee: assignee && /^([0-9a-f-]{36}|none)$/i.test(assignee) ? assignee : undefined, fn };
+  const fn = typeof sp.fn === "string" && isUuid(sp.fn) ? sp.fn : undefined;
+  const filters: TaskFilters = { status, assignee: assignee && /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|none)$/i.test(assignee) ? assignee : undefined, fn };
   const [rows, members, fns, anyTasks] = await Promise.all([
     listTasks(db, eventId, filters),
     listMembers(db, eventId),

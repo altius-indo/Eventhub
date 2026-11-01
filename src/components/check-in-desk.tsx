@@ -13,105 +13,154 @@ export type DeskLabels = Record<
   | "scan" | "stopScan" | "scanHelp" | "cameraUnavailable" | "search" | "searchButton" | "noResults" | "markArrived" | "arrivedAt" | "by"
   | "notInvited" | "declined" | "undo" | "walkIn" | "walkInName" | "walkInCount" | "walkInAdd" | "expected" | "arrived" | "maybe" | "noReply"
   | "walkIns" | "uninvited" | "recent" | "pending" | "retrying" | "saved" | "allowUninvited" | "invalidPass" | "wrongEvent" | "offline"
+  | "signInAgain" | "legacyPass" | "rejected" | "logIn"
   | "bride" | "groom" | "both" | "adult" | "child" | "infant" | "somethingWrong",
   string
 >;
 
 type Detector = { detect(source: CanvasImageSource): Promise<{ rawValue: string }[]> };
 
-export function CheckInDesk({ apiUrl, functionId, labels, initialPass }: { apiUrl: string; functionId: string; labels: DeskLabels; initialPass?: string }) {
+/** "retry" = keep queued items and try later (offline, signed out, server error, redirected). */
+type ApiResult = { kind: "ok"; data: any } | { kind: "rejected"; status: number; data: { error?: string } } | { kind: "retry"; signedOut: boolean }; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+const CHUNK = 50;
+const QUEUE_PREFIX = "eh_checkin_queue_";
+
+function readQueue(key: string): Queued[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(key) ?? "[]");
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+export function CheckInDesk({ apiUrl, functionId, userId, labels, initialPass }: { apiUrl: string; functionId: string; userId: string; labels: DeskLabels; initialPass?: string }) {
   const [households, setHouseholds] = useState<Household[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [source, setSource] = useState<"scan" | "manual">("manual");
   const [counts, setCounts] = useState<Counts | null>(null);
   const [recent, setRecent] = useState<Recent[]>([]);
-  const [queue, setQueue] = useState<Queued[]>([]);
+  const [queueSize, setQueueSize] = useState(0);
   const [message, setMessage] = useState<{ tone: "danger" | "success" | "warning"; text: string } | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [online, setOnline] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const storageKey = `eh_checkin_queue_${functionId}`;
+  const flushing = useRef<Promise<number> | null>(null);
+  // Per user and function, so a shared phone never syncs one person's queue under another's login.
+  const storageKey = `${QUEUE_PREFIX}${userId}_${functionId}`;
 
   const api = useCallback(
-    async (payload: object) => {
-      const res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      const data = await res.json().catch(() => ({ error: "network" }));
-      return { ok: res.ok, data };
+    async (payload: object): Promise<ApiResult> => {
+      let res: Response;
+      try {
+        res = await fetch(apiUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), redirect: "manual" });
+      } catch {
+        return { kind: "retry", signedOut: false };
+      }
+      if (res.status === 401) return { kind: "retry", signedOut: true };
+      if (res.redirected || res.type === "opaqueredirect" || res.status >= 500 || res.status === 0) return { kind: "retry", signedOut: false };
+      let data: unknown;
+      try {
+        data = await res.json();
+      } catch {
+        return { kind: "retry", signedOut: false };
+      }
+      if (res.ok) return { kind: "ok", data };
+      return { kind: "rejected", status: res.status, data: (data ?? {}) as { error?: string } };
     },
     [apiUrl],
   );
 
   const refreshCounts = useCallback(async () => {
-    try {
-      const { ok, data } = await api({ op: "counts" });
-      if (ok) {
-        setCounts(data.counts);
-        setRecent(data.recent);
-      }
-    } catch {
-      /* offline: keep the last numbers */
-    }
+    const r = await api({ op: "counts" });
+    if (r.kind === "ok") {
+      setCounts(r.data.counts);
+      setRecent(r.data.recent);
+      setSignedOut(false);
+    } else if (r.kind === "retry" && r.signedOut) setSignedOut(true);
   }, [api]);
 
-  // Persisted retry queue: check-ins survive a flaky connection or a page reload.
-  useEffect(() => {
-    // Deferred so the first render matches the server (no queue), then shows any saved one.
-    const id = setTimeout(() => {
+  // The queue lives in localStorage (survives reloads and flaky connections); every change
+  // re-reads it first so nothing appended meanwhile is lost.
+  const updateQueue = useCallback(
+    (fn: (q: Queued[]) => Queued[]) => {
+      const next = fn(readQueue(storageKey));
       try {
-        setQueue(JSON.parse(localStorage.getItem(storageKey) ?? "[]"));
+        localStorage.setItem(storageKey, JSON.stringify(next));
       } catch {
         /* storage unavailable */
       }
-    }, 0);
-    return () => clearTimeout(id);
-  }, [storageKey]);
-  const saveQueue = useCallback(
-    (q: Queued[]) => {
-      setQueue(q);
-      try {
-        localStorage.setItem(storageKey, JSON.stringify(q));
-      } catch {
-        /* storage unavailable */
-      }
+      setQueueSize(next.length);
+      return next;
     },
     [storageKey],
   );
 
-  const flush = useCallback(
-    async (q: Queued[]) => {
-      if (q.length === 0) return q;
-      const groups = [false, true].map((allow) => q.filter((i) => i.allowUninvited === allow)).filter((g) => g.length);
-      let remaining = q;
-      for (const g of groups) {
-        try {
-          const { ok, data } = await api({ op: "checkin", allowUninvited: g[0].allowUninvited, items: g.map(({ guestId, at, source }) => ({ guestId, at, source })) });
-          if (ok || (data.error && data.error !== "network")) {
-            // Done, or rejected for good (e.g. not invited): drop from the queue either way.
-            remaining = remaining.filter((i) => !g.includes(i));
-            if (!ok) setMessage({ tone: "danger", text: data.error === "not_invited" ? labels.notInvited : labels.somethingWrong });
+  const rollBack = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    setHouseholds((hs) => hs.map((h) => ({ ...h, members: h.members.map((m) => (ids.includes(m.id) ? { ...m, checkedInAt: null } : m)) })));
+  }, []);
+
+  /** Sends the queue in chunks; only one flush runs at a time. Returns how many are still waiting. */
+  const flush = useCallback((): Promise<number> => {
+    if (flushing.current) return flushing.current;
+    const run = (async () => {
+      const snapshot = readQueue(storageKey);
+      let rejectedCount = 0;
+      let failed = false;
+      for (const allow of [false, true]) {
+        const group = snapshot.filter((i) => i.allowUninvited === allow);
+        for (let k = 0; k < group.length && !failed; k += CHUNK) {
+          const chunk = group.slice(k, k + CHUNK);
+          const r = await api({ op: "checkin", allowUninvited: allow, items: chunk.map(({ guestId, at, source }) => ({ guestId, at, source })) });
+          if (r.kind === "retry") {
+            failed = true;
+            if (r.signedOut) setSignedOut(true);
+            break;
           }
-        } catch {
-          /* network error: keep for retry */
+          setSignedOut(false);
+          let done: Set<string>;
+          if (r.kind === "ok") {
+            const rejected: { guestId: string }[] = r.data.rejected ?? [];
+            rejectedCount += rejected.length;
+            rollBack(rejected.map((x) => x.guestId));
+            done = new Set([...(r.data.created ?? []), ...(r.data.alreadyIn ?? []), ...rejected.map((x) => x.guestId)]);
+          } else {
+            // Refused for good (bad input, no permission, function gone): drop the chunk.
+            rejectedCount += chunk.length;
+            rollBack(chunk.map((i) => i.guestId));
+            done = new Set(chunk.map((i) => i.guestId));
+          }
+          updateQueue((q) => q.filter((i) => !(i.allowUninvited === allow && done.has(i.guestId) && chunk.some((c) => c.guestId === i.guestId && c.at === i.at))));
         }
       }
-      saveQueue(remaining);
-      return remaining;
-    },
-    [api, labels.notInvited, labels.somethingWrong, saveQueue],
-  );
+      if (rejectedCount) setMessage({ tone: "danger", text: labels.rejected.replace("{count}", String(rejectedCount)) });
+      return readQueue(storageKey).length;
+    })();
+    flushing.current = run;
+    return run.finally(() => {
+      flushing.current = null;
+    });
+  }, [api, labels.rejected, rollBack, storageKey, updateQueue]);
 
   useEffect(() => {
-    const first = setTimeout(refreshCounts, 0);
+    const first = setTimeout(() => {
+      // Deferred so the first render matches the server, then shows any saved queue.
+      setQueueSize(readQueue(storageKey).length);
+      setOnline(navigator.onLine);
+      flush().then(refreshCounts);
+    }, 0);
     const id = setInterval(async () => {
       setOnline(navigator.onLine);
-      const q = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as Queued[];
-      if (q.length) await flush(q);
+      if (readQueue(storageKey).length) await flush();
       await refreshCounts();
     }, 10_000);
     const onOnline = () => {
       setOnline(true);
-      flush(JSON.parse(localStorage.getItem(storageKey) ?? "[]"));
+      flush();
     };
     const onOffline = () => setOnline(false);
     window.addEventListener("online", onOnline);
@@ -135,18 +184,20 @@ export function CheckInDesk({ apiUrl, functionId, labels, initialPass }: { apiUr
   const lookup = useCallback(
     async (raw: string) => {
       setMessage(null);
-      try {
-        const { ok, data } = await api({ op: "lookup", raw });
-        if (!ok) {
-          setMessage({ tone: "danger", text: data.error === "wrong_event" ? labels.wrongEvent : labels.invalidPass });
-          return;
-        }
-        show([data.household], "scan");
-      } catch {
-        setMessage({ tone: "warning", text: labels.offline });
+      const r = await api({ op: "lookup", raw });
+      if (r.kind === "retry") {
+        if (r.signedOut) setSignedOut(true);
+        setMessage({ tone: "warning", text: r.signedOut ? labels.signInAgain : labels.offline });
+        return;
       }
+      if (r.kind === "rejected") {
+        setMessage({ tone: "danger", text: r.data.error === "wrong_event" ? labels.wrongEvent : labels.invalidPass });
+        return;
+      }
+      show([r.data.household], "scan");
+      if (r.data.legacy) setMessage({ tone: "warning", text: labels.legacyPass });
     },
-    [api, labels.invalidPass, labels.offline, labels.wrongEvent],
+    [api, labels.invalidPass, labels.legacyPass, labels.offline, labels.signInAgain, labels.wrongEvent],
   );
 
   useEffect(() => {
@@ -159,15 +210,14 @@ export function CheckInDesk({ apiUrl, functionId, labels, initialPass }: { apiUr
     e.preventDefault();
     const q = String(new FormData(e.currentTarget).get("q") ?? "");
     setMessage(null);
-    try {
-      const { ok, data } = await api({ op: "search", q });
-      if (ok) {
-        show(data.households, "manual");
-        if (data.households.length === 0) setMessage({ tone: "warning", text: labels.noResults });
-      }
-    } catch {
-      setMessage({ tone: "warning", text: labels.offline });
-    }
+    const r = await api({ op: "search", q });
+    if (r.kind === "ok") {
+      show(r.data.households, "manual");
+      if (r.data.households.length === 0) setMessage({ tone: "warning", text: labels.noResults });
+    } else if (r.kind === "retry") {
+      if (r.signedOut) setSignedOut(true);
+      setMessage({ tone: "warning", text: r.signedOut ? labels.signInAgain : labels.offline });
+    } else setMessage({ tone: "danger", text: labels.somethingWrong });
   }
 
   async function markArrived(allowUninvited: boolean) {
@@ -180,25 +230,41 @@ export function CheckInDesk({ apiUrl, functionId, labels, initialPass }: { apiUr
     // Optimistically show them as arrived.
     setHouseholds((hs) => hs.map((h) => ({ ...h, members: h.members.map((m) => (ids.includes(m.id) ? { ...m, checkedInAt: m.checkedInAt ?? now } : m)) })));
     setSelected({});
-    const left = await flush([...queue, ...items]);
-    setMessage(left.length ? { tone: "warning", text: labels.retrying } : { tone: "success", text: labels.saved });
+    setMessage(null);
+    updateQueue((q) => [...q.filter((i) => !ids.includes(i.guestId)), ...items]);
+    let left = await flush();
+    // If a flush was already running, it didn't include these; send them now.
+    if (left && readQueue(storageKey).some((i) => items.some((n) => n.guestId === i.guestId && n.at === i.at))) left = await flush();
+    setMessage((m) => m ?? (left ? { tone: "warning", text: labels.retrying } : { tone: "success", text: labels.saved }));
     refreshCounts();
   }
 
   async function undo(guestId: string) {
-    const { ok } = await api({ op: "undo", guestId }).catch(() => ({ ok: false }));
+    // A check-in that never reached the server is just dropped from the queue.
+    const wasQueued = readQueue(storageKey).some((i) => i.guestId === guestId);
+    if (wasQueued) updateQueue((q) => q.filter((i) => i.guestId !== guestId));
+    const r = await api({ op: "undo", guestId });
+    const ok = r.kind === "ok" || (wasQueued && r.kind === "rejected" && r.data.error === "not_found");
     if (ok) {
-      setHouseholds((hs) => hs.map((h) => ({ ...h, members: h.members.map((m) => (m.id === guestId ? { ...m, checkedInAt: null } : m)) })));
+      rollBack([guestId]);
       refreshCounts();
-    }
+    } else if (r.kind === "retry") setMessage({ tone: "warning", text: r.signedOut ? labels.signInAgain : labels.offline });
+    else setMessage({ tone: "danger", text: labels.somethingWrong });
   }
 
   async function onWalkIn(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
     const fd = new FormData(form);
-    const { ok } = await api({ op: "walkin", name: String(fd.get("name")), side: String(fd.get("side")), count: Number(fd.get("count")) || 1 }).catch(() => ({ ok: false }));
-    setMessage(ok ? { tone: "success", text: labels.saved } : { tone: "danger", text: labels.somethingWrong });
+    const r = await api({ op: "walkin", name: String(fd.get("name")), side: String(fd.get("side")), count: Number(fd.get("count")) || 1 });
+    const ok = r.kind === "ok";
+    setMessage(
+      ok
+        ? { tone: "success", text: labels.saved }
+        : r.kind === "retry"
+          ? { tone: "warning", text: r.signedOut ? labels.signInAgain : labels.offline }
+          : { tone: "danger", text: labels.somethingWrong },
+    );
     if (ok) form.reset();
     refreshCounts();
   }
@@ -266,7 +332,15 @@ export function CheckInDesk({ apiUrl, functionId, labels, initialPass }: { apiUr
     <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
       <div className="space-y-4">
         {!online && <Alert tone="warning">{labels.offline}</Alert>}
-        {queue.length > 0 && <Alert tone="warning">{labels.pending.replace("{count}", String(queue.length))}</Alert>}
+        {signedOut && (
+          <Alert tone="danger">
+            <p>{labels.signInAgain}</p>
+            <a href="/login" target="_blank" rel="noopener" className="inline-flex min-h-11 items-center font-medium underline">
+              {labels.logIn}
+            </a>
+          </Alert>
+        )}
+        {queueSize > 0 && <Alert tone="warning">{labels.pending.replace("{count}", String(queueSize))}</Alert>}
 
         <Card>
           <div className="flex flex-wrap gap-2">

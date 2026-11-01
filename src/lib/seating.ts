@@ -24,8 +24,9 @@ async function checkFunction(tx: Tx, eventId: string, functionId: string) {
 export async function addTables(db: Database, eventId: string, functionId: string, opts: { count: number; capacity: number; prefix: string }) {
   return db.transaction(async (tx) => {
     await checkFunction(tx, eventId, functionId);
-    const [{ n }] = await tx.select({ n: count() }).from(seatingTables).where(eq(seatingTables.functionId, functionId));
+    // Continue after the highest sort order, so deleting "Table 2" doesn't create a second "Table 3".
     const [{ m }] = await tx.select({ m: max(seatingTables.sortOrder) }).from(seatingTables).where(eq(seatingTables.functionId, functionId));
+    const n = m ?? 0;
     const k = Math.max(1, Math.min(100, Math.trunc(opts.count)));
     const cap = Math.max(1, Math.min(100, Math.trunc(opts.capacity)));
     await tx.insert(seatingTables).values(

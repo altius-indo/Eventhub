@@ -15,13 +15,14 @@ import { getEventContext } from "@/lib/server/event-context";
 import { runItemLabels } from "@/lib/server/m4-labels";
 import { getTranslator } from "@/lib/server/session";
 import { createItemAction, deleteItemAction, setStatusAction, shiftAction, updateItemAction } from "./actions";
+import { isUuid } from "@/lib/ids";
 
 const statusTone = { pending: "neutral", in_progress: "warning", done: "success" } as const;
 
 export default async function RunSheetPage({ params }: PageProps<"/events/[eventId]/schedule/[functionId]/run-sheet">) {
   const { eventId, functionId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!/^[0-9a-f-]{36}$/i.test(functionId)) notFound();
+  if (!isUuid(functionId)) notFound();
   const db = getDb();
   const fn = await getFunction(db, eventId, functionId).catch((e) => {
     if (e instanceof NotFoundError) notFound();

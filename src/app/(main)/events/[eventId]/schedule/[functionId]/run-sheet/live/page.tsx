@@ -12,12 +12,13 @@ import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 import { wallClockNow } from "@/lib/wall-clock";
 import { setStatusAction } from "../actions";
+import { isUuid } from "@/lib/ids";
 
 /** Day-of view (ITN-03): what's happening now, what's next, what's late. Refreshes every 30 s. */
 export default async function LiveRunSheet({ params }: PageProps<"/events/[eventId]/schedule/[functionId]/run-sheet/live">) {
   const { eventId, functionId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!/^[0-9a-f-]{36}$/i.test(functionId)) notFound();
+  if (!isUuid(functionId)) notFound();
   const db = getDb();
   const fn = await getFunction(db, eventId, functionId).catch((e) => {
     if (e instanceof NotFoundError) notFound();

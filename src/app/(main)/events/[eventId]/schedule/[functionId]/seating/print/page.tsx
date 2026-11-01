@@ -6,11 +6,12 @@ import { getFunction, NotFoundError } from "@/lib/functions";
 import { seatingPlan } from "@/lib/seating";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
+import { isUuid } from "@/lib/ids";
 
 export default async function SeatingPrint({ params }: PageProps<"/events/[eventId]/schedule/[functionId]/seating/print">) {
   const { eventId, functionId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!/^[0-9a-f-]{36}$/i.test(functionId)) notFound();
+  if (!isUuid(functionId)) notFound();
   const db = getDb();
   const fn = await getFunction(db, eventId, functionId).catch((e) => {
     if (e instanceof NotFoundError) notFound();

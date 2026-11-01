@@ -3,11 +3,21 @@
 import { signOutAction } from "@/app/actions";
 
 /** Signs out, drops cached pages and any unsent check-ins on this device (shared devices). */
-export function SignOutButton({ label }: { label: string }) {
+export function SignOutButton({ label, unsavedWarning }: { label: string; unsavedWarning: string }) {
   return (
     <form
       action={signOutAction}
-      onSubmit={() => {
+      onSubmit={(e) => {
+        let unsaved = false;
+        try {
+          unsaved = Object.keys(localStorage).some((k) => k.startsWith("eh_checkin_queue_") && localStorage.getItem(k) !== "[]");
+        } catch {
+          /* storage unavailable */
+        }
+        if (unsaved && !window.confirm(unsavedWarning)) {
+          e.preventDefault();
+          return;
+        }
         navigator.serviceWorker?.controller?.postMessage("clear-pages");
         try {
           for (const key of Object.keys(localStorage)) if (key.startsWith("eh_checkin_queue_")) localStorage.removeItem(key);

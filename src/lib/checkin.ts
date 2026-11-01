@@ -55,15 +55,19 @@ async function membersFor(db: Tx, functionId: string, householdIds: string[]): P
 }
 
 /** Resolves a scanned pass to the family and their status for this function (SEAT-03). */
-export async function lookupPass(db: Tx, eventId: string, functionId: string, raw: string): Promise<CheckInHousehold> {
+export async function lookupPass(db: Tx, eventId: string, functionId: string, raw: string): Promise<CheckInHousehold & { legacy: boolean }> {
   await checkFunction(db, eventId, functionId);
   const t = extractToken(raw);
   if (!t) throw new CheckInError("invalid_pass");
-  const resolved = (t.kind !== "link" ? await resolvePassToken(db, t.token) : null) ?? (t.kind !== "pass" ? await resolveGuestToken(db, t.token) : null);
+  const asPass = t.kind !== "link" ? await resolvePassToken(db, t.token) : null;
+  // Pre-milestone-4 passes were the family's login link. Still accepted at the gate, but flagged
+  // so staff can ask the Host to issue a new link (ADR-0014).
+  const asLink = asPass ? null : t.kind !== "pass" ? await resolveGuestToken(db, t.token) : null;
+  const resolved = asPass ?? asLink;
   if (!resolved) throw new CheckInError("invalid_pass");
   if (resolved.event.id !== eventId) throw new CheckInError("wrong_event");
   const members = (await membersFor(db, functionId, [resolved.household.id])).get(resolved.household.id) ?? [];
-  return { household: resolved.household, members };
+  return { household: resolved.household, members, legacy: !!asLink };
 }
 
 /** Manual fallback: search by guest name, family name or the last digits of a phone number. */
@@ -117,9 +121,9 @@ export async function checkIn(
   actor: Actor,
   items: CheckInItem[],
   opts: { allowUninvited?: boolean; now?: Date } = {},
-): Promise<{ created: string[]; alreadyIn: string[] }> {
+): Promise<{ created: string[]; alreadyIn: string[]; rejected: { guestId: string; code: "not_found" | "not_invited" }[] }> {
   const unique = [...new Map(items.map((i) => [i.guestId, i])).values()];
-  if (unique.length === 0) return { created: [], alreadyIn: [] };
+  if (unique.length === 0) return { created: [], alreadyIn: [], rejected: [] };
   const now = opts.now ?? new Date();
   return db.transaction(async (tx) => {
     await checkFunction(tx, eventId, functionId);
@@ -129,15 +133,22 @@ export async function checkIn(
       .from(guests)
       .leftJoin(functionInvites, and(eq(functionInvites.guestId, guests.id), eq(functionInvites.functionId, functionId)))
       .where(and(eq(guests.eventId, eventId), inArray(guests.id, ids)));
-    if (found.length !== ids.length) throw new CheckInError("not_found");
+    // Bad ids in a batch are reported per guest, so one deleted or un-invited guest
+    // never makes the desk lose the rest of a queued batch.
     const invited = new Map(found.map((f) => [f.id, f.invited]));
-    if (!opts.allowUninvited && found.some((f) => !f.invited)) throw new CheckInError("not_invited");
+    const rejected: { guestId: string; code: "not_found" | "not_invited" }[] = [];
+    for (const id of ids) {
+      if (!invited.has(id)) rejected.push({ guestId: id, code: "not_found" });
+      else if (!opts.allowUninvited && !invited.get(id)) rejected.push({ guestId: id, code: "not_invited" });
+    }
+    const ok = unique.filter((i) => !rejected.some((r) => r.guestId === i.guestId));
+    if (ok.length === 0) return { created: [], alreadyIn: [], rejected };
     // Device time is accepted for queued check-ins, but never in the future or older than a day.
     const clamp = (d?: Date) => (!d || d > now || now.getTime() - d.getTime() > 86_400_000 ? now : d);
     const inserted = await tx
       .insert(checkIns)
       .values(
-        unique.map((i) => ({
+        ok.map((i) => ({
           eventId,
           functionId,
           guestId: i.guestId,
@@ -150,7 +161,15 @@ export async function checkIn(
       .onConflictDoNothing()
       .returning({ guestId: checkIns.guestId });
     const created = new Set(inserted.map((r) => r.guestId));
-    return { created: ids.filter((id) => created.has(id)), alreadyIn: ids.filter((id) => !created.has(id)) };
+    // App Admin check-ins are recorded so the event's Hosts can see them (EVT-10).
+    if (actor.isAppAdmin && created.size) {
+      await audit(tx, { eventId, actor, action: "checkin.admin", entityType: "function", entityId: functionId, data: { count: created.size } });
+    }
+    return {
+      created: ok.map((i) => i.guestId).filter((id) => created.has(id)),
+      alreadyIn: ok.map((i) => i.guestId).filter((id) => !created.has(id)),
+      rejected,
+    };
   });
 }
 
@@ -188,6 +207,7 @@ export async function addWalkIn(
       .values(Array.from({ length: n }, (_, i) => ({ eventId, householdId: h.id, name: i === 0 ? name : `${name} +${i}`, isHead: i === 0, sortOrder: i, tags: ["walk-in"] })))
       .returning({ id: guests.id });
     await tx.insert(functionInvites).values(members.map((m) => ({ functionId, guestId: m.id })));
+    await audit(tx, { eventId, actor, action: "checkin.walk_in", entityType: "household", entityId: h.id, data: { name, count: n } });
     return members.map((m) => m.id);
   });
   return checkIn(

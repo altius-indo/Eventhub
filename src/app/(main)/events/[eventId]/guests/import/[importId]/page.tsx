@@ -10,6 +10,7 @@ import { formatPhone } from "@/lib/guests";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 import { commitImportAction, updateMappingAction } from "../actions";
+import { isUuid } from "@/lib/ids";
 
 const MAX_ROWS_SHOWN = 300;
 
@@ -17,7 +18,7 @@ export default async function ImportPreviewPage({ params, searchParams }: PagePr
   const { eventId, importId } = await params;
   const { problems } = await searchParams;
   const ctx = await getEventContext(eventId);
-  if (!ctx.can("guests.edit") || !/^[0-9a-f-]{36}$/i.test(importId)) notFound();
+  if (!ctx.can("guests.edit") || !isUuid(importId)) notFound();
   const { t, locale } = await getTranslator();
 
   let imp: Awaited<ReturnType<typeof previewImport>>["imp"];

@@ -109,7 +109,7 @@ export async function setItemStatus(db: Database, eventId: string, itemId: strin
 }
 
 /**
- * "Running late": moves every not-done item starting after `fromItemId` by `minutes`
+ * "Running late": moves this item and every not-done item starting at or after it by `minutes`
  * (negative to pull earlier). Time-locked items (muhurat) stay put.
  */
 export async function shiftItems(db: Database, eventId: string, fromItemId: string, minutes: number) {
@@ -125,7 +125,8 @@ export async function shiftItems(db: Database, eventId: string, fromItemId: stri
           eq(runSheetItems.functionId, from.functionId),
           eq(runSheetItems.timeLocked, false),
           sql`${runSheetItems.status} <> 'done'`,
-          sql`(${runSheetItems.id} = ${from.id} or ${runSheetItems.startsAt} > ${from.startsAt.toISOString().slice(0, 19)}::timestamp)`,
+          // Includes items in parallel with this one (same start), so they stay together.
+          sql`${runSheetItems.startsAt} >= ${from.startsAt.toISOString().slice(0, 19)}::timestamp`,
         ),
       )
       .returning({ id: runSheetItems.id });

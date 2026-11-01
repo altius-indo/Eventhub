@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import en from "@/i18n/messages/en";
@@ -33,6 +34,11 @@ export default async function PassPage({ params }: PageProps<"/c/[token]">) {
           <p className="mt-2 text-muted">{m.checkin.passHelp}</p>
         </section>
       ))}
+      {!session && /^[A-Za-z0-9_-]{1,100}$/.test(token) && (
+        <Link href={`/login?next=${encodeURIComponent(`/c/${token}`)}`} className="inline-flex min-h-11 items-center justify-center text-sm text-muted underline">
+          {en.checkin.teamSignIn} · <span lang="hi">{hi.checkin.teamSignIn}</span>
+        </Link>
+      )}
     </main>
   );
 }

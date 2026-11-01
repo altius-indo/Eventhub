@@ -6,12 +6,13 @@ import { formatPhone } from "@/lib/guests";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 import { getManifest, getRun, TransferError } from "@/lib/transfers";
+import { isUuid } from "@/lib/ids";
 
 /** Driver manifest, laid out for A4 printing / Save as PDF (ITN-07, ADR-0015). */
 export default async function RunPrintPage({ params }: PageProps<"/events/[eventId]/logistics/transfers/[runId]/print">) {
   const { eventId, runId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!/^[0-9a-f-]{36}$/i.test(runId)) notFound();
+  if (!isUuid(runId)) notFound();
   const db = getDb();
   const run = await getRun(db, eventId, runId).catch((e) => {
     if (e instanceof TransferError) notFound();

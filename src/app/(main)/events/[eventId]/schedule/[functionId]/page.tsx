@@ -8,11 +8,12 @@ import { functionFormLabels } from "@/lib/server/function-form";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 import { deleteFunctionAction, updateFunctionAction } from "../actions";
+import { isUuid } from "@/lib/ids";
 
 export default async function EditFunctionPage({ params }: PageProps<"/events/[eventId]/schedule/[functionId]">) {
   const { eventId, functionId } = await params;
   const ctx = await getEventContext(eventId);
-  if (!ctx.can("itinerary.edit") || !/^[0-9a-f-]{36}$/i.test(functionId)) notFound();
+  if (!ctx.can("itinerary.edit") || !isUuid(functionId)) notFound();
   const fn = await getFunction(getDb(), eventId, functionId).catch((e) => {
     if (e instanceof NotFoundError) notFound();
     throw e;

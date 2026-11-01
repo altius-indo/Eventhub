@@ -17,6 +17,7 @@ import {
   updateBlock,
   updateHotel,
 } from "@/lib/hotels";
+import { isUuid, uuids } from "@/lib/ids";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
 
@@ -69,7 +70,7 @@ export async function createHotelAction(eventId: string, _prev: State, fd: FormD
 
 export async function updateHotelAction(eventId: string, hotelId: string, _prev: State, fd: FormData): Promise<State> {
   const { t, allowed } = await editor(eventId);
-  if (!allowed) return { error: t("common.notAllowed") };
+  if (!allowed || !isUuid(hotelId)) return { error: t("common.notAllowed") };
   const parsed = hotelFrom(fd);
   if (!parsed.success) return { error: t("transfers.errors.invalid") };
   try {
@@ -83,7 +84,7 @@ export async function updateHotelAction(eventId: string, hotelId: string, _prev:
 
 export async function deleteHotelAction(eventId: string, hotelId: string) {
   const { ctx, allowed } = await editor(eventId);
-  if (!allowed) return;
+  if (!allowed || !isUuid(hotelId)) return;
   await deleteHotel(getDb(), eventId, hotelId, ctx.actor).catch((e) => {
     if (!(e instanceof HotelError)) throw e;
   });
@@ -93,7 +94,7 @@ export async function deleteHotelAction(eventId: string, hotelId: string) {
 
 export async function createBlockAction(eventId: string, hotelId: string, _prev: State, fd: FormData): Promise<State> {
   const { t, allowed } = await editor(eventId);
-  if (!allowed) return { error: t("common.notAllowed") };
+  if (!allowed || !isUuid(hotelId)) return { error: t("common.notAllowed") };
   const parsed = blockFrom(fd);
   if (!parsed.success) return { error: t(parsed.error.issues.some((i) => i.message === "bad_dates") ? "hotels.errors.bad_dates" : "transfers.errors.invalid") };
   try {
@@ -107,7 +108,7 @@ export async function createBlockAction(eventId: string, hotelId: string, _prev:
 
 export async function updateBlockAction(eventId: string, blockId: string, _prev: State, fd: FormData): Promise<State> {
   const { ctx, t, allowed } = await editor(eventId);
-  if (!allowed) return { error: t("common.notAllowed") };
+  if (!allowed || !isUuid(blockId)) return { error: t("common.notAllowed") };
   const parsed = blockFrom(fd);
   if (!parsed.success) return { error: t(parsed.error.issues.some((i) => i.message === "bad_dates") ? "hotels.errors.bad_dates" : "transfers.errors.invalid") };
   try {
@@ -121,7 +122,7 @@ export async function updateBlockAction(eventId: string, blockId: string, _prev:
 
 export async function deleteBlockAction(eventId: string, blockId: string) {
   const { ctx, allowed } = await editor(eventId);
-  if (!allowed) return;
+  if (!allowed || !isUuid(blockId)) return;
   await deleteBlock(getDb(), eventId, blockId, ctx.actor).catch((e) => {
     if (!(e instanceof HotelError)) throw e;
   });
@@ -132,10 +133,13 @@ export async function assignRoomAction(eventId: string, _prev: State, fd: FormDa
   const { t, allowed } = await editor(eventId);
   if (!allowed) return { error: t("common.notAllowed") };
   const roomId = String(fd.get("roomId") ?? "");
-  const guestIds = fd.getAll("guestIds").map(String);
+  const guestIds = uuids(fd.getAll("guestIds"));
   const checkIn = String(fd.get("checkIn") ?? "");
   const checkOut = String(fd.get("checkOut") ?? "");
-  if (!roomId || guestIds.length === 0) return {};
+  if (!isUuid(roomId) || guestIds.length === 0) return {};
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  // Both dates or neither (then the block's dates apply).
+  if ((checkIn || checkOut) && !(iso.test(checkIn) && iso.test(checkOut))) return { error: t("hotels.errors.bad_dates") };
   try {
     const res = await assignRoom(getDb(), eventId, roomId, guestIds, checkIn && checkOut ? { checkIn, checkOut } : undefined);
     refresh(eventId);
@@ -147,15 +151,19 @@ export async function assignRoomAction(eventId: string, _prev: State, fd: FormDa
 
 export async function unassignRoomAction(eventId: string, roomId: string, guestId: string) {
   const { allowed } = await editor(eventId);
-  if (!allowed) return;
+  if (!allowed || !isUuid(roomId) || !isUuid(guestId)) return;
   await unassignRoom(getDb(), eventId, roomId, guestId);
   refresh(eventId);
 }
 
 export async function renameRoomAction(eventId: string, roomId: string, _prev: State, fd: FormData): Promise<State> {
   const { t, allowed } = await editor(eventId);
-  if (!allowed) return { error: t("common.notAllowed") };
-  await renameRoom(getDb(), eventId, roomId, String(fd.get("label") ?? "")).catch((e) => err(t, e));
+  if (!allowed || !isUuid(roomId)) return { error: t("common.notAllowed") };
+  try {
+    await renameRoom(getDb(), eventId, roomId, String(fd.get("label") ?? ""));
+  } catch (e) {
+    return err(t, e);
+  }
   refresh(eventId);
   return {};
 }

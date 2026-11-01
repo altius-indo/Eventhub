@@ -85,10 +85,12 @@ async function passengerCount(tx: Tx, runId: string) {
   return n;
 }
 
-export async function createRun(db: Database, eventId: string, input: RunInput) {
+/** Creates a run and (optionally) its passengers in one transaction, so a capacity error leaves nothing behind. */
+export async function createRun(db: Database, eventId: string, input: RunInput, guestIds: string[] = []) {
   return db.transaction(async (tx) => {
     const data = await validateRun(tx, eventId, input);
     const [run] = await tx.insert(transferRuns).values({ eventId, ...data }).returning();
+    await addPassengers(tx, eventId, run, guestIds);
     return run;
   });
 }
@@ -121,10 +123,15 @@ export async function deleteRun(db: Database, eventId: string, runId: string, ac
 
 /** Adds guests to a run, all or nothing. Vehicle capacity is a hard limit (row lock). */
 export async function assignToRun(db: Database, eventId: string, runId: string, guestIds: string[]) {
+  if (guestIds.length === 0) return 0;
+  return db.transaction(async (tx) => addPassengers(tx, eventId, await lockRun(tx, eventId, runId), guestIds));
+}
+
+async function addPassengers(tx: Tx, eventId: string, run: TransferRun, guestIds: string[]) {
+  const runId = run.id;
   const ids = [...new Set(guestIds)];
   if (ids.length === 0) return 0;
-  return db.transaction(async (tx) => {
-    const run = await lockRun(tx, eventId, runId);
+  {
     const found = await tx
       .select({ id: guests.id })
       .from(guests)
@@ -137,7 +144,7 @@ export async function assignToRun(db: Database, eventId: string, runId: string, 
     if (existing.size + toAdd.length > run.capacity) throw new TransferError("over_capacity");
     if (toAdd.length) await tx.insert(transferPassengers).values(toAdd.map((guestId) => ({ eventId, runId, guestId })));
     return toAdd.length;
-  });
+  }
 }
 
 export async function unassignFromRun(db: Database, eventId: string, runId: string, guestId: string) {
