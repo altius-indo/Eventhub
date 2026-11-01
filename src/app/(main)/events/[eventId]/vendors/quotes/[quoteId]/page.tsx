@@ -52,7 +52,7 @@ export default async function QuotePage({ params, searchParams }: PageProps<"/ev
       </span>
       <span className="text-right">
         {inr(l.amountPaise)}
-        {lineGst(l, q.quote.taxType) !== 0 && <span className="block text-xs text-muted">+ {inr(lineGst(l, q.quote.taxType))} GST</span>}
+        {lineGst(l, q.quote.taxType) !== 0 && <span className="block text-xs text-muted">{lineGst(l, q.quote.taxType) < 0 ? "−" : "+"} {inr(Math.abs(lineGst(l, q.quote.taxType)))} GST</span>}
       </span>
     </li>
   );

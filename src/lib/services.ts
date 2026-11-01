@@ -17,7 +17,7 @@ import {
   type Requirement,
   type Service,
 } from "@/db/schema";
-import { ApprovalError, refreshOpenRequest, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
+import { ApprovalError, refreshOpenRequest, stagedResult, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
 import { audit, type Actor } from "./audit";
 import { bookingsOf, recalcBookingTotals } from "./booking-totals";
 import { getServiceType } from "./catalogue";
@@ -219,7 +219,7 @@ export async function addRequirement(db: Database, ctx: Ctx, serviceId: string, 
       .values({ eventId: ctx.eventId, serviceId: s.id, ...toRow(input), approvalState: state, sortOrder: n + 1, createdBy: ctx.actor.userId })
       .returning();
     let result: SubmitResult = { status: "applied" };
-    if (s.approvalState === "proposed") await syncServiceProposal(tx, ctx.eventId, s.id, ctx.actor);
+    if (s.approvalState === "proposed") result = stagedResult(await syncServiceProposal(tx, ctx.eventId, s.id, ctx.actor));
     if (s.approvalState === "approved") {
       result = await submitChangeTx(tx, {
         eventId: ctx.eventId,
@@ -254,8 +254,8 @@ export async function updateRequirement(db: Database, ctx: Ctx, requirementId: s
       await tx.update(requirements).set({ ...row, version: r.version + 1, updatedAt: new Date() }).where(eq(requirements.id, r.id));
       // The open request (this requirement's, or its proposed service's) is re-sent with the new values.
       const [svc] = await tx.select({ approvalState: services.approvalState }).from(services).where(eq(services.id, r.serviceId));
-      if (svc?.approvalState === "proposed") await syncServiceProposal(tx, ctx.eventId, r.serviceId, ctx.actor);
-      else
+      if (svc?.approvalState === "proposed") return stagedResult(await syncServiceProposal(tx, ctx.eventId, r.serviceId, ctx.actor));
+      return stagedResult(
         await refreshOpenRequest(tx, {
           eventId: ctx.eventId,
           entityType: "requirement",
@@ -264,8 +264,8 @@ export async function updateRequirement(db: Database, ctx: Ctx, requirementId: s
           payload: { requirementId: r.id, version: r.version + 1 },
           amountPaise: row.estimatePaise,
           title: undefined,
-        });
-      return { status: "applied" } as const;
+        }),
+      );
     }
     const s = await lockService(tx, ctx.eventId, r.serviceId);
     const fn = await functionOf(tx, ctx.eventId, s.functionId);
@@ -371,7 +371,7 @@ async function syncServiceProposal(tx: Tx, eventId: string, serviceId: string, a
     .set({ version: sql`${services.version} + 1`, updatedAt: new Date() })
     .where(eq(services.id, serviceId))
     .returning({ version: services.version });
-  await refreshOpenRequest(tx, { eventId, entityType: "service", entityId: serviceId, actor, payload: { serviceId, version: s.version }, amountPaise: await proposedTotal(tx, serviceId) });
+  return refreshOpenRequest(tx, { eventId, entityType: "service", entityId: serviceId, actor, payload: { serviceId, version: s.version }, amountPaise: await proposedTotal(tx, serviceId) });
 }
 
 async function rejectService(tx: Tx, serviceId: string) {

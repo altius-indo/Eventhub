@@ -9,7 +9,8 @@ import { getEventContext } from "@/lib/server/event-context";
 import { typeLabel } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
 
-function Table({ rows, t, locale }: { rows: { key: string; label: string; m: Measures }[]; t: Translator; locale: Locale }) {
+/** `variance` is off for vendors: estimates belong to requirements, not vendors, so a vendor's "planned" is always 0. */
+function Table({ rows, t, locale, variance = true }: { rows: { key: string; label: string; m: Measures }[]; t: Translator; locale: Locale; variance?: boolean }) {
   const inr = (p: number) => formatInr(locale, p);
   return (
     <div className="overflow-x-auto">
@@ -25,7 +26,7 @@ function Table({ rows, t, locale }: { rows: { key: string; label: string; m: Mea
         </thead>
         <tbody className="divide-y divide-border">
           {rows.map(({ key, label, m }) => {
-            const over = m.committed > m.planned && m.committed > 0;
+            const over = variance && m.committed > m.planned && m.committed > 0;
             return (
               <tr key={key}>
                 <td className="py-2 pr-3">
@@ -117,6 +118,7 @@ export default async function BudgetPage({ params }: PageProps<"/events/[eventId
             <Table
               t={t}
               locale={locale}
+              variance={false}
               rows={sort([
                 ...vendors.map((v) => ({ key: v.id, label: v.name, m: byVendor.get(v.id)! })).filter((r) => r.m),
                 ...(byVendor.get(null) ? [{ key: "none", label: t("budget.noVendor"), m: byVendor.get(null)! }] : []),

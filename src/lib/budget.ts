@@ -15,7 +15,7 @@ import {
   services,
   type Payer,
 } from "@/db/schema";
-import { ApprovalError, refreshOpenRequest, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
+import { ApprovalError, refreshOpenRequest, stagedResult, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
 import { audit, type Actor } from "./audit";
 import { getServiceType } from "./catalogue";
 import { allocate, gstFor } from "./money";
@@ -167,16 +167,17 @@ export async function updateBudgetLine(db: Database, ctx: Ctx, id: string, input
     if (line.approvalState === "proposed") {
       await tx.update(budgetLines).set({ ...input, version: line.version + 1, updatedAt: new Date() }).where(eq(budgetLines.id, id));
       // Re-send the open request with the new values, so the Host approves what they see.
-      await refreshOpenRequest(tx, {
-        eventId: ctx.eventId,
-        entityType: "budget_line",
-        entityId: id,
-        actor: ctx.actor,
-        payload: { budgetLineId: id, version: line.version + 1 },
-        amountPaise: input.estimatePaise,
-        title: input.title,
-      });
-      return { status: "applied" } as const;
+      return stagedResult(
+        await refreshOpenRequest(tx, {
+          eventId: ctx.eventId,
+          entityType: "budget_line",
+          entityId: id,
+          actor: ctx.actor,
+          payload: { budgetLineId: id, version: line.version + 1 },
+          amountPaise: input.estimatePaise,
+          title: input.title,
+        }),
+      );
     }
     return submitChangeTx(tx, {
       eventId: ctx.eventId,

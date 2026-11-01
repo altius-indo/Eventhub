@@ -54,7 +54,7 @@ export default async function InvoicePage({ params, searchParams }: PageProps<"/
                 </span>
                 <span className="text-right">
                   {inr(l.amountPaise)}
-                  {l.gstRateBps > 0 && <span className="block text-xs text-muted">+ {inr(gstFor(l.amountPaise, l.gstRateBps, i.taxType).tax)} ({l.gstRateBps / 100}%)</span>}
+                  {l.gstRateBps > 0 && <span className="block text-xs text-muted">{l.amountPaise < 0 ? "−" : "+"} {inr(Math.abs(gstFor(l.amountPaise, l.gstRateBps, i.taxType).tax))} ({l.gstRateBps / 100}%)</span>}
                 </span>
               </li>
             );

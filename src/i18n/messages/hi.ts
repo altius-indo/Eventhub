@@ -1190,6 +1190,7 @@ const hi: Messages = {
   },
   vendors: {
     title: "वेंडर",
+    details: "विवरण",
     directory: "वेंडर सूची",
     requests: "कोटेशन अनुरोध",
     bookings: "बुकिंग",

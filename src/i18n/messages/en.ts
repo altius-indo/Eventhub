@@ -1188,6 +1188,7 @@ const en = {
   },
   vendors: {
     title: "Vendors",
+    details: "Details",
     directory: "Directory",
     requests: "Quote requests",
     bookings: "Bookings",

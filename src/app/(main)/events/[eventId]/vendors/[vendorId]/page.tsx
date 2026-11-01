@@ -115,7 +115,7 @@ export default async function VendorPage({ params, searchParams }: PageProps<"/e
 
       {canEdit && (
         <Card>
-          <CardTitle>{t("common.save")}</CardTitle>
+          <CardTitle>{t("vendors.details")}</CardTitle>
           <SimpleForm action={updateVendorAction.bind(null, eventId, v.id)}>
             <VendorFields
               labels={vendorLabels(t)}

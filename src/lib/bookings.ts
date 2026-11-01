@@ -21,7 +21,7 @@ import {
   type Quote,
   type QuoteLine,
 } from "@/db/schema";
-import { ApprovalError, refreshOpenRequest, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
+import { ApprovalError, refreshOpenRequest, stagedResult, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
 import { audit, type Actor } from "./audit";
 import { canAutoApprove, overspendFor } from "./budget";
 import { allocate } from "./money";
@@ -439,8 +439,7 @@ export async function updateSchedule(db: Database, ctx: Ctx, bookingId: string, 
       await replaceMilestones(tx, ctx.eventId, b.id, milestones);
       // The schedule is part of the pending booking: re-send it so the Host sees the new version.
       await tx.update(bookings).set({ version: b.version + 1 }).where(eq(bookings.id, b.id));
-      await refreshOpenRequest(tx, { eventId: ctx.eventId, entityType: "booking", entityId: b.id, actor: ctx.actor, payload: { bookingId: b.id, version: b.version + 1 } });
-      return { status: "applied" } as const;
+      return stagedResult(await refreshOpenRequest(tx, { eventId: ctx.eventId, entityType: "booking", entityId: b.id, actor: ctx.actor, payload: { bookingId: b.id, version: b.version + 1 } }));
     }
     const [v] = await tx.select({ name: vendors.name }).from(vendors).where(eq(vendors.id, b.vendorId));
     return submitChangeTx(tx, {

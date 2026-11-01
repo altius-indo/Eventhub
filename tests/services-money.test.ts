@@ -508,7 +508,9 @@ describe("review fixes", () => {
     if (r.status !== "pending") throw new Error();
     const [line] = (await budgetFacts(db(), c.event.id)).filter((f) => f.budgetLineId);
     await c.decideAs(r.request.id, "request_changes", "Cheaper please");
-    await updateBudgetLine(db(), c.P, line.budgetLineId!, { categoryId: gifts.id, functionId: null, title: "Favours (big)", estimatePaise: 15_00_000_00, payer: null, notes: null });
+    const edited = await updateBudgetLine(db(), c.P, line.budgetLineId!, { categoryId: gifts.id, functionId: null, title: "Favours (big)", estimatePaise: 15_00_000_00, payer: null, notes: null });
+    // The Planner is told it went to a Host, not "saved".
+    expect(edited.status).toBe("pending");
     const [req] = await db().select().from(approvalRequests).where(eq(approvalRequests.id, r.request.id));
     expect(req.status).toBe("pending");
     expect(req.amountPaise).toBe(15_00_000_00);

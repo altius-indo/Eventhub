@@ -265,7 +265,7 @@ export async function refreshOpenRequest(
     )
     .for("update");
   if (!request) return null;
-  await tx
+  const [updated] = await tx
     .update(approvalRequests)
     .set({
       payload: input.payload,
@@ -275,7 +275,8 @@ export async function refreshOpenRequest(
       decidedAt: null,
       decidedBy: null,
     })
-    .where(eq(approvalRequests.id, request.id));
+    .where(eq(approvalRequests.id, request.id))
+    .returning();
   await audit(tx, {
     eventId: input.eventId,
     actor: input.actor,
@@ -284,5 +285,8 @@ export async function refreshOpenRequest(
     entityId: request.id,
     data: { title: input.title ?? request.title },
   });
-  return request.id;
+  return updated;
 }
+
+/** Result of editing a staged row: "pending" when its request was (re)sent to a Host. */
+export const stagedResult = (request: ApprovalRequest | null): SubmitResult => (request ? { status: "pending", request } : { status: "applied" });
