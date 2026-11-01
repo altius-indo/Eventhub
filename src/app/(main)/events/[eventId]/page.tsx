@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { getDb } from "@/db";
 import { Card, CardTitle, LinkButton } from "@/components/ui";
-import { formatDay, formatTime, type MessageKey } from "@/i18n/core";
+import { formatDay, formatInrShort, formatTime, type MessageKey } from "@/i18n/core";
+import { budgetFacts, sumFacts } from "@/lib/budget";
+import { payables } from "@/lib/payments";
+import { gapView } from "@/lib/services";
 import { countPendingApprovals } from "@/lib/approvals";
 import { memberCounts } from "@/lib/events";
 import { invitedCounts, listFunctions } from "@/lib/functions";
@@ -15,7 +18,7 @@ function daysUntil(isoDate: string, today: string): number {
   return Math.round((Date.parse(isoDate) - Date.parse(today)) / 86_400_000);
 }
 
-const upcoming: MessageKey[] = ["dashboard.modules.services", "dashboard.modules.budget", "dashboard.modules.messaging"];
+const upcoming: MessageKey[] = ["dashboard.modules.messaging"];
 
 export default async function EventDashboard({ params }: PageProps<"/events/[eventId]">) {
   const { eventId } = await params;
@@ -24,14 +27,19 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
   const db = getDb();
   const { event } = ctx;
   const today = todayIn(event.timezone);
-  const [counts, pendingMap, stats, fns, invited, tasks] = await Promise.all([
+  const [counts, pendingMap, stats, fns, invited, tasks, facts, due, gaps] = await Promise.all([
     memberCounts(db, eventId),
     countPendingApprovals(db, [eventId]),
     guestStats(db, eventId),
     listFunctions(db, eventId),
     invitedCounts(db, eventId),
     taskSummary(db, eventId, today),
+    budgetFacts(db, eventId),
+    payables(db, eventId, today, new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86_400_000).toISOString().slice(0, 10)),
+    gapView(db, eventId, today),
   ]);
+  const money = sumFacts(facts);
+  const overdue = due.filter((d) => d.status === "overdue").length;
   const pending = pendingMap.get(eventId) ?? 0;
   const next = fns.find((f) => f.date && f.date >= today);
   const base = `/events/${eventId}`;
@@ -107,9 +115,32 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
         )}
       </Card>
 
-      <Card className="sm:col-span-2 lg:col-span-3">
+      <Card>
+        <CardTitle action={<Link href={`${base}/budget`} className="text-sm text-primary" aria-label={t("nav.budget")}>→</Link>}>
+          {t("dashboard.budgetCard")}
+        </CardTitle>
+        <p className={`text-2xl font-semibold ${money.committed > money.planned ? "text-danger" : ""}`}>{formatInrShort(locale, money.committed)}</p>
+        <p className="text-sm text-muted">
+          {t("dashboard.budgetSummary", { planned: formatInrShort(locale, money.planned), paid: formatInrShort(locale, money.paid) })}
+        </p>
+        {gaps.length > 0 && (
+          <Link href={`${base}/services/gaps`} className="mt-1 block text-sm text-primary underline">
+            {t("dashboard.gaps", { count: gaps.length })}
+          </Link>
+        )}
+      </Card>
+
+      <Card>
+        <CardTitle action={<Link href={`${base}/budget/payables?period=week`} className="text-sm text-primary" aria-label={t("budget.payables")}>→</Link>}>
+          {t("dashboard.paymentsCard")}
+        </CardTitle>
+        <p className={`text-2xl font-semibold ${overdue > 0 ? "text-danger" : ""}`}>{due.length}</p>
+        <p className="text-sm text-muted">{t("dashboard.paymentsSummary", { overdue, amount: formatInrShort(locale, due.reduce((a, d) => a + d.remaining, 0)) })}</p>
+      </Card>
+
+      <Card className="sm:col-span-2 lg:col-span-1">
         <CardTitle>{t("dashboard.comingNext")}</CardTitle>
-        <ul className="grid gap-2 sm:grid-cols-3">
+        <ul className="grid gap-2">
           {upcoming.map((key) => (
             <li key={key} className="rounded-lg border border-dashed border-border px-3 py-3 text-sm text-muted">
               {t(key)}

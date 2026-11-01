@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { FunctionFormState } from "@/components/function-form";
 import { getDb } from "@/db";
 import { createFunction, deleteFunction, NotFoundError, updateFunction } from "@/lib/functions";
+import { isFkViolation } from "@/lib/vendors";
 import { getEventContext } from "@/lib/server/event-context";
 import { parseFunctionForm } from "@/lib/server/function-form";
 import { getTranslator } from "@/lib/server/session";
@@ -39,11 +40,15 @@ export async function updateFunctionAction(eventId: string, functionId: string, 
 export async function deleteFunctionAction(eventId: string, functionId: string) {
   const ctx = await getEventContext(eventId);
   if (!ctx.can("itinerary.edit")) return;
+  let blocked = false;
   try {
     await deleteFunction(getDb(), eventId, functionId, ctx.actor);
   } catch (err) {
-    if (!(err instanceof NotFoundError)) throw err;
+    // Functions with services (and so possibly bookings and payments) can't be deleted.
+    if (isFkViolation(err)) blocked = true;
+    else if (!(err instanceof NotFoundError)) throw err;
   }
+  if (blocked) redirect(`/events/${eventId}/schedule/${functionId}?blocked=1`);
   revalidatePath(`/events/${eventId}`, "layout");
   redirect(`/events/${eventId}/schedule`);
 }

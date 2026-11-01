@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { FunctionForm } from "@/components/function-form";
 import { ConfirmButton } from "@/components/confirm-button";
-import { Card, CardTitle, PageHeader } from "@/components/ui";
+import { Alert, Card, CardTitle, PageHeader } from "@/components/ui";
 import { getDb } from "@/db";
 import { getFunction, NotFoundError } from "@/lib/functions";
 import { functionFormLabels } from "@/lib/server/function-form";
@@ -10,8 +10,9 @@ import { getTranslator } from "@/lib/server/session";
 import { deleteFunctionAction, updateFunctionAction } from "../actions";
 import { isUuid } from "@/lib/ids";
 
-export default async function EditFunctionPage({ params }: PageProps<"/events/[eventId]/schedule/[functionId]">) {
+export default async function EditFunctionPage({ params, searchParams }: PageProps<"/events/[eventId]/schedule/[functionId]">) {
   const { eventId, functionId } = await params;
+  const { blocked } = await searchParams;
   const ctx = await getEventContext(eventId);
   if (!ctx.can("itinerary.edit") || !isUuid(functionId)) notFound();
   const fn = await getFunction(getDb(), eventId, functionId).catch((e) => {
@@ -28,6 +29,11 @@ export default async function EditFunctionPage({ params }: PageProps<"/events/[e
       <Card>
         <CardTitle>{t("schedule.delete")}</CardTitle>
         <p className="mb-3 text-sm text-muted">{t("schedule.deleteHelp")}</p>
+        {blocked && (
+          <div className="mb-3">
+            <Alert tone="danger">{t("services.errors.has_services")}</Alert>
+          </div>
+        )}
         <form action={deleteFunctionAction.bind(null, eventId, functionId)}>
           <ConfirmButton variant="danger" confirm={t("schedule.deleteHelp")}>{t("schedule.delete")}</ConfirmButton>
         </form>

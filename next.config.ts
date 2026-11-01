@@ -8,6 +8,9 @@ const nextConfig: NextConfig = {
   experimental: {
     // Guest spreadsheets can be up to 5 MB (see MAX_IMPORT_BYTES).
     serverActions: { bodySizeLimit: "6mb" },
+    // Documents (contracts, invoices) go to a route handler and may be up to 20 MB (ADR-0018).
+    // The proxy buffers request bodies; above this limit they'd be silently truncated.
+    proxyClientMaxBodySize: "21mb",
   },
   turbopack: {
     rules: {

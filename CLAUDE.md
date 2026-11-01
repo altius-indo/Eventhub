@@ -17,7 +17,7 @@ npm run typecheck && npm run lint
 npm run build                # production build; run before declaring a milestone done
 npm run db:generate          # after editing src/db/schema.ts -> new SQL in drizzle/
 npm run db:migrate           # apply to DATABASE_URL; test DB: npx tsx scripts/migrate.ts $TEST_DATABASE_URL
-npm run jobs:purge | jobs:reminders | jobs:rsvp-reminders   # daily jobs
+npm run jobs:purge | jobs:reminders | jobs:rsvp-reminders | jobs:payment-reminders | jobs:approval-reminders   # daily jobs
 ```
 
 Before saying work is done: `npm run typecheck && npm run lint && npm test`, and `npm run build`

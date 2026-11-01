@@ -122,6 +122,11 @@ const en = {
     noFunctions: "No functions scheduled yet",
     tasksCard: "Tasks",
     tasksSummary: "Overdue: {overdue} · Due this week: {week} · Open: {open}",
+    budgetCard: "Budget",
+    budgetSummary: "Planned {planned} · Paid {paid}",
+    gaps: "Still to book: {count}",
+    paymentsCard: "Payments due this week",
+    paymentsSummary: "Overdue: {overdue} · Total {amount}",
     adminBanner: "You're viewing this event as App Admin. Your actions are logged and visible to its Hosts.",
     modules: {
       guests: "Guests & RSVP",

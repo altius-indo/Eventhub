@@ -15,10 +15,13 @@ export function SimpleForm({
   action,
   children,
   className = "space-y-4",
+  id,
 }: {
   action: (prev: State, formData: FormData) => Promise<State>;
   children: ReactNode;
   className?: string;
+  /** Lets fields elsewhere on the page join this form via their `form` attribute. */
+  id?: string;
 }) {
   const [state, formAction, pending] = useActionState(action, {});
   const ref = useRef<HTMLFormElement>(null);
@@ -36,7 +39,7 @@ export function SimpleForm({
 
   return (
     <PendingContext value={pending}>
-      <form ref={ref} onSubmit={onSubmit} className={className}>
+      <form ref={ref} id={id} onSubmit={onSubmit} className={className}>
         {children}
         {state.error && <Alert tone="danger">{state.error}</Alert>}
         {state.info && <Alert tone="success">{state.info}</Alert>}

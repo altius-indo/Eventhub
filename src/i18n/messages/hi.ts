@@ -124,6 +124,11 @@ const hi: Messages = {
     noFunctions: "अभी कोई रस्म तय नहीं",
     tasksCard: "काम",
     tasksSummary: "समय निकल गया: {overdue} · इस हफ़्ते: {week} · बाकी: {open}",
+    budgetCard: "बजट",
+    budgetSummary: "योजना {planned} · भुगतान {paid}",
+    gaps: "अभी बुक करना बाकी: {count}",
+    paymentsCard: "इस हफ़्ते देय भुगतान",
+    paymentsSummary: "बकाया: {overdue} · कुल {amount}",
     adminBanner: "आप यह इवेंट ऐप एडमिन के रूप में देख रहे हैं। आपकी हर गतिविधि दर्ज होती है और इसके होस्ट उसे देख सकते हैं।",
     modules: {
       guests: "मेहमान और RSVP",

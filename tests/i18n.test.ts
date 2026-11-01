@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTranslator, formatInr, translateDynamic } from "@/i18n/core";
+import { createTranslator, formatInr, formatInrShort, translateDynamic } from "@/i18n/core";
 import en from "@/i18n/messages/en";
 import hi from "@/i18n/messages/hi";
 
@@ -29,5 +29,9 @@ describe("i18n", () => {
 
   it("formats rupees with Indian grouping", () => {
     expect(formatInr("en", 123456700)).toBe("₹12,34,567");
+    expect(formatInrShort("en", 1250000_00)).toBe("₹12.5 L");
+    expect(formatInrShort("en", 12500000_00)).toBe("₹1.25 Cr");
+    expect(formatInrShort("hi", 12500000_00)).toBe("₹1.25 करोड़");
+    expect(formatInrShort("en", 50000_00)).toBe("₹50,000");
   });
 });

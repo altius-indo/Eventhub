@@ -85,6 +85,16 @@ export function formatInr(locale: Locale, paise: number): string {
   }).format(paise / 100);
 }
 
+/** Lakh/crore short form (BGT-06): ₹12.5 L, ₹1.25 Cr (Hindi: लाख, करोड़); full form below ₹1 lakh. */
+export function formatInrShort(locale: Locale, paise: number): string {
+  const rupees = Math.abs(paise) / 100;
+  const sign = paise < 0 ? "-" : "";
+  const num = (v: number) => new Intl.NumberFormat(intlLocale(locale), { maximumFractionDigits: 2 }).format(v);
+  if (rupees >= 1_00_00_000) return `${sign}₹${num(rupees / 1_00_00_000)} ${locale === "hi" ? "करोड़" : "Cr"}`;
+  if (rupees >= 1_00_000) return `${sign}₹${num(rupees / 1_00_000)} ${locale === "hi" ? "लाख" : "L"}`;
+  return formatInr(locale, paise);
+}
+
 /** "16:00" → "4:00 pm" (en-IN) / "4:00 pm" (hi-IN). */
 export function formatTime(locale: Locale, hhmm: string): string {
   return new Intl.DateTimeFormat(intlLocale(locale), { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(

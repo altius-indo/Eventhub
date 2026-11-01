@@ -21,7 +21,7 @@ import {
 } from "@/db/schema";
 import { ApprovalError, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
 import { audit, type Actor } from "./audit";
-import { canAutoApprove } from "./budget";
+import { canAutoApprove, overspendFor } from "./budget";
 import { allocate } from "./money";
 import { decide, ForbiddenError, type PolicySubject } from "./policy";
 import { allocatePackages, lineGst, splitGst } from "./quotes";
@@ -556,4 +556,10 @@ export async function bookingForQuoteRoot(db: Tx, eventId: string, rootId: strin
     .innerJoin(quotes, eq(quotes.id, bookings.quoteId))
     .where(and(eq(bookings.eventId, eventId), eq(quotes.rootId, rootId), ne(bookings.status, "cancelled")));
   return b?.booking ?? null;
+}
+
+/** Categories a pending booking would push over plan (shown to the Host deciding, BGT-04). */
+export async function bookingOverspend(db: Tx, eventId: string, bookingId: string) {
+  const rows = await db.select().from(fulfilments).where(and(eq(fulfilments.bookingId, bookingId), eq(fulfilments.eventId, eventId), isNull(fulfilments.cancelledAt)));
+  return overspendFor(db, eventId, await categoryAdditions(db, rows));
 }

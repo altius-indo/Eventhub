@@ -9,10 +9,10 @@ import { getTranslator, requireUser } from "@/lib/server/session";
 
 export async function createEventAction(_prev: EventFormState, formData: FormData): Promise<EventFormState> {
   const { user } = await requireUser();
-  const { t } = await getTranslator();
+  const { t, locale } = await getTranslator();
   const parsed = parseEventForm(t, formData);
   if (!parsed.ok) return parsed.state;
-  const event = await createEvent(getDb(), { userId: user.id, isAppAdmin: false }, parsed.data);
+  const event = await createEvent(getDb(), { userId: user.id, isAppAdmin: false }, parsed.data, locale);
   redirect(`/events/${event.id}`);
 }
 
