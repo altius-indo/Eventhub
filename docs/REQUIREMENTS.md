@@ -23,16 +23,16 @@
 | Photo gallery | **Post-event gallery** per function: photographers, family and guests upload; guests see photos from functions they were invited to |
 | Wedding website | **Public wedding microsite** per event; shows only what the family marks public, with a personalised view when opened via a guest's magic link |
 | Name & branding | Product name **EventHub** (final). No visual identity yet: v1 uses a neutral, themeable design system (colour/typography tokens) so branding can be applied later without rework |
-| Usage limits | Sensible per-event defaults for messaging and gallery storage, configurable by the platform operator (§4.1) |
+| Usage limits | Sensible per-event defaults for messaging and gallery storage, configurable by the App Admin (§4.1) |
 | Data retention | Event data kept for **1 year after the event's last function**, then permanently deleted (after export reminders) |
-| Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to the receiving family |
-| Spend approvals | **Per-category thresholds**; a cost is approved by the family/families paying it, so **shared costs need both families** |
+| Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to Hosts |
+| Approvals | **Hosts approve everything planners change** in services/requirements and money (bookings, budget, payments); any one Host can approve. Optional per-category auto-approve thresholds, default off |
 | Region | India: INR (lakh/crore formatting), GST on invoices |
-| Access control | Role-based plus **side scoping** (bride/groom) and function scoping |
+| Roles | **Three roles**: **App Admin** (runs the app, full access to all events), **Host** (event decision-makers) and **Planner** (does the planning; changes need Host approval). Vendors and guests use their own portal and links. No coordinator roles and no side/function scoping |
 | Tenancy | One account can own/collaborate on **multiple events**; events can be copied as templates |
 | Monetisation | Free / personal use; no billing in v1 |
 | Tech stack | Next.js (TypeScript) + PostgreSQL + Prisma + Tailwind |
-| Planning structure | **Event → Function → Service → Requirement**; vendors are booked to meet requirements (one or more vendors per requirement, with split). Coordinators **propose** requirements; the **Planner approves** |
+| Planning structure | **Event → Function → Service → Requirement**; vendors are booked to meet requirements (one or more vendors per requirement, with split). Planner changes go to **Hosts for approval** |
 | Quotes | Vendors quote **per service** or as a **combined quote across functions** (e.g. Catering for Mehendi + Sangeet + Reception); every line maps to a specific service's requirement |
 | Release scope | **All modules in Phase 1** (sequenced as internal milestones; see §9) |
 
@@ -42,38 +42,35 @@
 
 | Role | Who | Access summary |
 |---|---|---|
-| **Owner** | Event creator (usually the couple or a parent) | Full access, manages members and roles; approves spend for their family side (or as a fallback) |
-| **Host** | Close family decision-makers, each tagged to the **bride's or groom's family** | View everything, approve spend **on behalf of their family**, edit within allowed modules |
-| **Planner** | Hired planner or staff | Full operational edit (guests, itinerary, vendors, budget); cannot delete the event or change owners |
-| **Side Coordinator** | Bride-side / groom-side family coordinators | Manage guests, RSVPs, travel and rooms **only for their side**; read the itinerary |
-| **Function Coordinator** | Person in charge of a function (e.g. sangeet) | Edit run sheet and tasks for **assigned functions** |
+| **App Admin** | Operator of EventHub (platform level, not tied to an event) | Platform settings, user management, usage limits and limit requests, provider rate table, cost dashboard. **Full view/edit access to every event**, with every admin action audit-logged (EVT-10) |
+| **Host** | The couple and family decision-makers. The event creator becomes the first Host; an event always has at least one | Full access to the event. Manages members, **approves planner changes** to services/requirements and all money (SVC-10, BGT-04), publishes the website, sees gifts, can delete the event |
+| **Planner** | Hired planner or family member doing the planning | Edits everything operational (guests, RSVP, travel, rooms, seating, itinerary, run sheet, tasks, messaging, website drafts, gallery). Changes to **services/requirements, bookings, budget and payments are submitted for Host approval**. No gift access unless a Host grants it |
 | **Vendor** | Service provider (caterer, decorator, …) | Vendor portal: own brief, relevant run-sheet items, own quotes, contracts, invoices and payment status, chat with the team |
 | **Guest** | Invited household (magic link) | Own household's invites, RSVP, personalised itinerary, travel/room details, broadcasts |
 
 ### 2.1 Permission matrix (summary)
 
-| Module | Owner | Host | Planner | Side Coord. | Func. Coord. | Vendor | Guest |
-|---|---|---|---|---|---|---|---|
-| Event settings & members | RW | R | R | – | – | – | – |
-| Guests / households | RW | RW | RW | RW (own side) | R (own functions) | – | Own household |
-| RSVP | RW | RW | RW | RW (own side) | R | Caterers: live aggregate headcount for booked functions (RSV-06) | Own |
-| Travel & rooms | RW | RW | RW | RW (own side) | – | Transport/hotel vendor: assigned only | Own |
-| Seating & check-in | RW | RW | RW | RW (own side) | RW (own functions) | – | Own table |
-| Itinerary / functions | RW | RW | RW | R | RW (own functions) | Assigned functions | Invited functions |
-| Run sheet | RW | R | RW | R | RW (own functions) | Own items | – |
-| Tasks | RW | RW | RW | Own/assigned | Own functions | Own tasks | – |
-| Services & requirements | RW | RW | RW + approve | R + propose | R + propose (own functions) | Services they're invited to quote for or booked on | – |
-| Vendors & quotes | RW | RW | RW | R | R (own functions) | Own | – |
-| Contracts & documents | RW | RW | RW | – | – | Own | – |
-| Budget | RW | RW (approve) | RW | R (own side's share, BGT-07) | – | – | – |
-| Invoices & payments | RW | RW (approve) | RW | R (own side's share, BGT-07) | – | Own (upload, view status) | – |
-| Messaging / broadcasts | RW | RW | RW | Own side | Own functions | Own threads | Receive / reply |
-| Reports | RW | R | R | Own side | Own functions | – | – |
-| Gifts / shagun & thank-yous | RW | RW (own family side) | – (grantable) | Record + view own entries | – | – | – |
-| Wedding website | RW + publish | RW + publish | RW (publish needs Owner/Host) | – | – | – | View (+ personalised view via magic link) |
-| Photo gallery | RW + moderate | RW + moderate | RW + moderate | Upload + view | Upload + view (own functions) | Photographers/videographers: upload to booked functions | View invited functions; upload (if enabled) |
-
-
+| Module | App Admin | Host | Planner | Vendor | Guest |
+|---|---|---|---|---|---|
+| Platform settings, limits, rate table, cost dashboard | RW | Request limit increases | – | – | – |
+| Event settings & members | RW | RW | R | – | – |
+| Guests / households | RW | RW | RW | – | Own household |
+| RSVP | RW | RW | RW | Caterers: live aggregate headcount for booked functions (RSV-06) | Own |
+| Travel & rooms | RW | RW | RW | Transport/hotel vendor: assigned only | Own |
+| Seating & check-in | RW | RW | RW | – | Own table |
+| Itinerary / functions | RW | RW | RW | Assigned functions | Invited functions |
+| Run sheet | RW | RW | RW | Own items | – |
+| Tasks | RW | RW | RW | Own tasks | – |
+| Services & requirements | RW | RW + approve | Propose (Host approves, SVC-10) | Services they're invited to quote for or booked on | – |
+| Vendors & quotes | RW | RW + approve bookings | RW; bookings need Host approval | Own | – |
+| Contracts & documents | RW | RW | RW | Own | – |
+| Budget | RW | RW + approve | Propose changes (Host approves) | – | – |
+| Invoices & payments | RW | RW + approve | Record (Host confirms) | Own (upload, view status) | – |
+| Messaging / broadcasts | RW | RW | RW | Own threads | Receive / reply |
+| Reports | RW | R | R | – | – |
+| Gifts / shagun & thank-yous | RW | RW | – (Host can grant record-only or full) | – | – |
+| Wedding website | RW + publish | RW + publish | RW (publish needs Host) | – | View (+ personalised view via magic link) |
+| Photo gallery | RW + moderate | RW + moderate | RW + moderate | Photographers/videographers: upload to booked functions | View invited functions; upload (if enabled) |
 
 ---
 
@@ -89,11 +86,11 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
   - **Phone convenience**: Android SMS auto-read (WebOTP API) where supported.
 - **EVT-01a (M)** **One account, multiple identifiers**: a user can link both a phone number and an email, each verified by OTP, and log in with either. Duplicate accounts are merged when an invite's identifier matches an existing user.
 - **EVT-01b (M)** **Invitations by phone or email**: members and vendors are invited by phone number or email. The first login with that identifier, verified by OTP, accepts the invite.
-- **EVT-01c (M)** **Sessions**: on a trusted device, a session lasts 30 days with a sliding expiry. Users can view and revoke active sessions and log out everywhere. Owners can revoke a member's sessions when removing them.
-- **EVT-01d (S)** **Step-up re-verification**: a fresh OTP is required for sensitive actions, such as changing the owner, viewing or editing vendor bank details, deleting an event or bulk-exporting guest data.
+- **EVT-01c (M)** **Sessions**: on a trusted device, a session lasts 30 days with a sliding expiry. Users can view and revoke active sessions and log out everywhere. Hosts can revoke a member's sessions when removing them.
+- **EVT-01d (S)** **Step-up re-verification**: a fresh OTP is required for sensitive actions, such as removing a Host, approving payments, viewing or editing vendor bank details, deleting an event or bulk-exporting guest data.
 - **EVT-02 (M)** Create an event: name, couple names, dates, primary city, cover image, default currency INR.
 - **EVT-03 (M)** A user can belong to multiple events with a different role in each; event switcher in the header.
-- **EVT-04 (M)** Invite members by email/phone with role and optional side/function scope; revoke access. Owners and Hosts carry a **family side** (bride / groom), which decides whose approval they give (BGT-04).
+- **EVT-04 (M)** Hosts invite members by email/phone as **Host** or **Planner**, change roles and revoke access. The event creator becomes the first Host, and the last Host can't be removed or demoted.
 - **EVT-05 (S)** Duplicate an event as a template: functions, task checklist, budget categories, vendor categories, but no guests.
 - **EVT-06 (M)** Audit log of key changes (who changed what, when) for budget, payments, RSVP and permissions.
 - **EVT-07 (M)** **Data retention: 1 year after the event.**
@@ -101,13 +98,18 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
   - **What is deleted**: on the deletion date, all event data is **permanently deleted**: guests and households, RSVPs, travel and rooms, seating, messages and chat, broadcasts, services/requirements, quotes, contracts, invoices, payments, budget, gifts and thank-yous, the wedding website, the photo gallery (all media and face data), uploaded files and the event's audit log. Guest magic links, website URLs and vendor portal access to the event stop working.
   - **What is kept**: only **anonymised aggregate counts** (e.g. number of guests, functions), for product metrics. **Templates** saved from the event (EVT-05), which contain no personal data, also stay. User accounts (login identities) remain, and their membership in the deleted event is removed.
 - **EVT-08 (M)** **Before deletion: reminders and export.**
-  - **Reminders**: Owner and Hosts are notified **60, 30 and 7 days** before deletion (in-app plus email/WhatsApp).
+  - **Reminders**: Hosts are notified **60, 30 and 7 days** before deletion (in-app plus email/WhatsApp).
   - **Full archive**: a one-click download of the whole event. It includes Excel files (guests, RSVPs, budget, payments, vendors, gifts and thank-yous), PDFs (run sheets, invoices, contracts) and a ZIP of gallery originals (split into parts if large).
   - **Vendors**: vendors are reminded to download their own invoices and payment records for the event.
 - **EVT-09 (M)** **Earlier deletion**:
-  - **Whole event**: the Owner can delete the event at any time (with step-up OTP, EVT-01d, and a 7-day undo window).
-  - **One guest**: an individual guest can ask for their data to be deleted at any time (DPDP right to erasure). Coordinators process the request from the guest's record and it is logged.
+  - **Whole event**: a Host (or the App Admin) can delete the event at any time (with step-up OTP, EVT-01d, and a 7-day undo window).
+  - **One guest**: an individual guest can ask for their data to be deleted at any time (DPDP right to erasure). A Host or Planner processes the request from the guest's record and it is logged.
   - **Backups**: deleted data is purged from backups within **35 days** (the backup rotation window).
+- **EVT-10 (M)** **App Admin console**:
+  - **Users**: list, search, suspend/reactivate and merge accounts; designate other App Admins.
+  - **Events**: list all events with usage; **open any event with full view/edit access**.
+  - **Platform**: usage limits and per-event overrides, limit-increase requests, provider rate table and the cost dashboard (§4.1).
+  - **Safeguards**: App Admin actions require step-up OTP (EVT-01d), are recorded in the platform audit log and in the event's own audit log, and are visible to that event's Hosts (marked "App Admin").
 
 ### 3.2 Functions & Itinerary (`ITN`)
 - **ITN-01 (M)** Define **functions** (sub-events): name, date, start/end time, venue (name, address, map link), dress code/theme, description, cover image.
@@ -130,7 +132,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **RSV-01 (M)** Guests RSVP **per function, per member**: attending / not attending / maybe.
 - **RSV-02 (M)** Capture +1s (if allowed), kids count, meal preference (veg / non-veg / Jain / vegan / custom) and allergies.
 - **RSV-03 (M)** RSVP deadline; automated reminders to non-responders (via messaging channels).
-- **RSV-04 (M)** Planners and coordinators can record RSVPs on behalf of guests (phone calls with elders).
+- **RSV-04 (M)** Hosts and Planners can record RSVPs on behalf of guests (phone calls with elders).
 - **RSV-05 (M)** Live headcount per function, broken down by side, meal type and adults/kids; exportable for caterers.
 - **RSV-06 (M)** **Caterer live headcount**: vendors booked on a **Catering** service automatically see the live headcount for **the functions they're booked for**, and only those, in the vendor portal.
   - **What they see**: expected attendees (confirmed + maybe, shown separately), adults/kids/infants, meal preference counts (veg / non-veg / Jain / vegan / custom), allergy counts, and pending RSVPs still outstanding.
@@ -171,7 +173,7 @@ Event
 
 - **SVC-01 (M)** **Service catalogue** per event: service types (Catering, Decor, Photography, Videography, DJ/Music, Makeup, Mehendi artist, Venue, Transport, Hotel, Florist, Pandit, Lighting, Security, …). Planners can add custom types. Each type can carry **requirement templates** (e.g. Catering → meal, counters, staff, crockery).
 - **SVC-02 (M)** Add **services to each function**, e.g. Sangeet → Catering, Decor, DJ, Photography. A function shows all its services and their fulfilment status at a glance.
-- **SVC-03 (M)** Each service has an **owner** (planner or function coordinator), notes/brief, reference images, and a status rolled up from its requirements.
+- **SVC-03 (M)** Each service has an **owner** (a Planner or Host), notes/brief, reference images, and a status rolled up from its requirements.
 - **SVC-04 (M)** **Requirements** under a service, each with:
   - **Quantity, unit and specs**: e.g. 400 plates, 20 cars, 2 cameras, 4K; free-text specs and attachments (menu, mood board).
   - **Date/time and venue**: default from the function, overridable (e.g. decor set-up the evening before).
@@ -183,12 +185,12 @@ Event
 - **SVC-07 (M)** **Gap view**: across the event, list requirements not fully covered, sorted by function date and priority, with days remaining.
 - **SVC-08 (S)** Mark requirements **delivered** after the function (by the service owner, optionally confirmed by the vendor). This can release the final payment milestone.
 - **SVC-09 (S)** Copy services and requirements from one function to another, or from an event template.
-- **SVC-10 (M)** **Proposal & approval workflow**:
-  - **Who proposes**: Side Coordinators (any function, tagged with their side) and Function Coordinators (their own functions) can **propose** new requirements, new services, or changes to existing requirements (quantity, specs, timing, estimate).
-  - **Who approves**: the **Planner** reviews proposals and can approve, reject (with reason) or request changes. The Owner can also approve, as a fallback when no Planner is assigned.
+- **SVC-10 (M)** **Host approval of planner changes**:
+  - **What needs approval**: when a **Planner** creates or changes services or requirements (new service, new requirement, quantity, specs, timing, estimate, cancellation), the change is submitted as a **proposal**. Changes made by a Host apply directly and are logged.
+  - **Who approves**: **any one Host** can approve, reject (with reason) or request changes.
   - **Before approval**: proposed items are visible but excluded from budget *planned* totals (shown separately as "pending proposals" with their estimated impact). They can't be sent for quotes or booked.
-  - **Changes to booked requirements**: changes to a requirement that's already booked also need approval. Once approved, the booked vendor is notified, and any cost change goes through budget approval (BGT-04).
-  - **Notifications and audit**: proposers are notified of decisions. Planners have an approval queue with a badge count, filterable by function and side. Every proposal, decision and comment is kept in the audit log.
+  - **Changes to booked requirements**: these follow the same flow. Once approved, the booked vendor is notified, and any cost change follows BGT-04.
+  - **Notifications and audit**: Planners are notified of decisions. Hosts get one combined **approval queue** (requirements, bookings, budget and payments) with a badge count, filterable by function and type. Every proposal, decision and comment is kept in the audit log.
 
 ### 3.8 Vendors & Quotes (`VND`)
 - **VND-01 (M)** Vendor directory: service types offered (one vendor can offer several), contacts, GSTIN, PAN, bank details (masked), rating, notes.
@@ -223,37 +225,29 @@ Event
   - **Committed**: sum of booked fulfilment amounts.
   - **Actual**: invoiced and paid amounts.
 - **BGT-02 (M)** Cross-cutting views: by **service type** (e.g. total Catering across all functions), by **function**, by **vendor** and by **payer**. Extra costs not tied to a service (e.g. a gifts budget) can be added as standalone budget lines.
-- **BGT-03 (M)** Allocate services or requirements to a **payer/side**: bride's family / groom's family / shared (split % or fixed amounts).
-- **BGT-04 (M)** **Spend approval workflow**:
-  - **Per-category thresholds**: each budget category has its own approval threshold, set by the Owner. Categories are the event's service types (Catering, Decor, …) plus categories for standalone budget lines. Example: Catering ₹2,00,000, Photography ₹75,000, Transport ₹50,000. Categories without a threshold use an event-wide default; a threshold of ₹0 means always approve.
-  - **What triggers approval**:
-    - a new booking/commitment (quote acceptance, VND-06) at or above the category threshold;
-    - an increase to an existing commitment (quote revision, approved change to a booked requirement, extra invoice amount) where the increase is at or above the threshold;
-    - any commitment that would push the category over its planned total.
-    For combined quotes, each included service is checked against its own category's threshold using its allocated amount. If any part needs approval, the whole booking waits for it.
-  - **Who approves, by payer**:
-    - **One family pays**: one approver from that family (a Host or the Owner tagged to that side).
-    - **Shared cost**: **both families must approve**, one approver from the bride's family and one from the groom's. The request shows each side's share.
-    - **Fallback**: if a side has no Host/Owner in the app, the Owner approves for that side, and this is recorded in the audit log.
-  - **Statuses**: pending → partially approved (awaiting the other family) → approved, or rejected. A rejection by either family rejects the request, with a mandatory comment; the requester can revise and resubmit, which restarts approvals.
-  - **Blocking**: until fully approved, a booking stays *pending approval*. Fulfilments are created as tentative, the vendor sees "awaiting confirmation", and no payment schedule is activated. The Planner cannot override.
-  - **Reminders**: approvers are notified (in-app plus their chosen channels) and reminded every 24 h. The approval queue shows what each family still has to approve. If payer allocation changes after approval (e.g. a cost becomes shared), the affected family must approve again.
+- **BGT-03 (M)** Label services, requirements or budget lines with a **payer** (bride's family / groom's family / shared with split % or fixed amounts) for reporting. The payer is a label only; it doesn't affect who can see or approve.
+- **BGT-04 (M)** **Host approval of money changes**:
+  - **What needs approval**: these money actions by a **Planner** need Host approval:
+    - a new booking/commitment (quote acceptance, VND-06);
+    - quote revisions and other changes to existing commitments;
+    - new or changed budget lines and estimates;
+    - payment records (PAY-03), which show as *recorded, awaiting Host confirmation*;
+    - anything that pushes a category over its planned total.
+    The same actions by a Host apply directly and are logged.
+  - **Who approves**: **any one Host**.
+  - **Optional auto-approve thresholds**: per budget category (the event's service types plus standalone categories), Hosts can set an amount below which Planner bookings and changes are auto-approved. **Default ₹0, so everything needs approval.** For combined quotes, each included service is checked against its own category using its allocated amount.
+  - **Statuses**: pending → approved, rejected (mandatory comment) or changes requested. The Planner can revise and resubmit.
+  - **Blocking**: until approved, a booking stays *pending approval*. Fulfilments are tentative, the vendor sees "awaiting confirmation", and no payment schedule is activated.
+  - **Reminders**: Hosts are notified (in-app plus their chosen channels) and reminded every 24 h about pending items.
 - **BGT-05 (M)** Budget dashboard: total vs planned, by category, function and payer; variance highlights.
 - **BGT-06 (M)** INR formatting with Indian grouping (₹12,34,567) and lakh/crore short form.
-- **BGT-07 (M)** **Side coordinator finance view** (read-only): a Side Coordinator sees the budget and payments **where their side is a payer**.
-  - **Fully paid by their side**: the full planned, committed and actual amounts.
-  - **Shared costs**: only their side's share (e.g. 50% of ₹8,00,000 = ₹4,00,000), with the split shown. The other side's paid status for the shared item is shown as paid / not paid, without its payment details.
-  - **Costs paid only by the other side**: not shown.
-  - **Payments**: the payment schedule, invoices, paid/due/overdue status and receipts for their side's share. They also get their own side's payables report and dashboard (BGT-05 and PAY-06, filtered to their side).
-  - **Bank details**: vendor bank details stay hidden (Owner/Host/Planner only).
-  - **No editing**: they can't edit budget lines, record payments or approve spend, but they can comment and propose changes through the proposal workflow (SVC-10).
 
 ### 3.10 Invoices & Payment Tracking (`PAY`)
 - **PAY-01 (M)** Invoices: vendor, number, date, line items, **GST** (CGST/SGST or IGST, rate, GSTIN), total, attachment; linked to a booking/budget line.
 - **PAY-02 (M)** **Payment schedule** per booking: advance / milestones / final, each with amount or %, due date and payer.
 - **PAY-03 (M)** Record payments: date, amount, mode (UPI, bank transfer, cheque, cash, card), reference no., payer, receipt upload.
 - **PAY-04 (M)** Status per milestone and invoice: **upcoming / due / overdue / partially paid / paid**; vendor sees the same status in the portal.
-- **PAY-05 (M)** Reminders for upcoming and overdue payments go to the payer side. The recipients are Owner/Host/Planner plus that side's Side Coordinator(s), configurable per event.
+- **PAY-05 (M)** Reminders for upcoming and overdue payments. The recipients are Hosts and Planners, configurable per event.
 - **PAY-06 (M)** Payables report: what's due this week/month, by payer and vendor; export to Excel/PDF.
 - **PAY-07 (C)** In-app payment collection or payout via gateway (Razorpay); **out of scope for v1**.
 
@@ -280,16 +274,16 @@ Event
 - **GFT-01 (M)** **Gift register**: record gifts per household (or per guest). Fields:
   - **Type**: cash shagun (envelope), UPI/bank transfer, cheque, gift item, gold/jewellery, voucher, other.
   - **Value**: amount in INR, or an item description with an optional estimated value.
-  - **Context**: the function where it was received, received *for* (bride / groom / couple / parents / other family member), received *by* (which family member or coordinator logged it), date, notes and an optional photo of the item.
-- **GFT-02 (M)** **Day-of envelope mode**: a fast mobile entry screen for whoever is collecting shagun at a function.
+  - **Context**: the function where it was received, received *for* (bride / groom / couple / parents / other family member), received *by* (who logged it), date, notes and an optional photo of the item.
+- **GFT-02 (M)** **Day-of envelope mode**: a fast mobile entry screen for whoever is collecting shagun at a function (a Host, or a Planner with gift access).
   - **Quick entry**: search the guest (or scan their check-in QR), enter the amount and envelope number, save, next.
   - **Unknown givers**: allowed with a free-text name.
   - **Offline**: works through poor connectivity (queued and synced, as for check-in).
 - **GFT-03 (M)** **Cash reconciliation**: per collector and function, compare the recorded total with the counted cash and record the hand-over (to whom, when), with any discrepancy flagged.
 - **GFT-04 (M)** **Bulk import** of post-event tally sheets from Excel, matched to households with a review step for unmatched names.
-- **GFT-05 (M)** **Summaries**: totals by function, family side, received-for and gift type; a list of households with no gift recorded (for follow-up or data-entry checks). Gifts are tracked **separately from the wedding budget** and are not offset against expenses.
+- **GFT-05 (M)** **Summaries**: totals by function, received-for and gift type; a list of households with no gift recorded (for follow-up or data-entry checks). Gifts are tracked **separately from the wedding budget** and are not offset against expenses.
 - **GFT-06 (S)** **Gift history across events (*vyavhar* / *lena-dena*)**: since one account can hold multiple events, show a household's gifts given and received across the family's events, to inform reciprocal gifting. Past gifts *given* can be entered manually. Limited by retention (EVT-07): history only covers events still within their 1-year window, so the archive export is the family's long-term record.
-- **GFT-07 (M)** **Privacy**: gift data is visible only to the **Owner and Hosts of the receiving family side**. Side Coordinators can record gifts and see only their own entries. Planners have no access unless the Owner grants it. Guests and vendors never see gift data. Every edit is in the audit log.
+- **GFT-07 (M)** **Privacy**: gift data is visible to **Hosts** (and the App Admin). Planners have no access unless a Host grants it, either **record-only** (envelope mode, sees only their own entries) or **full**. Guests and vendors never see gift data. Every edit is in the audit log.
 - **GFT-08 (M)** **Thank-you tracker**: per household, status *not started → drafted → sent* (plus *not needed*), channel, sent date and sent by. Households that attended but gave no gift can also be thanked.
 - **GFT-09 (M)** **Thank-you notes**:
   - **Templates**: per language (English, Hindi, …) with merge fields such as guest name, functions attended, gift item and a personal line. **Amounts are never inserted** into messages.
@@ -308,7 +302,7 @@ Event
   - **FAQs**: free text.
   - **Photo gallery**: pre-wedding/engagement photos uploaded by the family.
   - **Gift note**: free text, e.g. "Your blessings are our gift".
-  - **Contact**: coordinator names and phone numbers, chosen by the family.
+  - **Contact**: contact names and phone numbers, chosen by the family.
 - **WEB-03 (M)** **Visibility modes**:
   - **Unlisted** (the default): anyone with the link, `noindex`.
   - **Passcode-protected**: one shared passcode, rate-limited.
@@ -325,7 +319,7 @@ Event
 - **WEB-07 (M)** **Design & languages**:
   - **Look**: a choice of wedding theme templates (traditional, modern, minimal), colour palette, fonts, monogram/logo and cover photo.
   - **Languages**: content entered per language with a language toggle (English + Hindi in v1).
-- **WEB-08 (M)** **Editor**: section-based editor with live preview, draft vs published versions, and publish/unpublish. Owner, Host or Planner can edit; **publishing needs Owner or Host**.
+- **WEB-08 (M)** **Editor**: section-based editor with live preview, draft vs published versions, and publish/unpublish. Hosts and Planners can edit; **publishing needs a Host**.
 - **WEB-09 (M)** **Sharing**: share link with a rich preview (Open Graph image, title, date) for WhatsApp and social media. QR code of the site URL for printed invites. "Add to calendar" for public functions.
 - **WEB-10 (S)** **Live updates on the day**: an announcements strip fed by broadcasts marked "show on website", plus a live-stream link/embed for remote family.
 - **WEB-11 (S)** **Custom domain** (e.g. `priyawedsarjun.com`) with automatic HTTPS.
@@ -342,7 +336,7 @@ Event
   - **Who**: members upload from the app; guests upload from their magic link / the personalised website, or by scanning a per-function upload QR displayed at the venue.
   - **Attribution**: every upload is tied to a household or member.
   - **Settings**: guest uploads can be turned on or off per event.
-- **GAL-04 (M)** **Moderation**: guest uploads go to a moderation queue (Owner/Host/Planner approve or hide) before others can see them. Auto-approve can be switched on per event. Anyone can **request removal** of a photo they appear in; requests go to the family.
+- **GAL-04 (M)** **Moderation**: guest uploads go to a moderation queue (Hosts/Planners approve or hide) before others can see them. Auto-approve can be switched on per event. Anyone can **request removal** of a photo they appear in; requests go to the family.
 - **GAL-05 (M)** **Access**:
   - **Guests**: they see only galleries for functions they were **invited to**, following the same per-function invite rules (private functions stay private), plus their own uploads.
   - **Family**: members see everything, subject to release state.
@@ -366,8 +360,8 @@ Event
 | **Responsiveness / PWA** | Mobile-first for guest, vendor and day-of screens. Installable PWA. Cached run sheet, guest lookup and check-in work through brief connectivity loss at venues. |
 | **Performance** | Lists of 1,000 guests filter and search in under 300 ms (p95); pages interactive in under 2.5 s on 4G. The wedding website is statically generated/cached and loads in under 2 s on 3G-class connections, with images optimised and lazy-loaded. |
 | **Scale** | ~1,000 guests, 40 vendors and ~50 staff users per event; around 100 concurrent events at launch. |
-| **Security** | HTTPS everywhere; no passwords stored; OTPs are hashed, short-lived, attempt-limited and rate-limited; magic links are long, unguessable, revocable and rate-limited; role and scope checks enforced server-side; vendor bank/tax data encrypted at rest and masked in the UI. |
-| **Privacy** | Personal data (phones, travel) visible only to roles that need it. **No government ID data is collected or stored** (data minimisation). **Retention: 1 year after the event, then permanent deletion** (EVT-07–09); full export available before deletion. Aligned with India's DPDP Act 2023 (consent for messaging, purpose limitation). |
+| **Security** | HTTPS everywhere; no passwords stored; OTPs are hashed, short-lived, attempt-limited and rate-limited; magic links are long, unguessable, revocable and rate-limited; role checks enforced server-side; App Admin access audited; vendor bank/tax data encrypted at rest and masked in the UI. |
+| **Privacy** | Personal data (phones, travel) visible only to roles that need it. App Admins can access all event data; this must be stated in the privacy notice, and every admin access is logged and visible to the event's Hosts. **No government ID data is collected or stored** (data minimisation). **Retention: 1 year after the event, then permanent deletion** (EVT-07–09); full export available before deletion. Aligned with India's DPDP Act 2023 (consent for messaging, purpose limitation). |
 | **Reliability** | Daily backups with point-in-time recovery (35-day rotation, so deletions propagate to backups within 35 days); 99.5% uptime target; message sending through a retryable job queue. |
 | **Auditability** | Immutable audit log for money, RSVP and permission changes. |
 | **Accessibility** | WCAG 2.1 AA for guest-facing pages; large tap targets and readable fonts for elderly guests. |
@@ -377,7 +371,7 @@ Event
 
 ### 4.1 Usage Limits & Cost Controls (defaults)
 
-EventHub is free for personal use, so per-event limits keep running costs predictable. All values below are **defaults in platform configuration**: the platform operator can change them globally or raise them for a specific event without a code change. Provider prices are **not hard-coded**; they live in a configurable rate table.
+EventHub is free for personal use, so per-event limits keep running costs predictable. All values below are **defaults in platform configuration**: the App Admin can change them globally or raise them for a specific event without a code change. Provider prices are **not hard-coded**; they live in a configurable rate table.
 
 **Messaging** (per event, over its whole lifetime)
 
@@ -402,19 +396,19 @@ EventHub is free for personal use, so per-event limits keep running costs predic
 | Storage tiering | Originals move to a cheaper infrequent-access tier 90 days after upload. Web renditions stay on standard storage + CDN. |
 
 **Controls**
-- **LIM-01 (M)** **Usage meter** per event (Owner/Host/Planner): messages sent by channel vs limit, and storage used vs limit, with a breakdown by function and by uploader type.
-- **LIM-02 (M)** **Pre-send estimate**: before a broadcast or bulk send, show the number of recipients and messages per channel and the remaining quota (plus an estimated cost from the rate table, visible to the operator).
-- **LIM-03 (M)** **Warnings** at 80% and 95% of any limit (in-app plus email to the Owner).
+- **LIM-01 (M)** **Usage meter** per event (Hosts/Planners): messages sent by channel vs limit, and storage used vs limit, with a breakdown by function and by uploader type.
+- **LIM-02 (M)** **Pre-send estimate**: before a broadcast or bulk send, show the number of recipients and messages per channel and the remaining quota (plus an estimated cost from the rate table, visible to the App Admin).
+- **LIM-03 (M)** **Warnings** at 80% and 95% of any limit (in-app plus email to Hosts).
   - **At 100% of a messaging limit**: further bulk sends on that channel are blocked; one-to-one messages and OTPs still work.
   - **At 100% of storage**: new guest uploads are blocked first; vendor deliveries can still use a 10% reserve so professional photos are never lost.
-- **LIM-04 (M)** **Limit increase requests**: the Owner can request more from inside the app; the operator approves it in an admin view.
-- **LIM-05 (M)** **Operator cost dashboard and alerts**: platform-wide monthly usage and estimated spend per provider (WhatsApp, SMS, email, storage, bandwidth), with configurable monthly budget alerts.
+- **LIM-04 (M)** **Limit increase requests**: a Host can request more from inside the app; the App Admin approves it in the admin console (EVT-10).
+- **LIM-05 (M)** **App Admin cost dashboard and alerts**: platform-wide monthly usage and estimated spend per provider (WhatsApp, SMS, email, storage, bandwidth), with configurable monthly budget alerts.
 
 ## 5. Core Data Model (conceptual)
 
 ```
-User ─< EventMember >─ Event
-                 └─ role, side_scope, function_scope[]
+User (is_app_admin) ─< EventMember >─ Event
+                          └─ role: host | planner, gift_access: none | record | full
 
 Event ─< Function ─< RunSheetItem (owner: Member|Vendor)
       ─< Task (assignee, function?)
@@ -437,10 +431,9 @@ Function ─< Service (type, owner, brief, payer allocation)
                     ├─< PaymentMilestone ─< Payment
                     └─< Invoice ─< InvoiceLine (GST)
       ─< BudgetLine (standalone costs) ─ payer allocation
-      ─< CategoryThreshold (category, amount)
-      ─< ApprovalRequest (booking | revision | overspend, amount, per-side shares, status)
-              └─< ApprovalDecision (side, approver, approve/reject, comment, at)
-      ─< Proposal (proposer, target: new Service|Requirement or change diff, status, decision by, comments)
+      ─< ApprovalRequest (requested_by planner; type: service/requirement change | booking | revision | budget line | payment | overspend; amount; status)
+              └─< ApprovalDecision (host, approve/reject/changes, comment, at)
+      ─< CategoryAutoApprove (category, amount; default 0)
       ─< Thread (team|vendor|function) ─< Message
       ─< Broadcast (segment, channels) ─< Delivery (status per recipient)
       ─ Website (slug, visibility, passcode_hash, theme, locales[], published_version, custom_domain?)
@@ -449,7 +442,7 @@ Function ─< Service (type, owner, brief, payer allocation)
       ─< GalleryAlbum (function, title, release state)
               └─< MediaItem (uploader: Member|Vendor|Household, type photo|video, original + renditions, taken_at, status pending|approved|hidden, favourites, album_selection)
       ─< MediaRemovalRequest / FaceConsent (opt-in, S)
-      ─< Gift (household|free-text giver, type, amount|item, function, received_for, recorded_by, envelope_no, side)
+      ─< Gift (household|free-text giver, type, amount|item, function, received_for, recorded_by, envelope_no)
       ─< CashHandover (collector, function, recorded vs counted, handed_to)
       ─< ThankYou (household, status, channel, template, sent_at, sent_by)
       ─< AuditLog
@@ -459,12 +452,12 @@ Function ─< Service (type, owner, brief, payer allocation)
 
 ## 6. Key User Journeys
 
-1. **Set up the wedding**: Owner creates the event → adds functions → invites the planner and side coordinators → applies the checklist and budget template.
-2. **Build the guest list**: Coordinators import Excel → map columns → fix duplicates → tag side and groups → set per-function invites.
+1. **Set up the wedding**: Host creates the event → adds functions → invites other Hosts and the Planner(s) → applies the checklist and budget template.
+2. **Build the guest list**: Planner imports Excel → map columns → fix duplicates → tag side and groups → set per-function invites.
 3. **Invite & RSVP**: Family builds and publishes the wedding website → send WhatsApp invites with personal magic links (which open the personalised site) → guests RSVP per function and member, enter travel → reminders go to non-responders.
 4. **Logistics**: Planner reviews the arrivals board → creates pickup runs → allocates rooms → exports rooming lists to hotels.
-5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → book one vendor, or split a requirement across vendors (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → above the category threshold, the paying family approves (both families for shared costs) → vendor uploads invoice in the portal → payer records payment → vendor sees "Paid".
-6. **Day-of**: Coordinators open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests → shagun collectors log envelopes in envelope mode and reconcile cash after each function.
+5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → Planner books one vendor, or splits a requirement across vendors → a Host approves (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → vendor uploads invoice in the portal → Planner records payment → Host confirms → vendor sees "Paid".
+6. **Day-of**: Planners open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests → Hosts (or Planners with gift access) log envelopes in envelope mode and reconcile cash after each function.
 7. **After the wedding**: Family reviews gift summaries → drafts personalised thank-you notes from templates → sends via WhatsApp/email or prints cards → tracker shows who is still to be thanked. Photographers upload deliveries → family reviews and releases each function's gallery → guests are notified and browse/download their functions' photos → family picks album selections for the photographer.
 
 ---
@@ -472,7 +465,7 @@ Function ─< Service (type, owner, brief, payer allocation)
 ## 7. Technical Direction
 
 - **Frontend/Backend**: Next.js (App Router, TypeScript), React Server Components plus server actions/route handlers; Tailwind CSS with an accessible component library (e.g. shadcn/ui).
-- **Database**: PostgreSQL via Prisma. Every event-scoped table carries `event_id`; authorisation is centralised in a policy layer (role + side/function scope).
+- **Database**: PostgreSQL via Prisma. Every event-scoped table carries `event_id`; authorisation is centralised in a policy layer (App Admin / Host / Planner / Vendor / Guest) plus an approval engine for Planner changes.
 - **Auth**: passwordless OTP via phone (SMS through an Indian DLT-compliant provider such as MSG91 or Twilio Verify, plus WhatsApp authentication templates) or email. Implemented as a custom OTP provider on Auth.js, or a managed service. Database-backed sessions; signed, revocable tokens for guest household links.
 - **Background jobs**: Queue (e.g. BullMQ/Redis or pg-boss) for messaging, reminders, imports and exports.
 - **Integrations**: WhatsApp BSP, email provider (Resend/SES), SMS provider with DLT templates, object storage (S3-compatible) with a CDN and an image-processing pipeline (e.g. `sharp` workers for thumbnails/renditions, video transcoding via a managed service); tus/S3 multipart for resumable uploads.
@@ -517,7 +510,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 
 ## 10. Assumptions
 
-- Families use one or more planners or tech-comfortable coordinators; elders mainly use guest magic links or are handled by coordinators.
+- Each event has one or more Hosts and usually one or more Planners; elders mainly use guest magic links, or Planners record RSVPs for them.
 - One event typically has 5–8 functions over 2–4 days, sometimes across multiple venues/cities.
 - Vendors invoice in INR with GST; some small vendors have no GSTIN (GST fields optional).
 - Payments happen outside the app (UPI/bank/cash); the app records them as the system of record.
