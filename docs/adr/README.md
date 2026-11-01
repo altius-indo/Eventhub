@@ -34,3 +34,6 @@ decisions with the `adr` skill (`.claude/skills/adr`) using [template.md](templa
 | [0027](0027-offline-envelope-queue.md) | Offline envelope entry with client keys | Accepted |
 | [0028](0028-caterer-headcount-baseline-and-lock.md) | Caterer headcount: per-booking baseline, lazy freeze at the lock | Accepted |
 | [0029](0029-notifications-rendered-at-read.md) | Notifications stored as kind + data, rendered when read | Accepted |
+| [0030](0030-object-storage.md) | Object storage: private Vercel Blob in production, filesystem in development | Accepted |
+| [0033](0033-retention-and-deletion.md) | Retention, archive and deletion of event data | Accepted |
+| [0034](0034-offline-check-in-snapshot.md) | Offline check-in snapshot and day-of page caching | Accepted |

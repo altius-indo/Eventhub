@@ -42,6 +42,9 @@ import {
   updateHouseholdAction,
 } from "../actions";
 import { isUuid } from "@/lib/ids";
+import { formatDate } from "@/i18n/core";
+import { openErasureRequest } from "@/lib/retention";
+import { eraseNowAction, recordErasureAction } from "./erasure-actions";
 
 function ConfirmForm({ action, label, confirm, tone }: { action: () => Promise<void>; label: string; confirm: string; tone?: "danger" }) {
   return (
@@ -76,6 +79,7 @@ export default async function HouseholdPage({ params, searchParams }: PageProps<
   const canEdit = ctx.can("guests.edit");
   const labels = guestFieldLabels(t);
   const optOut = await householdOptOut(db, eventId, householdId);
+  const erasure = canEdit ? await openErasureRequest(db, eventId, householdId) : null;
 
   return (
     <div className="space-y-4">
@@ -362,6 +366,41 @@ export default async function HouseholdPage({ params, searchParams }: PageProps<
           {canEdit && <SubmitButton>{t("common.save")}</SubmitButton>}
         </SimpleForm>
       </Card>
+
+      {/* Right to erasure (EVT-09) */}
+      {canEdit && (
+        <Card>
+          <CardTitle>{t("retention.eraseTitle")}</CardTitle>
+          <p className="mb-3 text-sm text-muted">{t("retention.eraseHelp")}</p>
+          {erasure ? (
+            <div className="space-y-3">
+              <Alert tone="warning">{t("retention.pendingRequest", { date: formatDate(locale, erasure.requestedAt) })}</Alert>
+              <SimpleForm action={eraseNowAction.bind(null, eventId, householdId)}>
+                <ConfirmButton variant="danger" confirm={t("retention.eraseConfirm")}>
+                  {t("retention.eraseNow")}
+                </ConfirmButton>
+              </SimpleForm>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <SimpleForm action={recordErasureAction.bind(null, eventId, householdId)} className="grid gap-3 sm:grid-cols-[auto_1fr_auto] sm:items-end">
+                <Field label={t("retention.requestedOn")} htmlFor="erasure-requested">
+                  <Input id="erasure-requested" name="requestedOn" type="date" />
+                </Field>
+                <Field label={t("retention.note")} htmlFor="erasure-note">
+                  <Input id="erasure-note" name="note" maxLength={500} />
+                </Field>
+                <SubmitButton variant="secondary">{t("retention.recordButton")}</SubmitButton>
+              </SimpleForm>
+              <SimpleForm action={eraseNowAction.bind(null, eventId, householdId)}>
+                <ConfirmButton variant="danger" confirm={t("retention.eraseConfirm")}>
+                  {t("retention.eraseNow")}
+                </ConfirmButton>
+              </SimpleForm>
+            </div>
+          )}
+        </Card>
+      )}
 
       {canEdit && (
         <Card>

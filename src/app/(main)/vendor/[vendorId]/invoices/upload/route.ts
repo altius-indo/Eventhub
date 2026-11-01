@@ -63,7 +63,7 @@ export async function POST(req: Request, { params }: RouteContext<"/vendor/[vend
   if (file instanceof File && file.size > 0) {
     if (file.size > MAX_DOCUMENT_BYTES) return go("saved=1&fileErr=doc.too_large");
     try {
-      await saveDocument(db, ctx.event.id, ctx.actor, { owner: { invoiceId }, kind: "invoice", filename: file.name, data: Buffer.from(await file.arrayBuffer()) });
+      await saveDocument(db, ctx.event.id, ctx.actor, { owner: { invoiceId }, kind: "invoice", filename: file.name, data: Buffer.from(await file.arrayBuffer()), audience: "vendor" });
     } catch (e) {
       if (e instanceof DocumentError) return go(`saved=1&fileErr=doc.${e.code === "not_found" ? "invalid" : e.code}`);
       throw e;

@@ -7,3 +7,6 @@ process.env.AUTH_SECRET ??= "test-secret-test-secret-test-secret";
 process.env.EMAIL_PROVIDER = "dev";
 process.env.PHONE_PROVIDER = "dev";
 process.env.APP_ADMIN_IDENTIFIERS = "admin@example.com";
+// Object storage (ADR-0030): the filesystem driver in a throwaway directory.
+process.env.STORAGE_DRIVER = "fs";
+process.env.STORAGE_FS_ROOT ??= `${(await import("node:os")).tmpdir()}/eventhub-test-blobs-${process.pid}`;

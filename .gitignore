@@ -39,3 +39,6 @@ next-env.d.ts
 CLAUDE.local.md
 .claude/settings.local.json
 .claude/worktrees/
+
+# local object storage (fs driver, ADR-0030)
+/.data/

@@ -1,12 +1,16 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
 import { bookings, documentBlobs, documents, gifts, invoices, messages, payments, quotes, services, vendors, type DocumentRow } from "@/db/schema";
 import { audit, type Actor } from "./audit";
+import { documentKey, getStore } from "./storage";
+import { runStorageDeletions, queueStorageDeletion } from "./storage-gc";
+import { commit, free, reserve, StorageQuotaError, type Audience } from "./storage-quota";
 
 /**
- * Contracts, quotes, invoices and receipts (VND-09, PAY-01/03). Stored in Postgres behind this
- * module (ADR-0018) until object storage arrives with the gallery (M7).
+ * Contracts, quotes, invoices and receipts (VND-09, PAY-01/03). New files go to object storage
+ * (ADR-0030) and count against the event's storage quota; rows from before M7 keep their bytes
+ * in `document_blobs` (ADR-0018) until `scripts/migrate-documents-to-store.ts` moves them.
  */
 /**
  * Per-file limit. 20 MB by default; 4 MB on Vercel, whose functions refuse request bodies over
@@ -68,48 +72,84 @@ export async function saveDocument(
   db: Database,
   eventId: string,
   actor: Actor,
-  input: { owner: DocumentOwner; kind: (typeof DOCUMENT_KINDS)[number]; filename: string; data: Buffer },
+  input: {
+    owner: DocumentOwner;
+    kind: (typeof DOCUMENT_KINDS)[number];
+    filename: string;
+    data: Buffer;
+    /** Who is uploading, for the storage quota (vendors may use the 10% reserve, LIM-03). */
+    audience?: Audience;
+  },
 ) {
   if (input.data.length === 0) throw new DocumentError("invalid");
   if (input.data.length > MAX_DOCUMENT_BYTES) throw new DocumentError("too_large");
   const mime = sniffMime(input.data);
   if (!mime) throw new DocumentError("bad_type");
-  return db.transaction(async (tx) => {
-    const ownerCols = await checkOwner(tx, eventId, input.owner);
-    // Serialise uploads per event so the quota check holds.
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`docs:${eventId}`}))`);
-    const [{ used }] = await tx
-      .select({ used: sql<number>`coalesce(sum(${documents.bytes}), 0)::bigint`.mapWith(Number) })
-      .from(documents)
-      .where(eq(documents.eventId, eventId));
-    if (used + input.data.length > MAX_EVENT_DOCUMENT_BYTES) throw new DocumentError("quota");
-    const [doc] = await tx
-      .insert(documents)
-      .values({
-        eventId,
-        kind: input.kind,
-        ...ownerCols,
-        filename: cleanName(input.filename),
-        mime,
-        bytes: input.data.length,
-        sha256: createHash("sha256").update(input.data).digest("hex"),
-        uploadedBy: actor.userId,
-      })
-      .returning();
-    await tx.insert(documentBlobs).values({ documentId: doc.id, data: input.data });
-    await audit(tx, { eventId, actor, action: "document.uploaded", entityType: "document", entityId: doc.id, data: { name: doc.filename, kind: doc.kind } });
-    return doc;
-  });
+  const store = getStore();
+  const id = randomUUID();
+  const key = documentKey(eventId, id);
+  let stored = false;
+  try {
+    return await db.transaction(async (tx) => {
+      const ownerCols = await checkOwner(tx, eventId, input.owner);
+      // Serialise uploads per event so the quota check holds.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`docs:${eventId}`}))`);
+      const [{ used }] = await tx
+        .select({ used: sql<number>`coalesce(sum(${documents.bytes}), 0)::bigint`.mapWith(Number) })
+        .from(documents)
+        .where(eq(documents.eventId, eventId));
+      if (used + input.data.length > MAX_EVENT_DOCUMENT_BYTES) throw new DocumentError("quota");
+      await reserve(tx, eventId, input.data.length, input.audience ?? "member");
+      const [doc] = await tx
+        .insert(documents)
+        .values({
+          id,
+          eventId,
+          kind: input.kind,
+          ...ownerCols,
+          filename: cleanName(input.filename),
+          mime,
+          bytes: input.data.length,
+          sha256: createHash("sha256").update(input.data).digest("hex"),
+          storageKey: key,
+          uploadedBy: actor.userId,
+        })
+        .returning();
+      // Upload last, inside the transaction: if it fails nothing is recorded.
+      await store.put(key, input.data, mime);
+      stored = true;
+      await commit(tx, eventId, input.data.length);
+      await audit(tx, { eventId, actor, action: "document.uploaded", entityType: "document", entityId: doc.id, data: { name: doc.filename, kind: doc.kind } });
+      return doc;
+    });
+  } catch (e) {
+    // The row didn't commit, so the object would be an orphan.
+    if (stored) await store.delete(key).catch(() => undefined);
+    if (e instanceof StorageQuotaError) throw new DocumentError("quota");
+    throw e;
+  }
 }
 
-export async function getDocument(db: Tx, eventId: string, documentId: string) {
-  const [row] = await db
-    .select({ doc: documents, data: documentBlobs.data })
+/** A document with its bytes, from object storage or (older rows) from document_blobs. */
+export async function getDocument(db: Tx, eventId: string, documentId: string): Promise<{ doc: DocumentRow; data: Buffer }> {
+  const [doc] = await db
+    .select()
     .from(documents)
-    .innerJoin(documentBlobs, eq(documentBlobs.documentId, documents.id))
     .where(and(eq(documents.id, documentId), eq(documents.eventId, eventId)));
+  if (!doc) throw new DocumentError("not_found");
+  return { doc, data: await documentBytes(db, doc) };
+}
+
+/** The bytes of a document row (store first, legacy table as fallback). */
+export async function documentBytes(db: Tx, doc: Pick<DocumentRow, "id" | "storageKey">): Promise<Buffer> {
+  if (doc.storageKey) {
+    const data = await getStore().getBytes(doc.storageKey);
+    if (!data) throw new DocumentError("not_found");
+    return data;
+  }
+  const [row] = await db.select({ data: documentBlobs.data }).from(documentBlobs).where(eq(documentBlobs.documentId, doc.id));
   if (!row) throw new DocumentError("not_found");
-  return row;
+  return row.data;
 }
 
 export async function listDocuments(db: Tx, eventId: string, owner: DocumentOwner): Promise<DocumentRow[]> {
@@ -140,7 +180,7 @@ export function isPlanningDocument(doc: Pick<DocumentRow, "giftId" | "messageId"
 }
 
 export async function deleteDocument(db: Database, eventId: string, actor: Actor, documentId: string, opts: { planningOnly?: boolean } = {}) {
-  await db.transaction(async (tx) => {
+  const queued = await db.transaction(async (tx) => {
     const [doc] = await tx
       .delete(documents)
       .where(
@@ -152,6 +192,9 @@ export async function deleteDocument(db: Database, eventId: string, actor: Actor
       )
       .returning();
     if (!doc) throw new DocumentError("not_found");
+    await free(tx, eventId, doc.bytes);
     await audit(tx, { eventId, actor, action: "document.deleted", entityType: "document", entityId: doc.id, data: { name: doc.filename } });
+    return doc.storageKey ? [await queueStorageDeletion(tx, doc.storageKey, "document")] : [];
   });
+  await runStorageDeletions(db, getStore(), queued);
 }

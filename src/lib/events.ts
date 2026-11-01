@@ -1,5 +1,5 @@
 import { ensureCatalogue } from "./catalogue";
-import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
 import {
@@ -105,13 +105,14 @@ export async function restoreEvent(db: Database, eventId: string, actor: Actor, 
   });
 }
 
-/** Permanently removes events whose undo window has passed. Run by `npm run jobs:purge`. */
-export async function purgeDeletedEvents(db: Tx, now = new Date()): Promise<number> {
-  const purged = await db
-    .delete(events)
-    .where(and(isNotNull(events.deletedAt), lte(events.purgeAfter, now)))
-    .returning({ id: events.id });
-  return purged.length;
+/**
+ * Permanently removes events whose undo window has passed. Run by `npm run jobs:purge` and the
+ * daily cron. Goes through the retention purge (ADR-0033): anonymised counts are kept and the
+ * event's stored files are queued for deletion.
+ */
+export async function purgeDeletedEvents(db: Database, now = new Date()): Promise<number> {
+  const { purgeSoftDeleted } = await import("./retention");
+  return purgeSoftDeleted(db, now);
 }
 
 export type EventListItem = { event: Event; role: MemberRole };

@@ -13,7 +13,7 @@ cd "$ROOT"
 psql "${BASE_URL%/*}/postgres" -qtc "select 1 from pg_database where datname='eventhub_e2e'" | grep -q 1 \
   || psql "${BASE_URL%/*}/postgres" -qc "create database eventhub_e2e" >/dev/null
 npx tsx scripts/migrate.ts "$E2E_DB_URL" >/dev/null
-psql "$E2E_DB_URL" -qc "TRUNCATE users, events, otp_challenges, dev_outbox, audit_logs, rate_events RESTART IDENTITY CASCADE" 2>/dev/null
+psql "$E2E_DB_URL" -qc "TRUNCATE users, events, otp_challenges, dev_outbox, audit_logs, rate_events, storage_deletions, event_metrics RESTART IDENTITY CASCADE" 2>/dev/null
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then npm run build >/dev/null; fi
 if curl -s -o /dev/null "http://localhost:$PORT/login"; then echo "Port $PORT is already in use (a leftover server?). Stop it first."; exit 1; fi

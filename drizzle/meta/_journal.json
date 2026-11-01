@@ -57,6 +57,13 @@
       "when": 1793548704566,
       "tag": "0007_communication",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793558543872,
+      "tag": "0008_m7_storage_retention",
+      "breakpoints": true
     }
   ]
 }

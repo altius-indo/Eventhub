@@ -1,6 +1,6 @@
 # ADR-0018: Documents in Postgres behind a small module (interim)
 
-- **Status**: Accepted
+- **Status**: Accepted; superseded by ADR-0030 for new documents
 - **Date**: 2026-11-01
 - **Requirements**: VND-09, PAY-01, PAY-03, §4 Files
 

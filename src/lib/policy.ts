@@ -9,6 +9,8 @@ export const permissions = [
   "event.view",
   "event.update",
   "event.delete",
+  // Full archive download (EVT-08): Hosts and App Admins only
+  "event.export",
   "members.view",
   "members.manage",
   "audit.view",
