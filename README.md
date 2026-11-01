@@ -95,13 +95,13 @@ In development, codes and invitations aren't really sent. They're written to a d
 
 ### Deploying to Vercel
 
-See [ADR-0021](docs/adr/0021-hosting-on-vercel.md). In the Vercel project, set `DATABASE_URL` (Neon pooled connection string), `AUTH_SECRET`, `DATA_ENCRYPTION_KEY`, `CRON_SECRET`, `APP_URL` and email settings (`EMAIL_PROVIDER=smtp`, `SMTP_URL`, `EMAIL_FROM`). Each deploy runs the migrations, then builds. Vercel Cron calls `/api/cron/daily` every morning (08:01 IST) for the reminders and the purge. On Vercel, documents are limited to 4 MB.
+See [ADR-0021](docs/adr/0021-hosting-on-vercel.md). In the Vercel project, set `DATABASE_URL` (Neon pooled connection string), `AUTH_SECRET`, `DATA_ENCRYPTION_KEY`, `CRON_SECRET`, `APP_URL` and email settings (`EMAIL_PROVIDER=resend` with `RESEND_API_KEY` and `EMAIL_FROM`, or SMTP). Each deploy runs the migrations, then builds. Vercel Cron calls `/api/cron/daily` every morning (08:01 IST) for the reminders and the purge. On Vercel, documents are limited to 4 MB.
 
 ### Message delivery
 
 | Setting | Values |
 |---|---|
-| `EMAIL_PROVIDER` | `dev` (outbox) or `smtp` (uses `SMTP_URL`, `EMAIL_FROM`) |
+| `EMAIL_PROVIDER` | `dev` (outbox), `smtp` (uses `SMTP_URL`, `EMAIL_FROM`) or `resend` (uses `RESEND_API_KEY`, `EMAIL_FROM`) |
 | `PHONE_PROVIDER` | `dev` (outbox) or `disabled`. Real SMS (DLT) and WhatsApp providers will be added once templates are approved. |
 
 `dev` providers refuse to run in production unless `ALLOW_DEV_DELIVERY=1` is set.

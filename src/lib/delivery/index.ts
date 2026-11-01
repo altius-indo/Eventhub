@@ -30,6 +30,28 @@ export function smtpProvider(transport: Transporter, from: string): DeliveryProv
   };
 }
 
+/** Resend's HTTP API (ADR-0021): no SMTP connection to keep open in serverless functions. */
+export function resendProvider(apiKey: string, from: string, fetchImpl: typeof fetch = fetch): DeliveryProvider {
+  return {
+    async send(_db, msg) {
+      if (msg.channel !== "email") throw new DeliveryError(`Resend cannot send ${msg.channel}`);
+      let res: Response;
+      try {
+        res = await fetchImpl("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ from, to: [msg.to], subject: msg.subject ?? "EventHub", text: msg.text }),
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch (err) {
+        throw new DeliveryError(`Resend request failed: ${(err as Error).message}`);
+      }
+      // The response body may echo the address but never the code; log only the status.
+      if (!res.ok) throw new DeliveryError(`Resend rejected the email (HTTP ${res.status})`);
+    },
+  };
+}
+
 function assertDevAllowed(kind: string) {
   if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEV_DELIVERY !== "1") {
     throw new DeliveryError(`${kind} is set to "dev", which is not allowed in production`);
@@ -52,6 +74,10 @@ export function providerFor(channel: Channel): DeliveryProvider | null {
         process.env.EMAIL_FROM ?? "EventHub <no-reply@localhost>",
       );
       return smtpCache;
+    }
+    if (kind === "resend") {
+      if (!process.env.RESEND_API_KEY) throw new DeliveryError("RESEND_API_KEY is not set");
+      return resendProvider(process.env.RESEND_API_KEY, process.env.EMAIL_FROM ?? "EventHub <onboarding@resend.dev>");
     }
     throw new DeliveryError(`Unknown EMAIL_PROVIDER "${kind}"`);
   }
