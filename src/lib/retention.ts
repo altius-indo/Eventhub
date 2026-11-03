@@ -37,6 +37,7 @@ import { eventPrefix, getStore } from "./storage";
 import { queueStorageDeletion, runStorageDeletions } from "./storage-gc";
 import { free } from "./storage-quota";
 import { todayIn } from "./tasks";
+import { resolveAppUrl } from "@/lib/app-url";
 
 /**
  * Data retention and deletion (EVT-07, EVT-08, EVT-09; ADR-0033).
@@ -188,7 +189,7 @@ async function emailsOf(db: Tx, userIds: string[]) {
  * 60, 30 and 7 days before deletion. Each threshold goes out once; if the job missed a threshold
  * (or the event was set up late) only the nearest one is sent. Returns events reminded.
  */
-export async function sendRetentionReminders(db: Database, now = new Date(), appUrl = process.env.APP_URL ?? ""): Promise<number> {
+export async function sendRetentionReminders(db: Database, now = new Date(), appUrl = resolveAppUrl()): Promise<number> {
   const base = appUrl.replace(/\/$/, "");
   let sent = 0;
   for (const { event, lastFn } of await eventsWithDates(db)) {
@@ -351,7 +352,7 @@ export async function purgeExpiredEvents(
   opts: { limit?: number; budgetMs?: number; appUrl?: string } = {},
 ): Promise<number> {
   const started = Date.now();
-  const base = (opts.appUrl ?? process.env.APP_URL ?? "").replace(/\/$/, "");
+  const base = (opts.appUrl || resolveAppUrl()).replace(/\/$/, "");
   const due = (await eventsWithDates(db)).filter(({ event, lastFn }) => {
     const d = retentionFor(event, lastFn, now).deletionDate;
     return d != null && todayIn(event.timezone, now) >= d;

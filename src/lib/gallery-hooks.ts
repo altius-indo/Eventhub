@@ -7,6 +7,7 @@ import { splitParts, zipItems, zipPath } from "./gallery";
 import { guestLinkUrl } from "./guest-links";
 import { registerTemplate } from "./outbox";
 import { getStore } from "./storage";
+import { resolveAppUrl } from "@/lib/app-url";
 
 /**
  * The gallery's registrations with shared extension points. Imported by `templates.ts` (so every
@@ -54,7 +55,7 @@ registerTemplate("gallery_ready", async (vars, locale, { db, row }) => {
     .from(households)
     .where(and(eq(households.id, row.householdId), eq(households.eventId, row.eventId)));
   if (!ev || !fn || !h) throw new Error("gallery_ready: missing rows");
-  const appUrl = String(vars.appUrl ?? process.env.APP_URL ?? "").replace(/\/$/, "");
+  const appUrl = String(vars.appUrl || resolveAppUrl()).replace(/\/$/, "");
   const lines = [t("gallery.readyMessage", { event: ev.coupleNames || ev.name, function: fn.name })];
   if (row.channel === "whatsapp" || row.channel === "sms") lines.push(t("broadcasts.stopLine"));
   if (!h.linkRevokedAt) lines.push(t("gallery.readyLink", { link: `${guestLinkUrl(appUrl, h)}?to=gallery` }));

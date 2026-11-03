@@ -3,11 +3,12 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "../src/db/schema";
 import { sendApprovalReminders } from "../src/lib/payments";
+import { resolveAppUrl } from "../src/lib/app-url";
 
 /** Daily job (run e.g. 8:00 IST): see sendApprovalReminders in src/lib/payments.ts. */
 async function main() {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const n = await sendApprovalReminders(drizzle(pool, { schema }), new Date(), (process.env.APP_URL ?? "").replace(/\/$/, ""));
+  const n = await sendApprovalReminders(drizzle(pool, { schema }), new Date(), resolveAppUrl());
   console.log(`Sent approval reminders: ${n}`);
   await pool.end();
 }

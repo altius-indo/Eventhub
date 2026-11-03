@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import type { User } from "@/db/schema";
 import { createTranslator, defaultLocale, isLocale, LOCALE_COOKIE, type Locale } from "@/i18n/core";
 import { hasRecentStepUp, SESSION_TTL_MS, validateSessionToken, type SessionRow } from "../auth-core";
+import { resolveAppUrl } from "../app-url";
 
 export const SESSION_COOKIE = "eh_session";
 
@@ -109,5 +110,5 @@ export async function requireStepUp(ctx: SessionContext, returnTo: string) {
 }
 
 export function appUrl(): string {
-  return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
+  return resolveAppUrl();
 }
