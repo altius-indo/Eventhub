@@ -2,9 +2,10 @@ import type { Metadata, Viewport } from "next";
 import { ServiceWorkerRegister } from "@/components/sw-register";
 import { getLocale } from "@/lib/server/session";
 import "./globals.css";
+import { resolveAppUrl } from "@/lib/app-url";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.APP_URL ?? "http://localhost:3000"),
+  metadataBase: new URL(resolveAppUrl()),
   title: { default: "EventHub", template: "%s · EventHub" },
   description: "Plan big weddings together: guests, itinerary, vendors, budgets and messaging in one place.",
   applicationName: "EventHub",

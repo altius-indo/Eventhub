@@ -4,6 +4,7 @@ import { safeEqual } from "@/lib/crypto";
 import { nextRenditionsDelay, processRenditions } from "@/lib/renditions";
 import { getStore } from "@/lib/storage";
 import "@/lib/templates";
+import { resolveAppUrl } from "@/lib/app-url";
 
 export const maxDuration = 60;
 /** Keep the follow-up wait inside this invocation's maxDuration (with a margin). */
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
   if (!secret || secret.length < 16 || !safeEqual(auth, `Bearer ${secret}`)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const url = new URL(req.url);
-  const appUrl = (process.env.APP_URL ?? url.origin).replace(/\/$/, "");
+  const appUrl = resolveAppUrl();
   const result = await processRenditions(getDb(), getStore(), { budgetMs: 40_000, appUrl });
   const delay = nextRenditionsDelay(result, new Date());
   if (delay != null) {

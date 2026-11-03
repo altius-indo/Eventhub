@@ -3,6 +3,7 @@ import type { Tx } from "@/db";
 import { events, households, type Event, type Household } from "@/db/schema";
 import { createTranslator, isLocale } from "@/i18n/core";
 import { hmac, safeEqual } from "./crypto";
+import { linkBase } from "./app-url";
 import { sendMessage, type Channel } from "./delivery";
 
 /**
@@ -40,11 +41,11 @@ export function makePassToken(householdId: string, version: number): string {
 }
 
 export function passUrl(appUrl: string, household: Pick<Household, "id" | "linkVersion">): string {
-  return `${appUrl}/c/${makePassToken(household.id, household.linkVersion)}`;
+  return `${linkBase(appUrl)}/c/${makePassToken(household.id, household.linkVersion)}`;
 }
 
 export function guestLinkUrl(appUrl: string, household: Pick<Household, "id" | "linkVersion">): string {
-  return `${appUrl}/g/${makeGuestToken(household.id, household.linkVersion)}`;
+  return `${linkBase(appUrl)}/g/${makeGuestToken(household.id, household.linkVersion)}`;
 }
 
 /** Returns the family and event for a valid, unrevoked link; null otherwise. */

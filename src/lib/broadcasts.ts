@@ -25,6 +25,7 @@ import { hmac, safeEqual } from "./crypto";
 import { guestLinkUrl } from "./guest-links";
 import { isUuid } from "./ids";
 import { CHANNELS, enqueue, estimate, isOptedOut, normalizeAddress, optIn, optOut, QuotaError, registerTemplate, type EnqueueItem, type Estimate } from "./outbox";
+import { linkBase } from "@/lib/app-url";
 
 /**
  * Guest broadcasts (MSG-02) with a pre-send estimate (LIM-02). A broadcast is a draft until sent;
@@ -322,7 +323,7 @@ registerTemplate("broadcast", async (vars, locale, { db, row }) => {
   if (!row.broadcastId) throw new Error("broadcast template without broadcast");
   const [b] = await db.select().from(broadcasts).where(eq(broadcasts.id, row.broadcastId));
   if (!b) throw new Error("broadcast missing");
-  const appUrl = String(vars.appUrl ?? process.env.APP_URL ?? "").replace(/\/$/, "");
+  const appUrl = linkBase(vars.appUrl);
   const lines = [b.title, "", bodyFor(b, locale)];
   // WhatsApp/SMS have no unsubscribe link: tell people how to stop (DPDP); staff record it.
   if (row.channel === "whatsapp" || row.channel === "sms") lines.push("", t("broadcasts.stopLine"));
@@ -333,7 +334,10 @@ registerTemplate("broadcast", async (vars, locale, { db, row }) => {
   if (row.channel === "email" && row.eventId) {
     lines.push("", t("broadcasts.unsubscribeLine", { link: `${appUrl}/u/${makeUnsubscribeToken(row.eventId, "email", row.toAddress)}` }));
   }
-  return { subject: b.title, text: lines.join("\n") };
+  // The title alone ("Baraat starts in 15 minutes") doesn't say which wedding the email is from.
+  const [ev] = await db.select({ name: events.name, coupleNames: events.coupleNames }).from(events).where(eq(events.id, b.eventId));
+  const from = ev ? ev.coupleNames || ev.name : "";
+  return { subject: from && !b.title.includes(from) ? `${b.title} · ${from}` : b.title, text: lines.join("\n") };
 });
 
 // ---------------------------------------------------------------------------

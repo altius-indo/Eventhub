@@ -7,6 +7,7 @@ import { zonedInstant } from "./caterer-headcount";
 import { notifyFunctionReady } from "./gallery";
 import { parseExif, readExifTags } from "./media-files";
 import type { ObjectStore } from "./storage";
+import { linkBase } from "@/lib/app-url";
 
 /**
  * Thumbnails and web renditions for gallery photos (ADR-0032).
@@ -260,7 +261,7 @@ export async function processRenditions(
 ): Promise<RenditionsResult> {
   const started = Date.now();
   const clock = opts.now ?? (() => new Date());
-  const appUrl = opts.appUrl ?? (process.env.APP_URL ?? "").replace(/\/$/, "");
+  const appUrl = linkBase(opts.appUrl);
   let processed = 0;
   for (;;) {
     if (opts.budgetMs && Date.now() - started > opts.budgetMs) break;

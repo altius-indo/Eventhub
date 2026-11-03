@@ -17,6 +17,7 @@ import { processStorageDeletions, reconcileStorage } from "@/lib/storage-gc";
 import { releaseExpiredReservations } from "@/lib/storage-quota";
 import { sweepOrphanObjects, sweepUploads } from "@/lib/gallery";
 import { processRenditions } from "@/lib/renditions";
+import { resolveAppUrl } from "@/lib/app-url";
 
 /** Long enough for a day's reminders across events. */
 export const maxDuration = 60;
@@ -41,7 +42,7 @@ export async function GET(req: Request) {
   }
   const db = getDb();
   const now = new Date();
-  const appUrl = (process.env.APP_URL ?? "").replace(/\/$/, "");
+  const appUrl = resolveAppUrl();
   const jobs: CronJob[] = [
     // [vendor-portal daily jobs]
     { name: "headcountLocks", run: () => freezeAllDueLocks(db, now) },

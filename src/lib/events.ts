@@ -15,6 +15,7 @@ import { createTranslator, type Locale } from "@/i18n/core";
 import { audit, type Actor } from "./audit";
 import { removeUserEventNotifications } from "./notifications";
 import { findUserByIdentifier } from "./auth-core";
+import { linkBase } from "./app-url";
 import { DeliveryError, sendMessage } from "./delivery";
 import { formatIdentifier, type Identifier } from "./identifiers";
 
@@ -261,13 +262,13 @@ export async function inviteMember(
     await sendMessage(db, {
       channel: identifier.type === "email" ? "email" : "sms",
       to: identifier.value,
-      subject: event.name,
+      subject: t("members.inviteSubject", { event: event.name }),
       text: t("members.inviteMessage", {
         inviter: input.inviterName,
         event: event.name,
         role: t(role === "host" ? "roles.host" : "roles.planner"),
         kind: t(identifier.type === "email" ? "members.kindEmail" : "members.kindPhone"),
-        url: `${input.appUrl}/login`,
+        url: `${linkBase(input.appUrl)}/login`,
       }),
     });
   } catch (err) {

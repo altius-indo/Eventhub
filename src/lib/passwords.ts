@@ -7,6 +7,7 @@ import { createTranslator, type Locale } from "@/i18n/core";
 import { audit } from "./audit";
 import { AccountSuspendedError, findUserByIdentifier, revokeAllSessions, signInWithIdentifier } from "./auth-core";
 import { randomToken, sha256 } from "./crypto";
+import { linkBase } from "./app-url";
 import { DeliveryError, sendMessage } from "./delivery";
 import { allowAttempt } from "./website";
 
@@ -188,7 +189,7 @@ export async function requestPasswordReset(db: Database, input: { email: string;
   const to = new Set(ids.map((i) => i.value));
   if (user.recoveryEmail && user.recoveryEmailVerifiedAt) to.add(user.recoveryEmail);
   const t = createTranslator(input.locale);
-  const link = `${input.appUrl}/login/reset/${token}`;
+  const link = `${linkBase(input.appUrl)}/login/reset/${token}`;
   for (const address of to) {
     try {
       await sendMessage(db, { channel: "email", to: address, subject: t("password.resetSubject"), text: t("password.resetEmail", { link }) });

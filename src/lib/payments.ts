@@ -21,6 +21,7 @@ import {
 import { createTranslator, formatInr, isLocale } from "@/i18n/core";
 import { ApprovalError, registerApprovalHandler, submitChangeTx, type SubmitResult } from "./approvals";
 import { audit, type Actor } from "./audit";
+import { linkBase } from "./app-url";
 import { DeliveryError, sendMessage } from "./delivery";
 import { gstFor, isValidGstin } from "./money";
 import { decide, ForbiddenError, type PolicySubject } from "./policy";
@@ -469,7 +470,8 @@ async function deliver(db: Tx, to: { email?: string; phone?: string }, subject: 
  * Daily (PAY-05): milestones due in 3 days, due today, or overdue (weekly), to the event's
  * chosen recipients. Each milestone is reminded at most once a day.
  */
-export async function sendPaymentReminders(db: Database, now = new Date(), appUrl = "") {
+export async function sendPaymentReminders(db: Database, now = new Date(), appUrl?: string) {
+  const base = linkBase(appUrl);
   const evs = await db.select().from(events).where(isNull(events.deletedAt));
   let sent = 0;
   for (const ev of evs) {
@@ -491,7 +493,7 @@ export async function sendPaymentReminders(db: Database, now = new Date(), appUr
       const locale = isLocale(p.user.locale) ? p.user.locale : "en";
       const t = createTranslator(locale);
       const lines = todo.map((r) => `• ${r.vendorName}: ${formatInr(locale, r.remaining)} (${t(`payments.status.${r.status}`)}, ${r.dueDate})`);
-      if (await deliver(db, p, t("payments.reminderSubject", { event: ev.name }), `${t("payments.reminderIntro")}\n${lines.join("\n")}\n${appUrl}/events/${ev.id}/budget/payables`)) sent++;
+      if (await deliver(db, p, t("payments.reminderSubject", { event: ev.name }), `${t("payments.reminderIntro")}\n${lines.join("\n")}\n${base}/events/${ev.id}/budget/payables`)) sent++;
     }
     await db.update(paymentMilestones).set({ lastRemindedOn: today }).where(inArray(paymentMilestones.id, todo.map((r) => r.milestoneId)));
   }
@@ -499,7 +501,8 @@ export async function sendPaymentReminders(db: Database, now = new Date(), appUr
 }
 
 /** Daily (BGT-04): Hosts get one reminder per event about requests waiting more than 24 hours. */
-export async function sendApprovalReminders(db: Database, now = new Date(), appUrl = "") {
+export async function sendApprovalReminders(db: Database, now = new Date(), appUrl?: string) {
+  const base = linkBase(appUrl);
   const dayAgo = new Date(now.getTime() - 24 * 3600_000);
   const rows = await db
     .select({ request: approvalRequests, event: events })
@@ -521,7 +524,7 @@ export async function sendApprovalReminders(db: Database, now = new Date(), appU
     for (const h of hosts) {
       const locale = isLocale(h.user.locale) ? h.user.locale : "en";
       const t = createTranslator(locale);
-      const text = `${t("approvals.reminderIntro", { count: items.length })}\n${items.map((i) => `• ${i.request.title}`).join("\n")}\n${appUrl}/events/${eventId}/approvals`;
+      const text = `${t("approvals.reminderIntro", { count: items.length })}\n${items.map((i) => `• ${i.request.title}`).join("\n")}\n${base}/events/${eventId}/approvals`;
       if (await deliver(db, h, t("approvals.reminderSubject", { event: items[0].event.name }), text)) sent++;
     }
     await db.update(approvalRequests).set({ lastRemindedAt: now }).where(inArray(approvalRequests.id, items.map((i) => i.request.id)));
