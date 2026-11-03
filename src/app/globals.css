@@ -1,0 +1,222 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Brand theme (2026-11-01): rose pink, wine and gold.
+ * Buttons and links use wine (#792943) for readable contrast with white text;
+ * the rose pink (#C65B83) is the brand highlight and focus colour.
+ */
+:root {
+  --bg: #fff7f5;
+  --surface: #ffffff;
+  --surface-muted: #faeef1;
+  --text: #30252b;
+  --text-muted: #756b70;
+  --border: #eddde3;
+  --primary: #792943;
+  --primary-hover: #5f1f34;
+  --primary-contrast: #ffffff;
+  --primary-soft: #f8e5ec;
+  --brand: #c65b83;
+  --accent: #d4af76;
+  --accent-soft: #f7ecdb;
+  --danger: #b42318;
+  --danger-contrast: #ffffff;
+  --danger-soft: #fdecea;
+  --success: #1f7a4d;
+  --success-soft: #e7f5ee;
+  --warning: #8a5a00;
+  --warning-soft: #fdf3dc;
+  --focus: #c65b83;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1a1316;
+    --surface: #231a1e;
+    --surface-muted: #2d2226;
+    --text: #f5ecef;
+    --text-muted: #b9a9b0;
+    --border: #3d2f35;
+    --primary: #e893b3;
+    --primary-hover: #f0aac4;
+    --primary-contrast: #2a0f1a;
+    --primary-soft: #3a2230;
+    --brand: #e893b3;
+    --accent: #d9b985;
+    --accent-soft: #352a1c;
+    --danger: #f2877d;
+    --danger-contrast: #1a0b09;
+    --danger-soft: #3a1f1c;
+    --success: #6fcf9a;
+    --success-soft: #1a2e23;
+    --warning: #e8bd5c;
+    --warning-soft: #33290f;
+    --focus: #e893b3;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #1a1316;
+  --surface: #231a1e;
+  --surface-muted: #2d2226;
+  --text: #f5ecef;
+  --text-muted: #b9a9b0;
+  --border: #3d2f35;
+  --primary: #e893b3;
+  --primary-hover: #f0aac4;
+  --primary-contrast: #2a0f1a;
+  --primary-soft: #3a2230;
+  --brand: #e893b3;
+  --accent: #d9b985;
+  --accent-soft: #352a1c;
+  --danger: #f2877d;
+  --danger-contrast: #1a0b09;
+  --danger-soft: #3a1f1c;
+  --success: #6fcf9a;
+  --success-soft: #1a2e23;
+  --warning: #e8bd5c;
+  --warning-soft: #33290f;
+  --focus: #e893b3;
+}
+
+/*
+ * The wedding website (src/app/(site)) has its own light palette from its theme, so shared
+ * controls (Input, SubmitButton, Alert, ...) must not switch to the dark tokens there.
+ * Applied by the site layout; the page still sets its own `--accent` inline.
+ */
+.site-light {
+  color-scheme: light;
+  --bg: #fff7f5;
+  --surface: #ffffff;
+  --surface-muted: #faeef1;
+  --text: #30252b;
+  --text-muted: #756b70;
+  --border: #eddde3;
+  --primary: #792943;
+  --primary-hover: #5f1f34;
+  --primary-contrast: #ffffff;
+  --primary-soft: #f8e5ec;
+  --brand: #c65b83;
+  --accent: #d4af76;
+  --accent-soft: #f7ecdb;
+  --danger: #b42318;
+  --danger-contrast: #ffffff;
+  --danger-soft: #fdecea;
+  --success: #1f7a4d;
+  --success-soft: #e7f5ee;
+  --warning: #8a5a00;
+  --warning-soft: #fdf3dc;
+  --focus: #c65b83;
+}
+/* Keep the page behind the site (overscroll, short pages) light too. */
+body:has(> .site-light) {
+  color-scheme: light;
+  background: #ffffff;
+  color: #30252b;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-contrast: var(--primary-contrast);
+  --color-primary-soft: var(--primary-soft);
+  --color-brand: var(--brand);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-contrast: var(--danger-contrast);
+  --color-danger-soft: var(--danger-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", "Helvetica Neue", Arial, sans-serif;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Print-optimised pages (ITN-07, ADR-0015): hide the app chrome, print on white. */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  header,
+  nav,
+  .print\:hidden {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+  .print-sheet {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+}
+
+/* Launch splash (src/components/splash-screen.tsx): fades out by itself, never blocks input. */
+.eh-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  pointer-events: none;
+  animation: eh-splash-out 0.4s ease-in 1s forwards;
+}
+@keyframes eh-splash-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eh-splash {
+    animation-duration: 0.01s;
+    animation-delay: 0.8s;
+  }
+}
+
+/* Ornate wedding-site theme: warm cream with a faint rose/marigold dot pattern (decorative). */
+.site-ornate {
+  background-color: #fff8ef;
+  background-image:
+    radial-gradient(circle at 12px 12px, rgb(194 24 91 / 0.07) 2.2px, transparent 2.6px),
+    radial-gradient(circle at 36px 36px, rgb(245 158 11 / 0.10) 2.6px, transparent 3px),
+    linear-gradient(180deg, rgb(255 236 214 / 0.65), rgb(255 248 239 / 0) 420px);
+  background-size: 48px 48px, 48px 48px, 100% 100%;
+}
+.site-ornate button[style*="background"],
+.site-ornate a[style*="background"] {
+  /* Crimson → magenta on the ornate theme's filled buttons (they set background: var(--accent)). */
+  background-image: linear-gradient(135deg, var(--accent), #b0175a) !important;
+  box-shadow: 0 6px 16px -8px rgb(155 17 30 / 0.6);
+}
