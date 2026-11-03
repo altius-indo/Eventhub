@@ -39,3 +39,4 @@ decisions with the `adr` skill (`.claude/skills/adr`) using [template.md](templa
 | [0032](0032-renditions.md) | Gallery renditions made by an in-app worker with sharp | Accepted |
 | [0033](0033-retention-and-deletion.md) | Retention, archive and deletion of event data | Accepted |
 | [0034](0034-offline-check-in-snapshot.md) | Offline check-in snapshot and day-of page caching | Accepted |
+| [0035](0035-preview-database.md) | Preview deployments use their own database | Accepted |
