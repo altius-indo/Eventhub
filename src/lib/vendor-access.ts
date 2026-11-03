@@ -5,6 +5,7 @@ import { createTranslator, isLocale } from "@/i18n/core";
 import { audit, type Actor } from "./audit";
 import type { Identifier } from "./identifiers";
 import { removeUserEventNotifications } from "./notifications";
+import { linkBase } from "./app-url";
 import { enqueue, registerTemplate } from "./outbox";
 
 /**
@@ -77,7 +78,7 @@ export async function inviteVendorContact(db: Database, input: { eventId: string
         eventId: input.eventId,
         purpose: "vendor_invite",
         templateKey: "vendor.invite",
-        vars: { vendor: v.vendor.name, event: v.eventName, link: `${input.appUrl}/vendor` },
+        vars: { vendor: v.vendor.name, event: v.eventName, link: `${linkBase(input.appUrl)}/vendor` },
         recipient: { addresses: { [input.identifier.type === "email" ? "email" : "sms"]: input.identifier.value }, locale: isLocale(actorRow?.locale) ? actorRow.locale : "en" },
         channels: input.identifier.type === "email" ? ["email"] : ["sms", "whatsapp"],
         bulk: false,

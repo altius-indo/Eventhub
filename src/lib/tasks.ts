@@ -16,6 +16,7 @@ import {
 } from "@/db/schema";
 import { createTranslator, isLocale, type MessageKey } from "@/i18n/core";
 import { audit, type Actor } from "./audit";
+import { linkBase } from "./app-url";
 import { DeliveryError, sendMessage } from "./delivery";
 
 export class TaskError extends Error {
@@ -312,7 +313,8 @@ export async function applyDefaultChecklist(db: Database, eventId: string, actor
  * Sends each assignee one message listing their open tasks that are overdue
  * or due tomorrow, at most once per day per task.
  */
-export async function sendTaskReminders(db: Database, now = new Date(), appUrl = "") {
+export async function sendTaskReminders(db: Database, now = new Date(), appUrl?: string) {
+  const base = linkBase(appUrl);
   const rows = await db
     .select({ task: tasks, event: events, user: users })
     .from(tasks)
@@ -347,7 +349,7 @@ export async function sendTaskReminders(db: Database, now = new Date(), appUrl =
         channel: target.type === "email" ? "email" : "sms",
         to: target.value,
         subject: t("tasks.reminderSubject"),
-        text: `${t("tasks.reminderIntro")}\n${lines.join("\n")}\n${appUrl}/events`,
+        text: `${t("tasks.reminderIntro")}\n${lines.join("\n")}\n${base}/events`,
       });
     } catch (err) {
       if (err instanceof DeliveryError) {

@@ -16,7 +16,7 @@ import {
   type Household,
   type RsvpStatus,
 } from "@/db/schema";
-import { createTranslator, isLocale } from "@/i18n/core";
+import { createTranslator, formatDay, isLocale } from "@/i18n/core";
 import { audit, type Actor } from "./audit";
 import { freezeDueLocks } from "./caterer-headcount";
 import { DeliveryError, sendMessage } from "./delivery";
@@ -336,8 +336,11 @@ export async function sendRsvpReminders(db: Database, appUrl: string, now = new 
       .orderBy(sql`${guests.isHead} desc`, asc(guests.sortOrder));
     const contact = members[0];
     if (!contact) continue;
-    const t = createTranslator(isLocale(household.locale) ? household.locale : "en");
-    const text = t("rsvp.reminderMessage", { family: household.name, event: event.name, date: event.rsvpDeadline, url: guestLinkUrl(appUrl, household) });
+    const locale = isLocale(household.locale) ? household.locale : "en";
+    const t = createTranslator(locale);
+    // "20 November 2026" / "20 नवंबर 2026", not the stored 2026-11-20.
+    const date = formatDay(locale, event.rsvpDeadline, { day: "numeric", month: "long", year: "numeric" });
+    const text = t("rsvp.reminderMessage", { family: household.name, event: event.name, date, url: guestLinkUrl(appUrl, household) });
     try {
       await sendMessage(db, {
         channel: contact.phone ? "sms" : "email",

@@ -14,3 +14,13 @@ export function resolveAppUrl(env: Record<string, string | undefined> = process.
   if (vercelHost) return `https://${vercelHost.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
   return "http://localhost:3000";
 }
+
+/**
+ * The base for a link in a message: the caller's `appUrl` when it has one, else `resolveAppUrl()`.
+ * Domain functions take `appUrl` from their caller; an empty or missing value must never turn a
+ * link into a bare path like "/login" (which isn't clickable in an email or SMS).
+ */
+export function linkBase(appUrl?: string | number | null): string {
+  const given = appUrl == null ? "" : String(appUrl).trim();
+  return (given || resolveAppUrl()).replace(/\/+$/, "");
+}

@@ -3,7 +3,7 @@ import type { Tx } from "@/db";
 import { eventMembers, events, notificationPrefs, notifications, userIdentifiers, users, vendorContacts, vendors, type NotificationRow } from "@/db/schema";
 import { isLocale, translateDynamic, type Locale } from "@/i18n/core";
 import { cancelQueued, enqueue } from "./outbox";
-import { resolveAppUrl } from "@/lib/app-url";
+import { linkBase } from "@/lib/app-url";
 
 /**
  * In-app notifications (MSG-05, ADR-0029). Rows hold a kind and ids/values; the text is
@@ -55,7 +55,10 @@ export type NotifyInput = {
 
 /** Renders a notification in a language (key `notifications.kinds.<kind>`). */
 export function renderNotification(locale: Locale, n: Pick<NotificationRow, "kind" | "data">): string {
-  return translateDynamic(locale, `notifications.kinds.${n.kind}`, Object.fromEntries(Object.entries(n.data ?? {}).map(([k, v]) => [k, v ?? ""]))) ?? n.kind;
+  const vars: Record<string, string | number> = Object.fromEntries(Object.entries(n.data ?? {}).map(([k, v]) => [k, v ?? ""]));
+  // Channels are stored as ids ("whatsapp"); show their names ("WhatsApp", "ईमेल").
+  if (typeof vars.channel === "string") vars.channel = translateDynamic(locale, `broadcasts.channelNames.${vars.channel}`) ?? vars.channel;
+  return translateDynamic(locale, `notifications.kinds.${n.kind}`, vars) ?? n.kind;
 }
 
 async function emailPrefs(db: Tx, userIds: string[], category: Category) {
@@ -81,7 +84,7 @@ export async function notify(db: Tx, input: NotifyInput & { userIds: string[]; e
   const people = await db.select({ id: users.id, locale: users.locale, suspendedAt: users.suspendedAt }).from(users).where(inArray(users.id, targets));
   const emails = await db.select().from(userIdentifiers).where(and(inArray(userIdentifiers.userId, targets), eq(userIdentifiers.type, "email")));
   const [ev] = input.eventId ? await db.select({ name: events.name }).from(events).where(eq(events.id, input.eventId)) : [];
-  const base = (input.appUrl || resolveAppUrl()).replace(/\/$/, "");
+  const base = linkBase(input.appUrl);
   await enqueue(
     db,
     rows
