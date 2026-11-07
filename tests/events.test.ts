@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { auditLogs, eventMembers, events } from "@/db/schema";
+import { auditLogs, events } from "@/db/schema";
 import { signInWithIdentifier } from "@/lib/auth-core";
 import {
   changeMemberRole,
@@ -14,7 +14,6 @@ import {
   removeMember,
   restoreEvent,
   revokeInvitation,
-  setGiftAccess,
   softDeleteEvent,
 } from "@/lib/events";
 import type { Identifier } from "@/lib/identifiers";
@@ -107,13 +106,10 @@ describe("events and team", () => {
     expect((await memberCounts(db(), event.id)).hosts).toBe(1);
   });
 
-  it("sets Planner gift access and removes members", async () => {
+  it("removes members", async () => {
     const { host, event, invite } = await setup();
     const planner = await makeUser("p@example.com", "Ravi");
     await invite({ type: "email", value: "p@example.com" });
-    await setGiftAccess(db(), event.id, planner.id, "record", actorOf(host));
-    const [m] = await db().select().from(eventMembers).where(and(eq(eventMembers.eventId, event.id), eq(eventMembers.userId, planner.id)));
-    expect(m.giftAccess).toBe("record");
     await removeMember(db(), event.id, planner.id, actorOf(host));
     expect((await memberCounts(db(), event.id)).planners).toBe(0);
   });

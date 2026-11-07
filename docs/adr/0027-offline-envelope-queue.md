@@ -1,6 +1,6 @@
 # ADR-0027: Offline envelope entry with client keys
 
-- **Status**: Accepted
+- **Status**: Superseded by [ADR-0036](0036-gifts-to-give.md) (the Gifts module now plans gifts to give; envelope mode was removed)
 - **Date**: 2026-11-01
 - **Requirements**: GFT-02, GFT-03
 

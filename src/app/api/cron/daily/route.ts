@@ -11,6 +11,7 @@ import { sendApprovalReminders, sendPaymentReminders } from "@/lib/payments";
 import { sendRsvpReminders } from "@/lib/rsvp";
 import { sendTaskReminders } from "@/lib/tasks";
 import { sendThankYouReminders } from "@/lib/thank-yous";
+import { sendGiftReminders } from "@/lib/gifts";
 import { purgeExpiredEvents, sendRetentionReminders } from "@/lib/retention";
 import { getStore } from "@/lib/storage";
 import { processStorageDeletions, reconcileStorage } from "@/lib/storage-gc";
@@ -51,7 +52,8 @@ export async function GET(req: Request) {
     { name: "rsvpReminders", run: () => sendRsvpReminders(db, appUrl, now) },
     { name: "paymentReminders", run: () => sendPaymentReminders(db, now, appUrl) },
     { name: "approvalReminders", run: () => sendApprovalReminders(db, now, appUrl) },
-    // [gifts daily jobs]
+    // [gifts daily jobs] gifts to give due within 7 days (GFT-06), thank-you nudges (GFT-10)
+    { name: "giftReminders", run: () => sendGiftReminders(db, now, appUrl) },
     { name: "thankYouReminders", run: () => sendThankYouReminders(db, now) },
     // [M7 retention jobs] reminders before the outbox drain, so they go out in this run
     { name: "retentionReminders", run: () => sendRetentionReminders(db, now, appUrl) },

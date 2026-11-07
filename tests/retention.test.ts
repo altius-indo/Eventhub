@@ -9,6 +9,8 @@ import {
   documents,
   eventMetrics,
   functions,
+  giftItemRecipients,
+  giftItems,
   gifts,
   events,
   guestErasureRequests,
@@ -19,13 +21,14 @@ import {
   retentionNotices,
   storageDeletions,
   vendorContacts,
+  vendors,
 } from "@/db/schema";
 import { createTranslator } from "@/i18n/core";
 import { partEntries, registerArchivePart, zipStream, type ArchiveContext } from "@/lib/archive";
 import { saveDocument } from "@/lib/documents";
 import { createEvent, purgeDeletedEvents, softDeleteEvent } from "@/lib/events";
 import { createFunction } from "@/lib/functions";
-import { createGift } from "@/lib/gifts";
+import { createGiftItem } from "@/lib/gifts";
 import { createHousehold, guestSchema } from "@/lib/guests";
 import { decide } from "@/lib/policy";
 import {
@@ -240,11 +243,11 @@ describe("full archive (EVT-08)", () => {
     const { event, actor, vendor, household } = await setup();
     await saveDocument(db(), event.id, actor, { owner: { vendorId: vendor.id }, kind: "contract", filename: "contract.pdf", data: PDF });
     const subject = { isAppAdmin: false, membership: { role: "host" as const, giftAccess: "none" as const } };
-    await createGift(db(), { eventId: event.id, actor, subject }, { householdId: household.id, type: "cash", amountPaise: 110_000 });
+    await createGiftItem(db(), { eventId: event.id, actor, subject }, { name: "Silver coin", quantityMode: "fixed", quantityFixed: 50, householdIds: [household.id] });
     const ctx: ArchiveContext = { db: db(), event, t: createTranslator("en"), locale: "en", subject, actor, now: new Date("2026-12-20T06:00:00Z") };
     const files = await unzip(ctx);
     const names = Object.keys(files).sort();
-    for (const sheet of ["Guests", "RSVPs and headcount", "Budget", "Payments", "Payables", "Vendors", "Gifts"]) {
+    for (const sheet of ["Guests", "RSVPs and headcount", "Budget", "Payments", "Payables", "Vendors", "Gifts to give"]) {
       expect(names).toContain(`Spreadsheets/${sheet}.xlsx`);
     }
     expect(names).toContain("Printable/Run sheets.html");
@@ -256,6 +259,11 @@ describe("full archive (EVT-08)", () => {
     // xlsx files are real zips
     expect(strFromU8(files["Spreadsheets/Guests.xlsx"].subarray(0, 2), true)).toBe("PK");
     expect(strFromU8(files["README.txt"])).toContain("Priya weds Arjun");
+    // The gift list sheet (GFT-06) and the thank-you sheet are in the gifts workbook.
+    const giftBook = unzipSync(files["Spreadsheets/Gifts to give.xlsx"]);
+    const strings = strFromU8(giftBook["xl/sharedStrings.xml"]);
+    expect(strings).toContain("Silver coin");
+    expect(Object.keys(giftBook).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n))).toHaveLength(2);
   });
 
   it("names files in the downloader's language and accepts parts from other modules", async () => {
@@ -306,12 +314,18 @@ describe("guest erasure requests (EVT-09)", () => {
     await expect(processErasureRequest(db(), event.id, req.id, actor)).rejects.toMatchObject({ code: "already_processed" });
   });
 
-  it("removes the family from audit data, gift attachments and outgoing messages (DPDP)", async () => {
+  it("removes the family from audit data, gift attachments, the gift list and outgoing messages (DPDP)", async () => {
     const { event, actor, household } = await setup();
     const [rajesh] = await db().select().from(guestsTable).where(eq(guestsTable.householdId, household.id));
     const subject = { isAppAdmin: false, membership: { role: "host" as const, giftAccess: "none" as const } };
-    const { gift } = await createGift(db(), { eventId: event.id, actor, subject }, { householdId: household.id, type: "item", itemDescription: "Silver thali" });
-    const photo = await saveDocument(db(), event.id, actor, { owner: { giftId: gift.id }, kind: "other", filename: "rajesh-thali.pdf", data: PDF });
+    // A gift to give for this family (GFT-04): the item stays, the link goes.
+    const item = await createGiftItem(db(), { eventId: event.id, actor, subject }, { name: "Shawl", quantityMode: "fixed", quantityFixed: 1, householdIds: [household.id] });
+    // A legacy received gift with a photo (ADR-0036): rows from before the change are still cleaned up.
+    const [gift] = await db().insert(gifts).values({ eventId: event.id, householdId: household.id, type: "item", itemDescription: "Silver thali", recordedBy: actor.userId }).returning();
+    await db().insert(auditLogs).values({ eventId: event.id, actorUserId: actor.userId, action: "gift.recorded", entityType: "gift", entityId: gift.id, data: { name: "Sharma family" } });
+    const [vendor] = await db().insert(vendors).values({ eventId: event.id, name: "Placeholder" }).returning();
+    const photo = await saveDocument(db(), event.id, actor, { owner: { vendorId: vendor.id }, kind: "other", filename: "rajesh-thali.pdf", data: PDF });
+    await db().update(documents).set({ vendorId: null, giftId: gift.id }).where(eq(documents.id, photo.id));
     const usedBefore = (await getStorageUsage(db(), event.id)).used;
     const base = { eventId: event.id, purpose: "broadcast", channel: "email" as const, templateKey: "plain", vars: { text: "Hello Rajesh" } };
     await db().insert(outboundMessages).values([
@@ -335,8 +349,11 @@ describe("guest erasure requests (EVT-09)", () => {
     expect((await getStorageUsage(db(), event.id)).used).toBe(usedBefore - PDF.length);
     await processStorageDeletions(db(), store, new Date(Date.now() + 1000));
     expect(await store.head(photo.storageKey!)).toBeNull();
-    // The gift itself stays, anonymised (GFT-07 reconciliation).
-    expect(await db().select().from(gifts).where(eq(gifts.id, gift.id))).toHaveLength(1);
+    // The legacy gift row stays, anonymised.
+    const [legacy] = await db().select().from(gifts).where(eq(gifts.id, gift.id));
+    expect(legacy).toMatchObject({ householdId: null, giverName: "—" });
+    expect(await db().select().from(giftItems).where(eq(giftItems.id, item.id))).toHaveLength(1);
+    expect(await db().select().from(giftItemRecipients).where(eq(giftItemRecipients.giftItemId, item.id))).toHaveLength(0);
 
     const msgs = await db().select().from(outboundMessages).where(eq(outboundMessages.eventId, event.id));
     expect(msgs.map((m) => m.idempotencyKey)).toEqual(["m1"]);

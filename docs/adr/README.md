@@ -31,7 +31,7 @@ decisions with the `adr` skill (`.claude/skills/adr`) using [template.md](templa
 | [0024](0024-outbox-for-outgoing-messages.md) | Outbox table for outgoing messages | Accepted |
 | [0025](0025-messaging-quotas.md) | Per-event messaging quotas reserved at enqueue | Accepted |
 | [0026](0026-chat-by-polling.md) | In-app chat by short polling | Accepted |
-| [0027](0027-offline-envelope-queue.md) | Offline envelope entry with client keys | Accepted |
+| [0027](0027-offline-envelope-queue.md) | Offline envelope entry with client keys | Superseded by 0036 |
 | [0028](0028-caterer-headcount-baseline-and-lock.md) | Caterer headcount: per-booking baseline, lazy freeze at the lock | Accepted |
 | [0029](0029-notifications-rendered-at-read.md) | Notifications stored as kind + data, rendered when read | Accepted |
 | [0030](0030-object-storage.md) | Object storage: private Vercel Blob in production, filesystem in development | Accepted |
@@ -40,3 +40,4 @@ decisions with the `adr` skill (`.claude/skills/adr`) using [template.md](templa
 | [0033](0033-retention-and-deletion.md) | Retention, archive and deletion of event data | Accepted |
 | [0034](0034-offline-check-in-snapshot.md) | Offline check-in snapshot and day-of page caching | Accepted |
 | [0035](0035-preview-database.md) | Preview deployments use their own database | Accepted |
+| [0036](0036-gifts-to-give.md) | Gifts module plans gifts the family gives | Accepted |

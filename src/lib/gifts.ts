@@ -1,59 +1,38 @@
-import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, ilike, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
-import { cashHandovers, eventMembers, events, functions, gifts, guests, households, thankYous, users, type Gift } from "@/db/schema";
-import { formatInr } from "@/i18n/core";
+import { eventMembers, events, functions, giftItemRecipients, giftItems, households, users, type GiftItem } from "@/db/schema";
 import { audit, type Actor } from "./audit";
-import { notifyHosts } from "./notifications";
-import { assertCan, can, ForbiddenError, type PolicySubject } from "./policy";
-import { todayIn } from "./tasks";
+import { invitedCounts, type FunctionHeadcount } from "./functions";
+import { notify, notifyHosts } from "./notifications";
+import { assertCan, type PolicySubject } from "./policy";
+import { addDays, todayIn } from "./tasks";
 
 /**
- * Gift register, envelope mode and cash reconciliation (GFT-01..05, GFT-07).
- *
- * Privacy is enforced here, not only in pages: Hosts and Planners with full gift access see
- * everything (`gifts.view`); Planners with record-only access (`gifts.record` without view) see
- * and change only the entries they recorded themselves and their own cash hand-overs.
- * Gifts are never part of the wedding budget.
+ * Gifts the family gives (GFT-01..07, ADR-0036): a shopping list of what to give, when, how
+ * many and (optionally) for whom, with purchase status. Hosts and Planners both view and edit.
+ * Quantities can follow the guest list: one per invited family / guest / adult of a function.
  */
 
 export class GiftError extends Error {
-  constructor(
-    public code:
-      | "not_found"
-      | "invalid"
-      | "stale"
-      | "no_giver"
-      | "no_value"
-      | "bad_household"
-      | "bad_guest"
-      | "bad_function"
-      | "bad_member"
-      | "handed_over"
-      | "nothing_to_hand_over",
-  ) {
+  constructor(public code: "not_found" | "invalid" | "stale" | "needs_function" | "needs_quantity" | "bad_function" | "bad_household" | "bad_assignee") {
     super(code);
   }
 }
 
 /** What the domain needs from the page/action: event, actor and their policy subject. */
 export type GiftCtx = { eventId: string; actor: Actor; subject: PolicySubject };
-export type GiftScope = "all" | "own";
 
-/** Stored as the giver name when a family asks to be erased (EVT-09); shown translated. */
-export const ERASED_GIVER = "—";
+export const GIFT_CATEGORIES = ["return_gift", "family", "helpers_staff", "vendor", "other"] as const;
+export const QUANTITY_MODES = ["fixed", "per_family", "per_guest", "per_adult"] as const;
+export const GIFT_STATUSES = ["to_buy", "ordered", "bought", "given"] as const;
+export type GiftCategory = (typeof GIFT_CATEGORIES)[number];
+export type QuantityMode = (typeof QUANTITY_MODES)[number];
+export type GiftStatus = (typeof GIFT_STATUSES)[number];
 
-export const GIFT_TYPES = ["cash", "upi", "cheque", "item", "gold", "voucher", "other"] as const;
-export const RECEIVED_FOR = ["bride", "groom", "couple", "parents", "other"] as const;
-/** Gift types whose value is money (an amount is required). */
-export const MONEY_TYPES: ReadonlySet<Gift["type"]> = new Set(["cash", "upi", "cheque"]);
-
-/** "all" for Hosts / full access, "own" for record-only; anyone else is refused. */
-export function giftScope(subject: PolicySubject): GiftScope {
-  if (can(subject, "gifts.view")) return "all";
-  if (can(subject, "gifts.record")) return "own";
-  throw new ForbiddenError("gifts.record");
-}
+/** Items not bought and given within this many days count as "due soon" (GFT-06). */
+export const DUE_SOON_DAYS = 7;
+const MAX_QTY = 100_000;
 
 const optText = (max: number) =>
   z
@@ -67,212 +46,300 @@ const optUuid = z
   .uuid()
   .nullish()
   .transform((v) => v ?? null);
-const paise = z.number().int().min(0).max(1e13).nullish().transform((v) => v ?? null);
+const optDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .nullish()
+  .transform((v) => v ?? null);
 
-export const giftInput = z
-  .object({
-    householdId: optUuid,
-    guestId: optUuid,
-    giverName: optText(120),
-    type: z.enum(GIFT_TYPES),
-    amountPaise: paise,
-    itemDescription: optText(300),
-    estValuePaise: paise,
-    functionId: optUuid,
-    receivedFor: z.enum(RECEIVED_FOR).default("couple"),
-    receivedForNote: optText(120),
-    envelopeNo: optText(20),
-    receivedOn: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .nullish()
-      .transform((v) => v ?? null),
-    notes: optText(1000),
-  })
-  .superRefine((v, ctx) => {
-    if (!v.householdId && !v.guestId && !v.giverName) ctx.addIssue({ code: "custom", message: "no_giver", path: ["giverName"] });
-    if (MONEY_TYPES.has(v.type) ? !v.amountPaise : !v.amountPaise && !v.itemDescription && !v.estValuePaise)
-      ctx.addIssue({ code: "custom", message: "no_value", path: ["amountPaise"] });
-  });
-export type GiftInput = z.input<typeof giftInput>;
-type GiftValues = z.output<typeof giftInput>;
+export const giftItemInput = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: optText(1000),
+  category: z.enum(GIFT_CATEGORIES).default("other"),
+  functionId: optUuid,
+  giveBy: optDate,
+  quantityMode: z.enum(QUANTITY_MODES).default("fixed"),
+  quantityFixed: z.number().int().min(0).max(MAX_QTY).nullish().transform((v) => v ?? null),
+  quantityFunctionId: optUuid,
+  quantityExtra: z.number().int().min(0).max(MAX_QTY).default(0),
+  forWhom: optText(200),
+  unitCostPaise: z.number().int().min(0).max(1e13).nullish().transform((v) => v ?? null),
+  assigneeId: optUuid,
+  source: optText(300),
+  notes: optText(1000),
+  /** Families it's for (optional). Omitted on update = unchanged. */
+  householdIds: z.array(z.string().uuid()).max(2000).optional(),
+});
+export type GiftItemInput = z.input<typeof giftItemInput>;
+type GiftValues = z.output<typeof giftItemInput>;
 
-function parseInput(input: GiftInput): GiftValues {
-  const r = giftInput.safeParse(input);
-  if (r.success) return r.data;
-  const msg = r.error.issues[0]?.message;
-  throw new GiftError(msg === "no_giver" || msg === "no_value" ? msg : "invalid");
-}
-
-/** Normalises the value fields: money types keep an amount, items keep a description. */
-function valueFields(v: GiftValues) {
-  const money = MONEY_TYPES.has(v.type);
-  return {
-    amountPaise: v.amountPaise,
-    itemDescription: money ? null : v.itemDescription,
-    estValuePaise: money ? null : v.estValuePaise,
-  };
-}
-
-/** Checks the giver and function belong to this event; a guest implies their household. */
-async function resolveRefs(tx: Tx, eventId: string, v: { householdId: string | null; guestId: string | null; functionId: string | null }) {
-  let householdId = v.householdId;
-  if (v.guestId) {
-    const [g] = await tx.select({ householdId: guests.householdId }).from(guests).where(and(eq(guests.id, v.guestId), eq(guests.eventId, eventId)));
-    if (!g || (householdId && g.householdId !== householdId)) throw new GiftError("bad_guest");
-    householdId = g.householdId;
-  }
-  let householdName: string | null = null;
-  if (householdId) {
-    const [h] = await tx.select({ name: households.name }).from(households).where(and(eq(households.id, householdId), eq(households.eventId, eventId)));
-    if (!h) throw new GiftError("bad_household");
-    householdName = h.name;
-  }
-  let functionName: string | null = null;
-  if (v.functionId) {
-    const [f] = await tx.select({ name: functions.name }).from(functions).where(and(eq(functions.id, v.functionId), eq(functions.eventId, eventId)));
-    if (!f) throw new GiftError("bad_function");
-    functionName = f.name;
-  }
-  return { householdId, guestId: v.guestId, householdName, functionName };
-}
-
-/** Same envelope number already used in this function (a warning, never an error). */
-async function envelopeTaken(tx: Tx, eventId: string, functionId: string | null, envelopeNo: string | null, exceptId?: string) {
-  if (!envelopeNo) return false;
-  const [row] = await tx
-    .select({ id: gifts.id })
-    .from(gifts)
-    .where(
-      and(
-        eq(gifts.eventId, eventId),
-        functionId ? eq(gifts.functionId, functionId) : isNull(gifts.functionId),
-        sql`lower(${gifts.envelopeNo}) = lower(${envelopeNo})`,
-        exceptId ? sql`${gifts.id} <> ${exceptId}` : undefined,
-      ),
-    )
-    .limit(1);
-  return !!row;
-}
-
-const ownOnly = (scope: GiftScope, actor: Actor) => (scope === "own" ? eq(gifts.recordedBy, actor.userId) : undefined);
-
-async function loadForChange(tx: Tx, c: GiftCtx, giftId: string, scope: GiftScope) {
-  const [g] = await tx
-    .select()
-    .from(gifts)
-    .where(and(eq(gifts.id, giftId), eq(gifts.eventId, c.eventId), ownOnly(scope, c.actor)))
-    .for("update");
-  // Someone else's entry looks exactly like a missing one to a record-only user.
-  if (!g) throw new GiftError("not_found");
-  // Record-only collectors can't change cash that has already been handed over.
-  if (scope === "own" && g.handoverId) throw new GiftError("handed_over");
-  return g;
+function parseInput(input: GiftItemInput): GiftValues {
+  const r = giftItemInput.safeParse(input);
+  if (!r.success) throw new GiftError("invalid");
+  const v = r.data;
+  if (v.quantityMode === "fixed" && v.quantityFixed === null) throw new GiftError("needs_quantity");
+  if (v.quantityMode !== "fixed" && !v.quantityFunctionId && !v.functionId) throw new GiftError("needs_function");
+  return v;
 }
 
 // ---------------------------------------------------------------------------
-// Register (GFT-01)
+// Quantities (GFT-03)
 // ---------------------------------------------------------------------------
 
-export async function createGift(db: Database, c: GiftCtx, input: GiftInput): Promise<{ gift: Gift; duplicateEnvelope: boolean }> {
-  giftScope(c.subject);
-  const v = parseInput(input);
-  return db.transaction(async (tx) => {
-    const refs = await resolveRefs(tx, c.eventId, v);
-    const duplicateEnvelope = await envelopeTaken(tx, c.eventId, v.functionId, v.envelopeNo);
-    const [gift] = await tx
-      .insert(gifts)
-      .values({
-        eventId: c.eventId,
-        householdId: refs.householdId,
-        guestId: refs.guestId,
-        giverName: refs.householdId ? null : v.giverName,
-        type: v.type,
-        ...valueFields(v),
-        functionId: v.functionId,
-        receivedFor: v.receivedFor,
-        receivedForNote: v.receivedFor === "other" ? v.receivedForNote : null,
-        envelopeNo: v.envelopeNo,
-        receivedOn: v.receivedOn,
-        notes: v.notes,
-        recordedBy: c.actor.userId,
-        source: "manual",
-      })
-      .returning();
-    await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift.recorded", entityType: "gift", entityId: gift.id, data: { name: refs.householdName ?? v.giverName ?? "" } });
-    return { gift, duplicateEnvelope };
-  });
+type QtyFields = Pick<GiftItem, "quantityMode" | "quantityFixed" | "quantityFunctionId" | "functionId" | "quantityExtra">;
+
+/** The function whose invitees a linked quantity counts (its own, else the item's function). */
+export const countedFunctionId = (item: Pick<GiftItem, "quantityFunctionId" | "functionId">) => item.quantityFunctionId ?? item.functionId;
+
+/**
+ * How many are needed: the fixed number, or invited families / guests / adults of the counted
+ * function, plus spares. A linked mode without a function (it was deleted) → `needs_function`.
+ */
+export function neededQuantity(item: QtyFields, counts: Map<string, FunctionHeadcount>): number {
+  if (item.quantityMode === "fixed") return item.quantityFixed ?? 0;
+  const fnId = countedFunctionId(item);
+  if (!fnId) throw new GiftError("needs_function");
+  const c = counts.get(fnId);
+  const base = !c ? 0 : item.quantityMode === "per_family" ? c.households : item.quantityMode === "per_guest" ? c.guests : c.adults;
+  return base + item.quantityExtra;
 }
 
-export async function updateGift(db: Database, c: GiftCtx, giftId: string, version: number, input: GiftInput): Promise<{ gift: Gift; duplicateEnvelope: boolean }> {
-  const scope = giftScope(c.subject);
-  const v = parseInput(input);
-  return db.transaction(async (tx) => {
-    const old = await loadForChange(tx, c, giftId, scope);
-    if (old.version !== version) throw new GiftError("stale");
-    const refs = await resolveRefs(tx, c.eventId, v);
-    const duplicateEnvelope = await envelopeTaken(tx, c.eventId, v.functionId, v.envelopeNo, giftId);
-    const [gift] = await tx
-      .update(gifts)
-      .set({
-        householdId: refs.householdId,
-        guestId: refs.guestId,
-        giverName: refs.householdId ? null : v.giverName,
-        type: v.type,
-        ...valueFields(v),
-        functionId: v.functionId,
-        receivedFor: v.receivedFor,
-        receivedForNote: v.receivedFor === "other" ? v.receivedForNote : null,
-        envelopeNo: v.envelopeNo,
-        receivedOn: v.receivedOn,
-        notes: v.notes,
-        version: old.version + 1,
-        updatedAt: new Date(),
-      })
-      .where(eq(gifts.id, giftId))
-      .returning();
-    await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift.updated", entityType: "gift", entityId: gift.id, data: { name: refs.householdName ?? v.giverName ?? "" } });
-    return { gift, duplicateEnvelope };
-  });
+/** Needed quantity, or null when a linked mode lost its function (shown as "choose a function"). */
+function neededOrNull(item: QtyFields, counts: Map<string, FunctionHeadcount>): number | null {
+  try {
+    return neededQuantity(item, counts);
+  } catch (e) {
+    if (e instanceof GiftError) return null;
+    throw e;
+  }
 }
 
-export async function deleteGift(db: Database, c: GiftCtx, giftId: string) {
-  const scope = giftScope(c.subject);
-  await db.transaction(async (tx) => {
-    const g = await loadForChange(tx, c, giftId, scope);
-    const [h] = g.householdId ? await tx.select({ name: households.name }).from(households).where(eq(households.id, g.householdId)) : [];
-    await tx.delete(gifts).where(eq(gifts.id, giftId));
-    await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift.deleted", entityType: "gift", entityId: giftId, data: { name: h?.name ?? g.giverName ?? "" } });
-  });
+/** One item's needed quantity, read from the live guest list. */
+export async function neededQuantityOf(db: Tx, eventId: string, item: QtyFields): Promise<number> {
+  return neededQuantity(item, item.quantityMode === "fixed" ? new Map() : await invitedCounts(db, eventId));
 }
 
-export type GiftRow = Gift & { householdName: string | null; functionName: string | null; recordedByName: string | null; handedOver: boolean };
-
-export async function getGift(db: Tx, c: GiftCtx, giftId: string): Promise<GiftRow> {
-  const scope = giftScope(c.subject);
-  const [row] = await baseQuery(db).where(and(eq(gifts.id, giftId), eq(gifts.eventId, c.eventId), ownOnly(scope, c.actor)));
-  if (!row) throw new GiftError("not_found");
-  return toRow(row);
+/** Status after a change in the bought count: complete purchases become "bought"; "given" never moves back. */
+export function autoStatus(status: GiftStatus, bought: number, needed: number | null): GiftStatus {
+  if ((status === "to_buy" || status === "ordered") && needed !== null && needed > 0 && bought >= needed) return "bought";
+  return status;
 }
 
-function baseQuery(db: Tx) {
-  return db
-    .select({ gift: gifts, householdName: households.name, functionName: functions.name, recordedByName: users.name })
-    .from(gifts)
-    .leftJoin(households, eq(households.id, gifts.householdId))
-    .leftJoin(functions, eq(functions.id, gifts.functionId))
-    .leftJoin(users, eq(users.id, gifts.recordedBy))
-    .$dynamic();
+/** The day the gift is needed: the earlier of the give-by date and the function's date. */
+export function whenDate(giveBy: string | null, functionDate: string | null): string | null {
+  if (giveBy && functionDate) return giveBy < functionDate ? giveBy : functionDate;
+  return giveBy ?? functionDate;
 }
-const toRow = (r: { gift: Gift; householdName: string | null; functionName: string | null; recordedByName: string | null }): GiftRow => ({
-  ...r.gift,
-  householdName: r.householdName,
-  functionName: r.functionName,
-  recordedByName: r.recordedByName,
-  handedOver: !!r.gift.handoverId,
+
+/** Not fully bought yet (and not already given). */
+export function stillToBuy(status: GiftStatus, bought: number, needed: number | null) {
+  if (status === "given") return false;
+  if (status === "to_buy" || status === "ordered") return true;
+  return needed !== null && bought < needed;
+}
+
+// ---------------------------------------------------------------------------
+// Create / update / delete (GFT-01..05)
+// ---------------------------------------------------------------------------
+
+async function checkRefs(tx: Tx, eventId: string, v: Pick<GiftValues, "functionId" | "quantityFunctionId" | "assigneeId">) {
+  const fnIds = [...new Set([v.functionId, v.quantityFunctionId].filter((x): x is string => !!x))];
+  if (fnIds.length) {
+    const found = await tx
+      .select({ id: functions.id })
+      .from(functions)
+      .where(and(eq(functions.eventId, eventId), inArray(functions.id, fnIds)));
+    if (found.length !== fnIds.length) throw new GiftError("bad_function");
+  }
+  if (v.assigneeId) {
+    const [m] = await tx
+      .select({ id: eventMembers.id })
+      .from(eventMembers)
+      .where(and(eq(eventMembers.eventId, eventId), eq(eventMembers.userId, v.assigneeId)));
+    if (!m) throw new GiftError("bad_assignee");
+  }
+}
+
+/** Replaces the families a gift is for. Every family must belong to this event. */
+async function writeRecipients(tx: Tx, eventId: string, giftItemId: string, householdIds: string[]) {
+  const ids = [...new Set(householdIds)];
+  if (ids.length) {
+    const found = await tx
+      .select({ id: households.id })
+      .from(households)
+      .where(and(eq(households.eventId, eventId), inArray(households.id, ids)));
+    if (found.length !== ids.length) throw new GiftError("bad_household");
+  }
+  await tx.delete(giftItemRecipients).where(eq(giftItemRecipients.giftItemId, giftItemId));
+  if (ids.length) await tx.insert(giftItemRecipients).values(ids.map((householdId) => ({ giftItemId, householdId, eventId })));
+}
+
+const fieldsOf = (v: GiftValues) => ({
+  name: v.name,
+  description: v.description,
+  category: v.category,
+  functionId: v.functionId,
+  giveBy: v.giveBy,
+  quantityMode: v.quantityMode,
+  quantityFixed: v.quantityMode === "fixed" ? v.quantityFixed : null,
+  quantityFunctionId: v.quantityMode === "fixed" ? null : v.quantityFunctionId,
+  quantityExtra: v.quantityMode === "fixed" ? 0 : v.quantityExtra,
+  forWhom: v.forWhom,
+  unitCostPaise: v.unitCostPaise,
+  assigneeId: v.assigneeId,
+  source: v.source,
+  notes: v.notes,
 });
 
-export const giftFilterKeys = ["q", "fn", "type", "for", "source"] as const;
+export async function createGiftItem(db: Database, c: GiftCtx, input: GiftItemInput): Promise<GiftItem> {
+  assertCan(c.subject, "gifts.manage");
+  const v = parseInput(input);
+  return db.transaction(async (tx) => {
+    await checkRefs(tx, c.eventId, v);
+    const [item] = await tx
+      .insert(giftItems)
+      .values({ eventId: c.eventId, ...fieldsOf(v), createdBy: c.actor.userId })
+      .returning();
+    if (v.householdIds?.length) await writeRecipients(tx, c.eventId, item.id, v.householdIds);
+    await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift_item.created", entityType: "gift_item", entityId: item.id, data: { name: item.name } });
+    return item;
+  });
+}
+
+async function lockItem(tx: Tx, eventId: string, id: string) {
+  const [item] = await tx
+    .select()
+    .from(giftItems)
+    .where(and(eq(giftItems.id, id), eq(giftItems.eventId, eventId)))
+    .for("update");
+  if (!item) throw new GiftError("not_found");
+  return item;
+}
+
+export async function updateGiftItem(db: Database, c: GiftCtx, id: string, version: number, input: GiftItemInput): Promise<GiftItem> {
+  assertCan(c.subject, "gifts.manage");
+  const v = parseInput(input);
+  return db.transaction(async (tx) => {
+    const old = await lockItem(tx, c.eventId, id);
+    if (old.version !== version) throw new GiftError("stale");
+    await checkRefs(tx, c.eventId, v);
+    const fields = fieldsOf(v);
+    const needed = await neededOrNullTx(tx, c.eventId, fields);
+    const status = autoStatus(old.status, old.quantityBought, needed);
+    const [item] = await tx
+      .update(giftItems)
+      .set({ ...fields, status, version: old.version + 1, updatedAt: new Date() })
+      .where(eq(giftItems.id, id))
+      .returning();
+    if (v.householdIds) await writeRecipients(tx, c.eventId, id, v.householdIds);
+    await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift_item.updated", entityType: "gift_item", entityId: id, data: { name: item.name } });
+    if (status !== old.status) await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift_item.status_changed", entityType: "gift_item", entityId: id, data: { name: item.name } });
+    return item;
+  });
+}
+
+async function neededOrNullTx(tx: Tx, eventId: string, item: QtyFields) {
+  return neededOrNull(item, item.quantityMode === "fixed" ? new Map() : await invitedCounts(tx, eventId));
+}
+
+export async function deleteGiftItem(db: Database, c: GiftCtx, id: string) {
+  assertCan(c.subject, "gifts.manage");
+  await db.transaction(async (tx) => {
+    const item = await lockItem(tx, c.eventId, id);
+    await tx.delete(giftItems).where(eq(giftItems.id, id));
+    await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift_item.deleted", entityType: "gift_item", entityId: id, data: { name: item.name } });
+  });
+}
+
+/** Sets which families a gift is for (GFT-04). */
+export async function setGiftRecipients(db: Database, c: GiftCtx, id: string, householdIds: string[]) {
+  assertCan(c.subject, "gifts.manage");
+  if (!z.array(z.string().uuid()).max(2000).safeParse(householdIds).success) throw new GiftError("invalid");
+  await db.transaction(async (tx) => {
+    const item = await lockItem(tx, c.eventId, id);
+    await writeRecipients(tx, c.eventId, id, householdIds);
+    await tx.update(giftItems).set({ version: item.version + 1, updatedAt: new Date() }).where(eq(giftItems.id, id));
+  });
+}
+
+/**
+ * Sets the purchase status (GFT-05). Marking it bought fills the bought count up to what's
+ * needed; marking it given leaves the count as it is. Reopening a given item ("to buy" or
+ * "ordered") lands on what the counts say: "bought" when enough are bought.
+ */
+export async function setGiftStatus(db: Database, c: GiftCtx, id: string, status: GiftStatus): Promise<GiftItem> {
+  assertCan(c.subject, "gifts.manage");
+  if (!(GIFT_STATUSES as readonly string[]).includes(status)) throw new GiftError("invalid");
+  return db.transaction(async (tx) => {
+    const old = await lockItem(tx, c.eventId, id);
+    let bought = old.quantityBought;
+    let next = status;
+    if (status === "bought") {
+      const needed = await neededOrNullTx(tx, c.eventId, old);
+      if (needed !== null && bought < needed) bought = needed;
+    } else if (old.status === "given" && (status === "to_buy" || status === "ordered")) {
+      next = autoStatus(status, bought, await neededOrNullTx(tx, c.eventId, old));
+    }
+    const [item] = await tx
+      .update(giftItems)
+      .set({ status: next, quantityBought: bought, version: old.version + 1, updatedAt: new Date() })
+      .where(eq(giftItems.id, id))
+      .returning();
+    if (next !== old.status) await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift_item.status_changed", entityType: "gift_item", entityId: id, data: { name: item.name } });
+    return item;
+  });
+}
+
+export const markGiven = (db: Database, c: GiftCtx, id: string) => setGiftStatus(db, c, id, "given");
+
+/**
+ * Records how many are bought (GFT-05): either the new total (`set`) or a change (`add`, may be
+ * negative). The count stays within 0..100,000; once it covers what's needed, "to buy" and
+ * "ordered" become "bought". "Given" is never moved back.
+ */
+export async function recordBought(db: Database, c: GiftCtx, id: string, change: { set: number } | { add: number }, version?: number): Promise<GiftItem> {
+  assertCan(c.subject, "gifts.manage");
+  const n = "set" in change ? change.set : change.add;
+  if (!Number.isInteger(n) || Math.abs(n) > MAX_QTY) throw new GiftError("invalid");
+  return db.transaction(async (tx) => {
+    const old = await lockItem(tx, c.eventId, id);
+    // From a form that showed a count (the edit page): someone else changed it meanwhile.
+    if (version !== undefined && old.version !== version) throw new GiftError("stale");
+    const bought = Math.max(0, Math.min(MAX_QTY, "set" in change ? change.set : old.quantityBought + change.add));
+    const needed = await neededOrNullTx(tx, c.eventId, old);
+    const status = autoStatus(old.status, bought, needed);
+    const [item] = await tx
+      .update(giftItems)
+      .set({ quantityBought: bought, status, version: old.version + 1, updatedAt: new Date() })
+      .where(eq(giftItems.id, id))
+      .returning();
+    if (status !== old.status) await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift_item.status_changed", entityType: "gift_item", entityId: id, data: { name: item.name } });
+    return item;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Lists and summary (GFT-06)
+// ---------------------------------------------------------------------------
+
+export type GiftRow = GiftItem & {
+  functionName: string | null;
+  functionDate: string | null;
+  quantityFunctionName: string | null;
+  assigneeName: string | null;
+  /** The day it's needed (earlier of give-by and the function's date). */
+  when: string | null;
+  /** null when a linked quantity has no function any more. */
+  needed: number | null;
+  remaining: number;
+  /** unit cost × needed; null without a unit cost. */
+  totalCostPaise: number | null;
+  dueSoon: boolean;
+  overdue: boolean;
+  recipients: { id: string; name: string }[];
+};
+
+export const giftFilterKeys = ["q", "status", "category", "fn", "due", "mine"] as const;
 export type GiftFilters = Partial<Record<(typeof giftFilterKeys)[number], string>>;
 
 export function cleanGiftFilters(input: Record<string, unknown>): GiftFilters {
@@ -286,357 +353,182 @@ export function cleanGiftFilters(input: Record<string, unknown>): GiftFilters {
 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, "\\$&");
 
-export async function listGifts(db: Tx, c: GiftCtx, filters: GiftFilters = {}, limit = 500): Promise<GiftRow[]> {
-  const scope = giftScope(c.subject);
-  const conds: (SQL | undefined)[] = [eq(gifts.eventId, c.eventId), ownOnly(scope, c.actor)];
-  if (filters.fn === "none") conds.push(isNull(gifts.functionId));
-  else if (filters.fn && z.string().uuid().safeParse(filters.fn).success) conds.push(eq(gifts.functionId, filters.fn));
-  if (filters.type && (GIFT_TYPES as readonly string[]).includes(filters.type)) conds.push(eq(gifts.type, filters.type as Gift["type"]));
-  if (filters.for && (RECEIVED_FOR as readonly string[]).includes(filters.for)) conds.push(eq(gifts.receivedFor, filters.for as Gift["receivedFor"]));
-  if (filters.source && ["manual", "envelope", "import"].includes(filters.source)) conds.push(eq(gifts.source, filters.source as Gift["source"]));
+async function eventToday(db: Tx, eventId: string, now: Date) {
+  const [ev] = await db.select({ timezone: events.timezone }).from(events).where(eq(events.id, eventId));
+  return todayIn(ev?.timezone ?? "Asia/Kolkata", now);
+}
+
+function toRow(
+  r: { item: GiftItem; functionName: string | null; functionDate: string | null; quantityFunctionName: string | null; assigneeName: string | null },
+  counts: Map<string, FunctionHeadcount>,
+  today: string,
+  recipients: { id: string; name: string }[],
+): GiftRow {
+  const needed = neededOrNull(r.item, counts);
+  const when = whenDate(r.item.giveBy, r.functionDate);
+  const open = stillToBuy(r.item.status, r.item.quantityBought, needed);
+  return {
+    ...r.item,
+    functionName: r.functionName,
+    functionDate: r.functionDate,
+    quantityFunctionName: r.quantityFunctionName,
+    assigneeName: r.assigneeName,
+    when,
+    needed,
+    remaining: r.item.status === "given" || needed === null ? 0 : Math.max(0, needed - r.item.quantityBought),
+    totalCostPaise: r.item.unitCostPaise === null || needed === null ? null : r.item.unitCostPaise * needed,
+    dueSoon: open && !!when && when <= addDays(today, DUE_SOON_DAYS),
+    overdue: open && !!when && when < today,
+    recipients,
+  };
+}
+
+const qtyFn = sql<string | null>`(select f.name from functions f where f.id = ${giftItems.quantityFunctionId})`;
+
+function baseQuery(db: Tx) {
+  return db
+    .select({ item: giftItems, functionName: functions.name, functionDate: functions.date, quantityFunctionName: qtyFn, assigneeName: users.name })
+    .from(giftItems)
+    .leftJoin(functions, eq(functions.id, giftItems.functionId))
+    .leftJoin(users, eq(users.id, giftItems.assigneeId))
+    .$dynamic();
+}
+
+async function recipientsOf(db: Tx, ids: string[]) {
+  if (ids.length === 0) return new Map<string, { id: string; name: string }[]>();
+  const rows = await db
+    .select({ giftItemId: giftItemRecipients.giftItemId, id: households.id, name: households.name })
+    .from(giftItemRecipients)
+    .innerJoin(households, eq(households.id, giftItemRecipients.householdId))
+    .where(inArray(giftItemRecipients.giftItemId, ids))
+    .orderBy(asc(households.name));
+  const out = new Map<string, { id: string; name: string }[]>();
+  for (const r of rows) out.set(r.giftItemId, [...(out.get(r.giftItemId) ?? []), { id: r.id, name: r.name }]);
+  return out;
+}
+
+/** Sort: by the day it's needed (undated last), then name. */
+const byWhen = (a: GiftRow, b: GiftRow) => {
+  if (a.when !== b.when) return a.when === null ? 1 : b.when === null ? -1 : a.when < b.when ? -1 : 1;
+  return a.name.localeCompare(b.name);
+};
+
+/** The list (GFT-06), at most `limit` rows in a stable order (the archive asks for more). */
+export async function listGiftItems(db: Tx, c: GiftCtx, filters: GiftFilters = {}, now = new Date(), limit = LIST_LIMIT): Promise<GiftRow[]> {
+  assertCan(c.subject, "gifts.view");
+  const conds: (SQL | undefined)[] = [eq(giftItems.eventId, c.eventId)];
+  if (filters.status && (GIFT_STATUSES as readonly string[]).includes(filters.status)) conds.push(eq(giftItems.status, filters.status as GiftStatus));
+  if (filters.category && (GIFT_CATEGORIES as readonly string[]).includes(filters.category)) conds.push(eq(giftItems.category, filters.category as GiftCategory));
+  if (filters.fn === "none") conds.push(isNull(giftItems.functionId));
+  else if (filters.fn && z.string().uuid().safeParse(filters.fn).success) conds.push(eq(giftItems.functionId, filters.fn));
+  if (filters.mine === "1") conds.push(eq(giftItems.assigneeId, c.actor.userId));
+  if (filters.due === "week") conds.push(ne(giftItems.status, "given"));
   if (filters.q) {
     const p = `%${escapeLike(filters.q)}%`;
-    conds.push(or(ilike(households.name, p), ilike(gifts.giverName, p), ilike(gifts.envelopeNo, p), ilike(gifts.itemDescription, p)));
+    conds.push(or(ilike(giftItems.name, p), ilike(giftItems.forWhom, p)));
   }
   const rows = await baseQuery(db)
     .where(and(...conds))
-    .orderBy(desc(gifts.createdAt), desc(gifts.id))
-    .limit(Math.min(limit, 2000));
-  return rows.map(toRow);
+    .orderBy(sql`least(${giftItems.giveBy}, ${functions.date}) asc nulls last`, asc(giftItems.name), asc(giftItems.id))
+    .limit(Math.max(1, Math.min(limit, 100_000)));
+  const [counts, today] = await Promise.all([invitedCounts(db, c.eventId), eventToday(db, c.eventId, now)]);
+  const recips = await recipientsOf(
+    db,
+    rows.map((r) => r.item.id),
+  );
+  let out = rows.map((r) => toRow(r, counts, today, recips.get(r.item.id) ?? []));
+  if (filters.due === "week") out = out.filter((r) => r.dueSoon);
+  return out.sort(byWhen);
 }
 
-// ---------------------------------------------------------------------------
-// Envelope mode (GFT-02): idempotent batches from an offline queue
-// ---------------------------------------------------------------------------
-
-export const envelopeItem = z.object({
-  clientKey: z.string().uuid(),
-  householdId: optUuid,
-  guestId: optUuid,
-  giverName: optText(120),
-  type: z.enum(GIFT_TYPES).default("cash"),
-  amountPaise: paise,
-  itemDescription: optText(300),
-  envelopeNo: optText(20),
-  receivedFor: z.enum(RECEIVED_FOR).default("couple"),
-  at: z.string().datetime().optional(),
-});
-export type EnvelopeItem = z.input<typeof envelopeItem>;
-
-/**
- * The day an envelope was received, in the event's timezone: the device's `at` (entries queued
- * offline sync later), unless it is more than 5 minutes ahead of the server or older than 7 days
- * (a wrong device clock), in which case the sync time is used.
- */
-export function envelopeDate(at: string | undefined, now: Date, timeZone: string): string {
-  const t = at ? new Date(at) : null;
-  const ok = t && !Number.isNaN(t.getTime()) && t.getTime() <= now.getTime() + 5 * 60_000 && t.getTime() >= now.getTime() - 7 * 86_400_000;
-  return todayIn(timeZone, ok ? t : now);
+export async function getGiftItem(db: Tx, c: GiftCtx, id: string, now = new Date()): Promise<GiftRow> {
+  assertCan(c.subject, "gifts.view");
+  const [row] = await baseQuery(db).where(and(eq(giftItems.id, id), eq(giftItems.eventId, c.eventId)));
+  if (!row) throw new GiftError("not_found");
+  const [counts, today, recips] = await Promise.all([invitedCounts(db, c.eventId), eventToday(db, c.eventId, now), recipientsOf(db, [id])]);
+  return toRow(row, counts, today, recips.get(id) ?? []);
 }
-export type EnvelopeRejectCode = "invalid" | "no_giver" | "no_value" | "bad_household" | "bad_guest";
-export type EnvelopeResult = {
-  created: string[];
-  existing: string[];
-  rejected: { clientKey: string; code: EnvelopeRejectCode }[];
-  duplicateEnvelopes: { clientKey: string; envelopeNo: string }[];
+
+/** Rows on one page of the list; totals come from giftSummary, which has no limit. */
+export const LIST_LIMIT = 2000;
+
+export type GiftSummary = {
+  items: number;
+  /** Items fully bought or already given. */
+  itemsDone: number;
+  totalNeeded: number;
+  totalBought: number;
+  remaining: number;
+  dueSoon: number;
+  estimatedCostPaise: number;
 };
 
 /**
- * Stores envelope entries. Each carries a client-made key, so retries and a second sync from
- * the same queue are stored once (insert … on conflict do nothing). One bad entry is reported
- * on its own and never makes the desk lose the rest of the batch.
+ * Totals over the whole list (filters and the list limit don't apply), for the summary card and
+ * the dashboard. One query: needed quantities are computed in SQL the same way as neededQuantity.
  */
-export async function recordEnvelopes(db: Database, c: GiftCtx, functionId: string, items: EnvelopeItem[], now = new Date()): Promise<EnvelopeResult> {
-  giftScope(c.subject);
-  const out: EnvelopeResult = { created: [], existing: [], rejected: [], duplicateEnvelopes: [] };
-  if (items.length === 0) return out;
-  return db.transaction(async (tx) => {
-    const [fn] = await tx.select({ name: functions.name }).from(functions).where(and(eq(functions.id, functionId), eq(functions.eventId, c.eventId)));
-    if (!fn) throw new GiftError("bad_function");
-    const seen = new Set<string>();
-    const [ev] = await tx.select({ timezone: events.timezone }).from(events).where(eq(events.id, c.eventId));
-    const timeZone = ev?.timezone ?? "Asia/Kolkata";
-    for (const raw of items) {
-      const parsed = envelopeItem.safeParse(raw);
-      const key = typeof (raw as { clientKey?: unknown }).clientKey === "string" ? (raw as { clientKey: string }).clientKey : "";
-      if (!parsed.success) {
-        out.rejected.push({ clientKey: key, code: "invalid" });
-        continue;
-      }
-      const it = parsed.data;
-      if (seen.has(it.clientKey)) continue;
-      seen.add(it.clientKey);
-      if (!it.householdId && !it.guestId && !it.giverName) {
-        out.rejected.push({ clientKey: it.clientKey, code: "no_giver" });
-        continue;
-      }
-      if (MONEY_TYPES.has(it.type) ? !it.amountPaise : !it.amountPaise && !it.itemDescription) {
-        out.rejected.push({ clientKey: it.clientKey, code: "no_value" });
-        continue;
-      }
-      let refs;
-      try {
-        refs = await resolveRefs(tx, c.eventId, { householdId: it.householdId, guestId: it.guestId, functionId: null });
-      } catch (e) {
-        if (e instanceof GiftError && (e.code === "bad_household" || e.code === "bad_guest")) {
-          out.rejected.push({ clientKey: it.clientKey, code: e.code });
-          continue;
-        }
-        throw e;
-      }
-      const dup = await envelopeTaken(tx, c.eventId, functionId, it.envelopeNo);
-      const money = MONEY_TYPES.has(it.type);
-      const inserted = await tx
-        .insert(gifts)
-        .values({
-          eventId: c.eventId,
-          householdId: refs.householdId,
-          guestId: refs.guestId,
-          giverName: refs.householdId ? null : it.giverName,
-          type: it.type,
-          amountPaise: it.amountPaise,
-          itemDescription: money ? null : it.itemDescription,
-          functionId,
-          receivedFor: it.receivedFor,
-          envelopeNo: it.envelopeNo,
-          receivedOn: envelopeDate(it.at, now, timeZone),
-          recordedBy: c.actor.userId,
-          source: "envelope",
-          clientKey: it.clientKey,
-        })
-        .onConflictDoNothing()
-        .returning({ id: gifts.id });
-      if (inserted.length === 0) {
-        out.existing.push(it.clientKey);
-        continue;
-      }
-      out.created.push(it.clientKey);
-      if (dup && it.envelopeNo) out.duplicateEnvelopes.push({ clientKey: it.clientKey, envelopeNo: it.envelopeNo });
-    }
-    if (out.created.length) {
-      await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift.envelopes_recorded", entityType: "function", entityId: functionId, data: { count: out.created.length, function: fn.name } });
-    }
-    return out;
-  });
-}
-
-/** The collector's own latest entries at a function (for the envelope desk). */
-export async function myRecentEnvelopes(db: Tx, c: GiftCtx, functionId: string, limit = 10) {
-  giftScope(c.subject);
-  return db
-    .select({
-      id: gifts.id,
-      clientKey: gifts.clientKey,
-      householdName: households.name,
-      giverName: gifts.giverName,
-      type: gifts.type,
-      amountPaise: gifts.amountPaise,
-      itemDescription: gifts.itemDescription,
-      envelopeNo: gifts.envelopeNo,
-      createdAt: gifts.createdAt,
-    })
-    .from(gifts)
-    .leftJoin(households, eq(households.id, gifts.householdId))
-    .where(and(eq(gifts.eventId, c.eventId), eq(gifts.functionId, functionId), eq(gifts.recordedBy, c.actor.userId)))
-    .orderBy(desc(gifts.createdAt))
-    .limit(limit);
-}
-
-/** Families to pick in envelope mode: name search over families and members (no contact data). */
-export async function searchGivers(db: Tx, c: GiftCtx, q: string) {
-  giftScope(c.subject);
-  const query = q.trim().slice(0, 60);
-  if (query.length < 2) return [];
-  const p = `%${escapeLike(query)}%`;
-  const digits = query.replace(/\D/g, "");
-  const rows = await db
-    .selectDistinct({ id: households.id, name: households.name, side: households.side })
-    .from(households)
-    .leftJoin(guests, eq(guests.householdId, households.id))
-    .where(
-      and(
-        eq(households.eventId, c.eventId),
-        or(ilike(households.name, p), ilike(guests.name, p), digits.length >= 4 ? sql`${guests.phone} like ${`%${digits}`}` : undefined),
-      ),
+export async function giftSummary(db: Tx, c: GiftCtx, now = new Date()): Promise<GiftSummary> {
+  assertCan(c.subject, "gifts.view");
+  const today = await eventToday(db, c.eventId, now);
+  const soon = addDays(today, DUE_SOON_DAYS);
+  const res = await db.execute(sql`
+    with counts as (
+      select fi.function_id,
+        count(distinct g.household_id)::int as families,
+        count(*)::int as guests,
+        (count(*) filter (where g.age_group = 'adult'))::int as adults
+      from function_invites fi join guests g on g.id = fi.guest_id
+      where g.event_id = ${c.eventId}
+      group by fi.function_id
+    ), items as (
+      select gi.status, gi.quantity_bought as bought, gi.unit_cost_paise as unit_cost,
+        least(gi.give_by, f.date) as when_d,
+        case
+          when gi.quantity_mode = 'fixed' then coalesce(gi.quantity_fixed, 0)
+          when coalesce(gi.quantity_function_id, gi.function_id) is null then null
+          else coalesce(case gi.quantity_mode when 'per_family' then cn.families when 'per_guest' then cn.guests else cn.adults end, 0) + gi.quantity_extra
+        end as needed
+      from gift_items gi
+      left join functions f on f.id = gi.function_id
+      left join counts cn on cn.function_id = coalesce(gi.quantity_function_id, gi.function_id)
+      where gi.event_id = ${c.eventId}
+    ), flagged as (
+      select *, (status <> 'given' and (status in ('to_buy', 'ordered') or (needed is not null and bought < needed))) as open from items
     )
-    .orderBy(asc(households.name))
-    .limit(15);
-  if (rows.length === 0) return [];
-  const members = await db
-    .select({ householdId: guests.householdId, name: guests.name })
-    .from(guests)
-    .where(
-      inArray(
-        guests.householdId,
-        rows.map((r) => r.id),
-      ),
-    )
-    .orderBy(asc(guests.sortOrder));
-  return rows.map((r) => ({ ...r, members: members.filter((m) => m.householdId === r.id).map((m) => m.name) }));
+    select
+      count(*)::int as items,
+      (count(*) filter (where not open))::int as items_done,
+      coalesce(sum(coalesce(needed, 0)), 0)::bigint as total_needed,
+      coalesce(sum(case when needed is null then bought else least(bought, needed) end), 0)::bigint as total_bought,
+      coalesce(sum(case when status = 'given' or needed is null then 0 else greatest(needed - bought, 0) end), 0)::bigint as remaining,
+      (count(*) filter (where open and when_d is not null and when_d <= ${soon}::date))::int as due_soon,
+      coalesce(sum(coalesce(unit_cost * needed, 0)), 0)::bigint as cost
+    from flagged
+  `);
+  const r = (res.rows[0] ?? {}) as Record<string, unknown>;
+  const n = (k: string) => Number(r[k] ?? 0);
+  return {
+    items: n("items"),
+    itemsDone: n("items_done"),
+    totalNeeded: n("total_needed"),
+    totalBought: n("total_bought"),
+    remaining: n("remaining"),
+    dueSoon: n("due_soon"),
+    estimatedCostPaise: n("cost"),
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Cash reconciliation (GFT-03)
-// ---------------------------------------------------------------------------
-
-export type OpenCash = { functionId: string | null; functionName: string | null; collectorUserId: string | null; collectorName: string | null; count: number; totalPaise: number };
-export type HandoverRow = {
-  id: string;
-  functionId: string | null;
-  functionName: string | null;
-  collectorUserId: string | null;
-  collectorName: string | null;
-  recordedTotalPaise: number;
-  countedPaise: number;
-  /** What the gifts in this hand-over add up to now; differs when one was edited afterwards. */
-  currentTotalPaise: number;
-  handedToName: string | null;
-  handedAt: Date;
-  notes: string | null;
-};
-
-/** Imported tally sheets are records after the fact, not cash someone is holding. */
-const notImported = sql`${gifts.source} <> 'import'`;
-const fnMatch = (functionId: string | null) => (functionId ? eq(gifts.functionId, functionId) : isNull(gifts.functionId));
-
-/** Cash gifts not yet handed over, per function and collector. Record-only users see their own. */
-export async function openCash(db: Tx, c: GiftCtx): Promise<OpenCash[]> {
-  const scope = giftScope(c.subject);
-  const rows = await db
-    .select({
-      functionId: gifts.functionId,
-      functionName: functions.name,
-      collectorUserId: gifts.recordedBy,
-      collectorName: users.name,
-      count: sql<number>`count(*)::int`,
-      totalPaise: sql<number>`coalesce(sum(${gifts.amountPaise}), 0)::bigint`.mapWith(Number),
-    })
-    .from(gifts)
-    .leftJoin(functions, eq(functions.id, gifts.functionId))
-    .leftJoin(users, eq(users.id, gifts.recordedBy))
-    .where(and(eq(gifts.eventId, c.eventId), eq(gifts.type, "cash"), isNull(gifts.handoverId), notImported, ownOnly(scope, c.actor)))
-    .groupBy(gifts.functionId, functions.name, functions.date, gifts.recordedBy, users.name)
-    .orderBy(asc(functions.date), asc(functions.name), asc(users.name));
-  return rows;
+/** Families to choose as recipients (names only). */
+export async function householdOptions(db: Tx, c: GiftCtx) {
+  assertCan(c.subject, "gifts.view");
+  return db.select({ id: households.id, name: households.name }).from(households).where(eq(households.eventId, c.eventId)).orderBy(asc(households.name)).limit(3000);
 }
 
-export async function listHandovers(db: Tx, c: GiftCtx): Promise<HandoverRow[]> {
-  const scope = giftScope(c.subject);
-  const collector = sql<string | null>`(select name from users where id = ${cashHandovers.collectorUserId})`;
-  const handedTo = sql<string | null>`coalesce(${cashHandovers.handedToName}, (select name from users where id = ${cashHandovers.handedToUserId}))`;
-  const current = sql<number>`(select coalesce(sum(g.amount_paise), 0) from gifts g where g.handover_id = ${cashHandovers.id} and g.type = 'cash')::bigint`.mapWith(Number);
+/** Team members who can be assigned to buy a gift. */
+export async function assigneeOptions(db: Tx, c: GiftCtx) {
+  assertCan(c.subject, "gifts.view");
   return db
-    .select({
-      id: cashHandovers.id,
-      functionId: cashHandovers.functionId,
-      functionName: functions.name,
-      collectorUserId: cashHandovers.collectorUserId,
-      collectorName: collector,
-      recordedTotalPaise: cashHandovers.recordedTotalPaise,
-      countedPaise: cashHandovers.countedPaise,
-      currentTotalPaise: current,
-      handedToName: handedTo,
-      handedAt: cashHandovers.handedAt,
-      notes: cashHandovers.notes,
-    })
-    .from(cashHandovers)
-    .leftJoin(functions, eq(functions.id, cashHandovers.functionId))
-    .where(and(eq(cashHandovers.eventId, c.eventId), scope === "own" ? eq(cashHandovers.collectorUserId, c.actor.userId) : undefined))
-    .orderBy(desc(cashHandovers.handedAt));
-}
-
-export const handoverInput = z
-  .object({
-    functionId: optUuid,
-    collectorUserId: z.string().uuid(),
-    countedPaise: z.number().int().min(0).max(1e13),
-    handedToUserId: optUuid,
-    handedToName: optText(120),
-    handedAt: z.date().optional(),
-    notes: optText(500),
-  })
-  .refine((v) => v.handedToUserId || v.handedToName, { message: "no_receiver" });
-export type HandoverInput = z.input<typeof handoverInput>;
-
-/**
- * Records a hand-over: snapshots the collector's cash gifts at that function that aren't handed
- * over yet (locked, so an entry synced meanwhile goes to the next hand-over) and flags any
- * difference with the counted cash to the Hosts.
- */
-export async function createHandover(db: Database, c: GiftCtx, input: HandoverInput) {
-  const scope = giftScope(c.subject);
-  const r = handoverInput.safeParse(input);
-  if (!r.success) throw new GiftError("invalid");
-  const v = r.data;
-  if (scope === "own" && v.collectorUserId !== c.actor.userId) throw new GiftError("not_found");
-  return db.transaction(async (tx) => {
-    let functionName: string | null = null;
-    if (v.functionId) {
-      const [f] = await tx.select({ name: functions.name }).from(functions).where(and(eq(functions.id, v.functionId), eq(functions.eventId, c.eventId)));
-      if (!f) throw new GiftError("bad_function");
-      functionName = f.name;
-    }
-    // The collector must be on the team of this event, like the person it's handed to.
-    const [collector] = await tx.select({ id: eventMembers.id }).from(eventMembers).where(and(eq(eventMembers.eventId, c.eventId), eq(eventMembers.userId, v.collectorUserId)));
-    if (!collector) throw new GiftError("bad_member");
-    if (v.handedToUserId) {
-      const [m] = await tx.select({ id: eventMembers.id }).from(eventMembers).where(and(eq(eventMembers.eventId, c.eventId), eq(eventMembers.userId, v.handedToUserId)));
-      if (!m) throw new GiftError("bad_member");
-    }
-    const open = await tx
-      .select({ id: gifts.id, amountPaise: gifts.amountPaise })
-      .from(gifts)
-      .where(and(eq(gifts.eventId, c.eventId), fnMatch(v.functionId), eq(gifts.recordedBy, v.collectorUserId), eq(gifts.type, "cash"), isNull(gifts.handoverId), notImported))
-      .for("update");
-    const recorded = open.reduce((a, g) => a + (g.amountPaise ?? 0), 0);
-    if (open.length === 0 && v.countedPaise === 0) throw new GiftError("nothing_to_hand_over");
-    const [h] = await tx
-      .insert(cashHandovers)
-      .values({
-        eventId: c.eventId,
-        functionId: v.functionId,
-        collectorUserId: v.collectorUserId,
-        recordedTotalPaise: recorded,
-        countedPaise: v.countedPaise,
-        handedToUserId: v.handedToUserId,
-        handedToName: v.handedToUserId ? null : v.handedToName,
-        handedAt: v.handedAt ?? new Date(),
-        notes: v.notes,
-        createdBy: c.actor.userId,
-      })
-      .returning();
-    if (open.length) {
-      await tx
-        .update(gifts)
-        .set({ handoverId: h.id })
-        .where(
-          inArray(
-            gifts.id,
-            open.map((g) => g.id),
-          ),
-        );
-    }
-    const diff = v.countedPaise - recorded;
-    await audit(tx, { eventId: c.eventId, actor: c.actor, action: diff === 0 ? "gift.handover" : "gift.handover_discrepancy", entityType: "cash_handover", entityId: h.id, data: { function: functionName ?? "" } });
-    if (diff !== 0) {
-      // Hosts only: the amount never goes to anyone without gift access.
-      // In-app only: shagun amounts never go out by email (GFT-07).
-      await notifyHosts(tx, c.eventId, {
-        kind: "gift.handover_discrepancy",
-        noEmail: true,
-        data: { function: functionName ?? "—", amount: `${diff < 0 ? "−" : "+"}${formatInr("en", Math.abs(diff))}` },
-        href: `/events/${c.eventId}/gifts/cash`,
-      });
-    }
-    return { handover: h, discrepancyPaise: diff, count: open.length };
-  });
-}
-
-/** Members who can receive or collect cash (for the hand-over form). */
-export async function giftMembers(db: Tx, c: GiftCtx) {
-  giftScope(c.subject);
-  return db
-    .select({ userId: eventMembers.userId, name: users.name, role: eventMembers.role, giftAccess: eventMembers.giftAccess })
+    .select({ id: users.id, name: users.name })
     .from(eventMembers)
     .innerJoin(users, eq(users.id, eventMembers.userId))
     .where(eq(eventMembers.eventId, c.eventId))
@@ -644,103 +536,54 @@ export async function giftMembers(db: Tx, c: GiftCtx) {
 }
 
 // ---------------------------------------------------------------------------
-// Summaries (GFT-05). Full access only.
-// ---------------------------------------------------------------------------
-
-export type GiftTotals = { key: string | null; label: string | null; count: number; amountPaise: number; estValuePaise: number };
-
-export async function giftSummary(db: Tx, c: GiftCtx) {
-  assertCan(c.subject, "gifts.view");
-  const amount = sql<number>`coalesce(sum(${gifts.amountPaise}), 0)::bigint`.mapWith(Number);
-  const est = sql<number>`coalesce(sum(${gifts.estValuePaise}), 0)::bigint`.mapWith(Number);
-  const n = sql<number>`count(*)::int`;
-  const where = eq(gifts.eventId, c.eventId);
-  const [byFunction, byFor, byType, [total]] = await Promise.all([
-    db
-      .select({ key: gifts.functionId, label: functions.name, count: n, amountPaise: amount, estValuePaise: est })
-      .from(gifts)
-      .leftJoin(functions, eq(functions.id, gifts.functionId))
-      .where(where)
-      .groupBy(gifts.functionId, functions.name, functions.date)
-      .orderBy(asc(functions.date)),
-    db.select({ key: gifts.receivedFor, count: n, amountPaise: amount, estValuePaise: est }).from(gifts).where(where).groupBy(gifts.receivedFor),
-    db.select({ key: gifts.type, count: n, amountPaise: amount, estValuePaise: est }).from(gifts).where(where).groupBy(gifts.type),
-    db.select({ count: n, amountPaise: amount, estValuePaise: est }).from(gifts).where(where),
-  ]);
-  return {
-    byFunction: byFunction as GiftTotals[],
-    byReceivedFor: byFor.map((r) => ({ ...r, label: null })) as GiftTotals[],
-    byType: byType.map((r) => ({ ...r, label: null })) as GiftTotals[],
-    total,
-  };
-}
-
-/** Families with no gift recorded (for follow-up or data-entry checks), with whether they attended. */
-export async function householdsWithoutGift(db: Tx, c: GiftCtx, limit = 500) {
-  assertCan(c.subject, "gifts.view");
-  return db
-    .select({
-      id: households.id,
-      name: households.name,
-      side: households.side,
-      attended: sql<boolean>`exists (select 1 from check_ins ci join guests g on g.id = ci.guest_id where g.household_id = "households"."id")`,
-    })
-    .from(households)
-    .where(and(eq(households.eventId, c.eventId), sql`not exists (select 1 from gifts gx where gx.household_id = "households"."id")`))
-    .orderBy(asc(households.name))
-    .limit(limit);
-}
-
-/** Share of families thanked (GFT-10): sent / (all families except "not needed"). */
-export async function thankedStats(db: Tx, eventId: string) {
-  const [r] = await db
-    .select({
-      total: sql<number>`count(*)::int`,
-      sent: sql<number>`count(*) filter (where ${thankYous.status} = 'sent')::int`,
-      notNeeded: sql<number>`count(*) filter (where ${thankYous.status} = 'not_needed')::int`,
-      drafted: sql<number>`count(*) filter (where ${thankYous.status} = 'drafted')::int`,
-    })
-    .from(households)
-    .leftJoin(thankYous, eq(thankYous.householdId, households.id))
-    .where(eq(households.eventId, eventId));
-  const base = r.total - r.notNeeded;
-  return { ...r, pct: base > 0 ? Math.round((r.sent / base) * 100) : 0 };
-}
-
-// ---------------------------------------------------------------------------
-// Erasure (EVT-09)
+// Daily reminder (GFT-06)
 // ---------------------------------------------------------------------------
 
 /**
- * Before a family is deleted: their gifts stay (so reconciliation still adds up) but lose the
- * link and the name. The foreign keys then null household/guest ids.
+ * Once per item and needed-by date: when it isn't fully bought and is needed within 7 days (or
+ * is overdue), its assignee (or the Hosts, when nobody is assigned or the assignee left the
+ * team) is notified in-app and by email. A new needed-by date (a moved give-by date or a
+ * rescheduled function) re-arms the reminder.
  */
-export async function anonymiseGiftsOfHousehold(tx: Tx, eventId: string, householdId: string) {
-  await tx
-    .update(gifts)
-    .set({ giverName: ERASED_GIVER, receivedForNote: null, notes: null, updatedAt: new Date() })
-    .where(and(eq(gifts.eventId, eventId), eq(gifts.householdId, householdId)));
-}
-
-/** How a giver shows in lists: family name, free-text name, or the erased placeholder. */
-export function giverLabel(g: { householdName: string | null; giverName: string | null }, erased: string) {
-  if (g.householdName) return g.householdName;
-  if (!g.giverName || g.giverName === ERASED_GIVER) return erased;
-  return g.giverName;
-}
-
-/** Families to choose as the giver (names only). */
-export async function householdOptions(db: Tx, c: GiftCtx) {
-  giftScope(c.subject);
-  return db.select({ id: households.id, name: households.name }).from(households).where(eq(households.eventId, c.eventId)).orderBy(asc(households.name)).limit(3000);
-}
-
-/** The collector's own cash at a function that hasn't been handed over yet. */
-export async function myOpenCash(db: Tx, c: GiftCtx, functionId: string) {
-  giftScope(c.subject);
-  const [r] = await db
-    .select({ count: sql<number>`count(*)::int`, totalPaise: sql<number>`coalesce(sum(${gifts.amountPaise}), 0)::bigint`.mapWith(Number) })
-    .from(gifts)
-    .where(and(eq(gifts.eventId, c.eventId), eq(gifts.functionId, functionId), eq(gifts.recordedBy, c.actor.userId), eq(gifts.type, "cash"), isNull(gifts.handoverId), notImported));
-  return r;
+export async function sendGiftReminders(db: Database, now = new Date(), appUrl?: string): Promise<number> {
+  const candidates = await db
+    .select({ item: giftItems, functionDate: functions.date, timezone: events.timezone })
+    .from(giftItems)
+    .innerJoin(events, eq(events.id, giftItems.eventId))
+    .leftJoin(functions, eq(functions.id, giftItems.functionId))
+    .where(and(isNull(events.deletedAt), ne(giftItems.status, "given")));
+  const countsByEvent = new Map<string, Map<string, FunctionHeadcount>>();
+  let sent = 0;
+  for (const r of candidates) {
+    const today = todayIn(r.timezone, now);
+    const when = whenDate(r.item.giveBy, r.functionDate);
+    if (!when || when > addDays(today, DUE_SOON_DAYS) || r.item.remindedFor === when) continue;
+    let counts = countsByEvent.get(r.item.eventId);
+    if (!counts) {
+      counts = await invitedCounts(db, r.item.eventId);
+      countsByEvent.set(r.item.eventId, counts);
+    }
+    if (!stillToBuy(r.item.status, r.item.quantityBought, neededOrNull(r.item, counts))) continue;
+    const done = await db.transaction(async (tx) => {
+      // Claim the item first, so two overlapping runs never notify twice.
+      const claimed = await tx
+        .update(giftItems)
+        .set({ remindedOn: today, remindedFor: when })
+        .where(and(eq(giftItems.id, r.item.id), or(isNull(giftItems.remindedFor), ne(giftItems.remindedFor, when))))
+        .returning({ id: giftItems.id });
+      if (claimed.length === 0) return false;
+      const input = { kind: "gift.due", data: { name: r.item.name, date: when }, href: `/events/${r.item.eventId}/gifts`, appUrl };
+      const [member] = r.item.assigneeId
+        ? await tx
+            .select({ userId: eventMembers.userId })
+            .from(eventMembers)
+            .where(and(eq(eventMembers.eventId, r.item.eventId), eq(eventMembers.userId, r.item.assigneeId)))
+        : [];
+      if (member) await notify(tx, { ...input, eventId: r.item.eventId, userIds: [member.userId] });
+      else await notifyHosts(tx, r.item.eventId, input);
+      return true;
+    });
+    if (done) sent++;
+  }
+  return sent;
 }

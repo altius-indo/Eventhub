@@ -105,7 +105,7 @@ export async function* mainEntries(ctx: ArchiveContext): AsyncIterable<ArchiveEn
   yield { path: sheet(t("archive.sheets.payments")), data: await buildPaymentsWorkbook(db, eventId, t, locale) };
   yield { path: sheet(t("archive.sheets.payables")), data: await buildPayablesWorkbook(await payables(db, eventId, today, null), t, locale) };
   yield { path: sheet(t("archive.sheets.vendors")), data: await buildVendorsWorkbook(db, eventId, t) };
-  yield { path: sheet(t("archive.sheets.gifts")), data: await buildGiftsWorkbook(db, giftCtx(ctx), t) };
+  yield { path: sheet(t("archive.sheets.gifts")), data: await buildGiftsWorkbook(db, giftCtx(ctx), t, locale) };
   const pages = t("archive.folders.printable");
   yield { path: `${pages}/${safeName(t("archive.runSheetsTitle"))}.html`, data: strToU8(await buildRunSheetsHtml(db, eventId, t, locale)), compress: true };
   yield { path: `${pages}/${safeName(t("archive.invoicesTitle"))}.html`, data: strToU8(await buildInvoicesHtml(db, eventId, t, locale, today)), compress: true };

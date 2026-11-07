@@ -25,7 +25,7 @@
 | Name & branding | Product name **EventHub** (final). No visual identity yet: v1 uses a neutral, themeable design system (colour/typography tokens) so branding can be applied later without rework |
 | Usage limits | Sensible per-event defaults for messaging and gallery storage, configurable by the App Admin (§4.1) |
 | Data retention | Event data kept for **1 year after the event's last function**, then permanently deleted (after export reminders) |
-| Gifts | **Shagun / gift tracking and thank-you notes** included; gift data is private to Hosts |
+| Gifts | **Gifts to give and thank-you notes** included: a planning list of gifts the family gives (return gifts, family, helpers, vendors) with when, how many, for whom and purchase status. Hosts and Planners both manage it. Received gifts (shagun) are not tracked (changed 2026-11-07, ADR-0036) |
 | Approvals | **Hosts approve everything planners change** in services/requirements and money (bookings, budget, payments); any one Host can approve. Optional per-category auto-approve thresholds, default off |
 | Region | India: INR (lakh/crore formatting), GST on invoices |
 | Roles | **Three roles**: **App Admin** (runs the app, full access to all events), **Host** (event decision-makers) and **Planner** (does the planning; changes need Host approval). Vendors and guests use their own portal and links. No coordinator roles and no side/function scoping |
@@ -43,8 +43,8 @@
 | Role | Who | Access summary |
 |---|---|---|
 | **App Admin** | Operator of EventHub (platform level, not tied to an event) | Platform settings, user management, usage limits and limit requests, provider rate table, cost dashboard. **Full view/edit access to every event**, with every admin action audit-logged (EVT-10) |
-| **Host** | The couple and family decision-makers. The event creator becomes the first Host; an event always has at least one | Full access to the event. Manages members, **approves planner changes** to services/requirements and all money (SVC-10, BGT-04), publishes the website, sees gifts, can delete the event |
-| **Planner** | Hired planner or family member doing the planning | Edits everything operational (guests, RSVP, travel, rooms, seating, itinerary, run sheet, tasks, messaging, website drafts, gallery). Changes to **services/requirements, bookings, budget and payments are submitted for Host approval**. No gift access unless a Host grants it |
+| **Host** | The couple and family decision-makers. The event creator becomes the first Host; an event always has at least one | Full access to the event. Manages members, **approves planner changes** to services/requirements and all money (SVC-10, BGT-04), publishes the website, can delete the event |
+| **Planner** | Hired planner or family member doing the planning | Edits everything operational (guests, RSVP, travel, rooms, seating, itinerary, run sheet, tasks, messaging, website drafts, gallery). Changes to **services/requirements, bookings, budget and payments are submitted for Host approval**. Also manages the gift list and thank-you notes |
 | **Vendor** | Service provider (caterer, decorator, …) | Vendor portal: own brief, relevant run-sheet items, own quotes, contracts, invoices and payment status, chat with the team |
 | **Guest** | Invited household (magic link) | Own household's invites, RSVP, personalised itinerary, travel/room details, broadcasts |
 
@@ -68,7 +68,7 @@
 | Invoices & payments | RW | RW + approve | Record (Host confirms) | Own (upload, view status) | – |
 | Messaging / broadcasts | RW | RW | RW | Own threads | Receive / reply |
 | Reports | RW | R | R | – | – |
-| Gifts / shagun & thank-yous | RW | RW | – (Host can grant record-only or full) | – | – |
+| Gifts to give & thank-yous | RW | RW | RW | – | – |
 | Wedding website | RW + publish | RW + publish | RW (publish needs Host) | – | View (+ personalised view via magic link) |
 | Photo gallery | RW + moderate | RW + moderate | RW + moderate | Photographers/videographers: upload to booked functions | View invited functions; upload (if enabled) |
 
@@ -100,7 +100,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
   - **What is kept**: only **anonymised aggregate counts** (e.g. number of guests, functions), for product metrics. **Templates** saved from the event (EVT-05), which contain no personal data, also stay. User accounts (login identities) remain, and their membership in the deleted event is removed.
 - **EVT-08 (M)** **Before deletion: reminders and export.**
   - **Reminders**: Hosts are notified **60, 30 and 7 days** before deletion (in-app plus email/WhatsApp).
-  - **Full archive**: a one-click download of the whole event. It includes Excel files (guests, RSVPs, budget, payments, vendors, gifts and thank-yous), PDFs (run sheets, invoices, contracts) and a ZIP of gallery originals (split into parts if large).
+  - **Full archive**: a one-click download of the whole event. It includes Excel files (guests, RSVPs, budget, payments, vendors, gift list and thank-yous), PDFs (run sheets, invoices, contracts) and a ZIP of gallery originals (split into parts if large).
   - **Vendors**: vendors are reminded to download their own invoices and payment records for the event.
 - **EVT-09 (M)** **Earlier deletion**:
   - **Whole event**: a Host (or the App Admin) can delete the event at any time (with step-up OTP, EVT-01d, and a 7-day undo window).
@@ -271,27 +271,28 @@ Event
 
 ---
 
-### 3.14 Gifts, Shagun & Thank-you Notes (`GFT`)
-- **GFT-01 (M)** **Gift register**: record gifts per household (or per guest). Fields:
-  - **Type**: cash shagun (envelope), UPI/bank transfer, cheque, gift item, gold/jewellery, voucher, other.
-  - **Value**: amount in INR, or an item description with an optional estimated value.
-  - **Context**: the function where it was received, received *for* (bride / groom / couple / parents / other family member), received *by* (who logged it), date, notes and an optional photo of the item.
-- **GFT-02 (M)** **Day-of envelope mode**: a fast mobile entry screen for whoever is collecting shagun at a function (a Host, or a Planner with gift access).
-  - **Quick entry**: search the guest (or scan their check-in QR), enter the amount and envelope number, save, next.
-  - **Unknown givers**: allowed with a free-text name.
-  - **Offline**: works through poor connectivity (queued and synced, as for check-in).
-- **GFT-03 (M)** **Cash reconciliation**: per collector and function, compare the recorded total with the counted cash and record the hand-over (to whom, when), with any discrepancy flagged.
-- **GFT-04 (M)** **Bulk import** of post-event tally sheets from Excel, matched to households with a review step for unmatched names.
-- **GFT-05 (M)** **Summaries**: totals by function, received-for and gift type; a list of households with no gift recorded (for follow-up or data-entry checks). Gifts are tracked **separately from the wedding budget** and are not offset against expenses.
-- **GFT-06 (S)** **Gift history across events (*vyavhar* / *lena-dena*)**: since one account can hold multiple events, show a household's gifts given and received across the family's events, to inform reciprocal gifting. Past gifts *given* can be entered manually. Limited by retention (EVT-07): history only covers events still within their 1-year window, so the archive export is the family's long-term record.
-- **GFT-07 (M)** **Privacy**: gift data is visible to **Hosts** (and the App Admin). Planners have no access unless a Host grants it, either **record-only** (envelope mode, sees only their own entries) or **full**. Guests and vendors never see gift data. Every edit is in the audit log.
-- **GFT-08 (M)** **Thank-you tracker**: per household, status *not started → drafted → sent* (plus *not needed*), channel, sent date and sent by. Households that attended but gave no gift can also be thanked.
+### 3.14 Gifts to give & Thank-you Notes (`GFT`)
+
+> Changed 2026-11-07 (ADR-0036): the module plans gifts the family **gives**. Gifts received (shagun register, envelope mode, cash reconciliation, tally import) are no longer in scope.
+
+- **GFT-01 (M)** **Gift list**: a list of gifts the family plans to give, each with a name, optional details and a **category**: return gift (for guests), family, helpers and staff, vendors, other. Items can be added, edited and deleted.
+- **GFT-02 (M)** **When**: each gift is given at a **function** and/or by a **give-by date**; the earlier of the two is when it's needed. Gifts without either are listed as "no date yet".
+- **GFT-03 (M)** **How many**: a **fixed number**, or **linked to the guest list**: one per invited family, per invited guest or per invited adult of a function (by default the gift's own function), plus **spares**. Linked quantities follow invitation changes live.
+- **GFT-04 (S)** **For whom (optional)**: free text (e.g. "Groom's sisters", "drivers") and/or particular families from the guest list. Removing a family removes the link.
+- **GFT-05 (M)** **Purchase status**: *to buy → ordered → bought → given*, with the **number bought so far**. When the bought count covers what's needed, *to buy*/*ordered* becomes *bought* automatically; *given* never moves back on its own, and reopening a given gift returns it to *bought* if enough were bought. Optional cost per gift, who's buying and where to buy.
+- **GFT-06 (M)** **Views and reminders**:
+  - **List** grouped by when, with search (gift, for whom), status tabs and quick filters (due this week, return gifts, mine, function, category); each row shows needed vs bought with progress and one-tap actions (+1 / +N bought, mark ordered / bought / given).
+  - **Summary**: items ready, total needed, bought and still to buy, items due within 7 days that aren't bought, and the estimated total cost. Gifts are tracked **separately from the wedding budget** (add a standalone budget line, BGT-02, to budget for them).
+  - **Due soon**: once per gift and needed-by date (a rescheduled function or new give-by date re-arms it), the person buying (or the Hosts if nobody is assigned) is notified in-app and by email when it isn't fully bought and is needed within 7 days.
+  - **Export** to Excel, and a dashboard card ("X of Y bought, N due this week"). The full archive (EVT-08) also keeps any gifts received and cash hand-overs recorded before this change, read-only.
+- **GFT-07 (M)** **Access**: Hosts and Planners view and edit the gift list and thank-you notes (and the App Admin, as for every event). Guests and vendors never see it. Creating, changing (incl. status) and deleting gifts is in the audit log, without costs.
+- **GFT-08 (M)** **Thank-you tracker**: per household, status *not started → drafted → sent* (plus *not needed*), channel, sent date and sent by. All families of the event are listed; "attended" means a member was checked in at a function.
 - **GFT-09 (M)** **Thank-you notes**:
-  - **Templates**: per language (English, Hindi, …) with merge fields such as guest name, functions attended, gift item and a personal line. **Amounts are never inserted** into messages.
+  - **Templates**: per language (English, Hindi, …) with merge fields: guest name, couple names, functions attended and a personal line (older templates' gift-item field renders as the word for "gift"). **Amounts are never inserted** into messages.
   - **Review before sending**: each note can be personalised individually; bulk send with per-household review.
   - **Channels**: WhatsApp, email or SMS through the messaging module, with delivery status tracked.
   - **Printed cards**: export names and postal addresses as Excel or a label PDF, then mark them sent manually.
-- **GFT-10 (S)** **Reminders**: nudge the family when households remain un-thanked N weeks after the event (default 4 weeks); dashboard shows the % thanked.
+- **GFT-10 (S)** **Reminders**: nudge the family when households that attended remain un-thanked N weeks after the event (default 4 weeks); the tracker shows the % thanked.
 
 ### 3.15 Public Wedding Website (`WEB`)
 - **WEB-01 (M)** **Microsite per event** at `eventhub.<domain>/<couple-slug>`, e.g. `/priya-weds-arjun`, with a mobile-first responsive layout.
@@ -409,7 +410,7 @@ EventHub is free for personal use, so per-event limits keep running costs predic
 
 ```
 User (is_app_admin) ─< EventMember >─ Event
-                          └─ role: host | planner, gift_access: none | record | full
+                          └─ role: host | planner
 
 Event ─< Function ─< RunSheetItem (owner: Member|Vendor)
       ─< Task (assignee, function?)
@@ -443,8 +444,8 @@ Function ─< Service (type, owner, brief, payer allocation)
       ─< GalleryAlbum (function, title, release state)
               └─< MediaItem (uploader: Member|Vendor|Household, type photo|video, original + renditions, taken_at, status pending|approved|hidden, favourites, album_selection)
       ─< MediaRemovalRequest / FaceConsent (opt-in, S)
-      ─< Gift (household|free-text giver, type, amount|item, function, received_for, recorded_by, envelope_no)
-      ─< CashHandover (collector, function, recorded vs counted, handed_to)
+      ─< GiftItem (name, category, function?, give_by?, quantity: fixed | per family/guest/adult of a function + spares, bought, status to_buy|ordered|bought|given, for_whom, unit_cost, assignee, source)
+              └─< GiftItemRecipient (household, optional)
       ─< ThankYou (household, status, channel, template, sent_at, sent_by)
       ─< AuditLog
 ```
@@ -458,8 +459,8 @@ Function ─< Service (type, owner, brief, payer allocation)
 3. **Invite & RSVP**: Family builds and publishes the wedding website → send WhatsApp invites with personal magic links (which open the personalised site) → guests RSVP per function and member, enter travel → reminders go to non-responders.
 4. **Logistics**: Planner reviews the arrivals board → creates pickup runs → allocates rooms → exports rooming lists to hotels.
 5. **Services → vendors → money**: For each function, add services and their requirements (with estimates) → request quotes per service, or one combined request across functions (e.g. Catering for all functions) → compare per requirement → Planner books one vendor, or splits a requirement across vendors → a Host approves (creates fulfilments, budget commitment and payment schedule) → gap view shows anything still uncovered → vendor uploads invoice in the portal → Planner records payment → Host confirms → vendor sees "Paid".
-6. **Day-of**: Planners open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests → Hosts (or Planners with gift access) log envelopes in envelope mode and reconcile cash after each function.
-7. **After the wedding**: Family reviews gift summaries → drafts personalised thank-you notes from templates → sends via WhatsApp/email or prints cards → tracker shows who is still to be thanked. Photographers upload deliveries → family reviews and releases each function's gallery → guests are notified and browse/download their functions' photos → family picks album selections for the photographer.
+6. **Day-of**: Planners open the run sheet in live mode on their phones → check guests in by QR → broadcast "Baraat starts in 15 min" to groom-side guests → Hosts or Planners hand out the return gifts for that function and mark them given.
+7. **After the wedding**: Family drafts personalised thank-you notes from templates → sends via WhatsApp/email or prints cards → tracker shows who is still to be thanked. Photographers upload deliveries → family reviews and releases each function's gallery → guests are notified and browse/download their functions' photos → family picks album selections for the photographer.
 
 ---
 
@@ -502,7 +503,7 @@ All modules ship in **Phase 1**, built in this order so each milestone is usable
 | **M3 Guest Experience** | Magic links, RSVP, personalised itinerary, guest travel submission, Hindi guest pages, public wedding website (editor, themes, visibility, personalised view) |
 | **M4 Logistics** | Travel, transfers, hotels/room blocks, room allocation, seating plans, QR check-in |
 | **M5 Services, Vendors & Money** | Service catalogue, services & requirements per function, fulfilment/gap view, vendor directory, quotes per service and comparison, contracts, budget (categories/functions/payer), approvals, invoices with GST, payment schedules/status |
-| **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders, gift register & envelope mode, thank-you notes |
+| **M6 Communication** | In-app chat, vendor portal, broadcasts, email/SMS/WhatsApp integration, reminders, gifts to give (list, quantities from the guest list, purchase status), thank-you notes |
 | **M7 Post-event & Hardening** | Photo gallery (deliveries, guest uploads, moderation, album selection), retention jobs (reminders, full archive export, scheduled deletion incl. storage and backups), run sheet live mode, offline check-in, reports/exports, performance, security review, UAT on a real wedding dataset |
 
 **Lead-time risk:** WhatsApp Business API approval (Meta business verification, template approval) and SMS **DLT registration** take days to weeks. Start these during M1. **Phone OTP login depends on them**, so email OTP ships first in M1 and phone OTP switches on as soon as the DLT template is approved.

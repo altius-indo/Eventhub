@@ -9,6 +9,7 @@ import {
   eventMetrics,
   events,
   functions,
+  giftItems,
   gifts,
   guestErasureRequests,
   guests,
@@ -310,7 +311,7 @@ export async function anonymisedCounts(tx: Tx, eventId: string): Promise<Record<
     requirements,
     bookings,
     tasks,
-    gifts,
+    giftItems,
     documents,
     messages,
     broadcasts,
@@ -450,9 +451,10 @@ export function erasedFamilyLabel(requestId: string) {
 
 /**
  * Erases the family, in one transaction (ADR-0033):
- * - deletes the household (members, invitations, RSVPs, travel, rooms, seats … by cascade; gifts
- *   stay, anonymised) and queues their stored files (`events/<eid>/households/<hid>/`);
- * - deletes documents attached to their gifts (photos of items), with their stored objects;
+ * - deletes the household (members, invitations, RSVPs, travel, rooms, seats, gift-list recipient
+ *   links … by cascade) and queues their stored files (`events/<eid>/households/<hid>/`);
+ * - legacy received-gift rows (ADR-0036) stay, anonymised; photos attached to them are deleted
+ *   with their stored objects;
  * - deletes queued messages to them and blanks the address and text of sent ones;
  * - blanks `data` of audit rows about the household or its members (names, contact details);
  * - replaces the family's name in the request log with a neutral label and drops the note.
@@ -475,7 +477,7 @@ export async function processErasureRequest(db: Database, eventId: string, reque
       entityIds.push(householdId, ...guestIds);
       giftIds.push(...(await tx.select({ id: gifts.id }).from(gifts).where(and(eq(gifts.eventId, eventId), eq(gifts.householdId, householdId)))).map((g) => g.id));
 
-      // Gift photos and other files attached to the family's gifts.
+      // Legacy (received gifts, ADR-0036): photos and other files attached to the family's gifts.
       const giftDocs = giftIds.length
         ? await tx
             .delete(documents)

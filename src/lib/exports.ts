@@ -1,12 +1,12 @@
-import { eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import ExcelJS from "exceljs";
 import type { Tx } from "@/db";
-import { guests, rsvps, type Payer } from "@/db/schema";
-import { formatInr, formatWallClock, type Locale, type MessageKey, type Translator } from "@/i18n/core";
+import { cashHandovers, functions, gifts, guests, households, rsvps, users, type Payer } from "@/db/schema";
+import { formatDay, formatInr, formatWallClock, type Locale, type MessageKey, type Translator } from "@/i18n/core";
 import { budgetFacts, byPayer, groupFacts, type Measures } from "./budget";
 import { listServiceTypes } from "./catalogue";
 import { listFunctions } from "./functions";
-import { listGifts, type GiftCtx } from "./gifts";
+import { listGiftItems, type GiftCtx, type GiftRow } from "./gifts";
 import { importFields, type ExportLabels } from "./guest-import";
 import { listAllGuests } from "./guests";
 import { listInvoices, listPayments, type PayableRow } from "./payments";
@@ -248,40 +248,149 @@ export async function buildVendorsWorkbook(db: Tx, eventId: string, t: Translato
   return toBuffer(wb);
 }
 
-/** GFT-01/08: gift register and thank-you tracker (Host-only data, GFT-07). */
-export async function buildGiftsWorkbook(db: Tx, c: GiftCtx, t: Translator): Promise<Buffer> {
-  const [gifts, tracker] = await Promise.all([listGifts(db, c, {}, 100_000), listTracker(db, c, {})]);
-  const wb = new ExcelJS.Workbook();
+/**
+ * Gifts received and cash hand-overs recorded before the module changed to gifts to give
+ * (ADR-0036). Read-only, and only when the event has such rows, so the full archive (EVT-08)
+ * still holds them until the legacy tables are dropped.
+ */
+async function addLegacyReceivedSheets(db: Tx, wb: ExcelJS.Workbook, eventId: string, t: Translator) {
+  const old = await db
+    .select({ g: gifts, household: households.name, fn: functions.name, by: users.name })
+    .from(gifts)
+    .leftJoin(households, eq(households.id, gifts.householdId))
+    .leftJoin(functions, eq(functions.id, gifts.functionId))
+    .leftJoin(users, eq(users.id, gifts.recordedBy))
+    .where(eq(gifts.eventId, eventId))
+    .orderBy(asc(gifts.createdAt), asc(gifts.id));
+  if (old.length) {
+    const ws = wb.addWorksheet(sheetName(t("archive.legacy.giftsSheet"), "Gifts received"));
+    ws.columns = [
+      { header: t("archive.legacy.cols.date"), key: "date", width: 14 },
+      { header: t("archive.legacy.cols.givenBy"), key: "giver", width: 26 },
+      { header: t("archive.legacy.cols.type"), key: "type", width: 22 },
+      { header: t("archive.legacy.cols.amount"), key: "amount", width: 14, style: rupees },
+      { header: t("archive.legacy.cols.item"), key: "item", width: 24 },
+      { header: t("archive.legacy.cols.estValue"), key: "est", width: 14, style: rupees },
+      { header: t("archive.legacy.cols.function"), key: "fn", width: 20 },
+      { header: t("archive.legacy.cols.receivedFor"), key: "for", width: 18 },
+      { header: t("archive.legacy.cols.envelope"), key: "env", width: 10 },
+      { header: t("archive.legacy.cols.recordedBy"), key: "by", width: 20 },
+      { header: t("archive.legacy.cols.notes"), key: "notes", width: 30 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    for (const { g, household, fn, by } of old) {
+      ws.addRow({
+        date: g.receivedOn ?? "",
+        giver: household ?? g.giverName ?? "",
+        type: t(`archive.legacy.types.${g.type}`),
+        amount: g.amountPaise != null ? g.amountPaise / 100 : "",
+        item: g.itemDescription ?? "",
+        est: g.estValuePaise != null ? g.estValuePaise / 100 : "",
+        fn: fn ?? "",
+        for: t(`archive.legacy.receivedFor.${g.receivedFor}`) + (g.receivedForNote ? ` (${g.receivedForNote})` : ""),
+        env: g.envelopeNo ?? "",
+        by: by ?? "",
+        notes: g.notes ?? "",
+      });
+    }
+  }
+  const handedTo = sql<string | null>`coalesce(${cashHandovers.handedToName}, (select u.name from users u where u.id = ${cashHandovers.handedToUserId}))`;
+  const cash = await db
+    .select({ h: cashHandovers, fn: functions.name, collector: users.name, handedTo })
+    .from(cashHandovers)
+    .leftJoin(functions, eq(functions.id, cashHandovers.functionId))
+    .leftJoin(users, eq(users.id, cashHandovers.collectorUserId))
+    .where(eq(cashHandovers.eventId, eventId))
+    .orderBy(asc(cashHandovers.handedAt), asc(cashHandovers.id));
+  if (cash.length) {
+    const ws = wb.addWorksheet(sheetName(t("archive.legacy.cashSheet"), "Cash hand-overs"));
+    ws.columns = [
+      { header: t("archive.legacy.cols.function"), key: "fn", width: 20 },
+      { header: t("archive.legacy.cols.collector"), key: "collector", width: 20 },
+      { header: t("archive.legacy.cols.recorded"), key: "recorded", width: 14, style: rupees },
+      { header: t("archive.legacy.cols.counted"), key: "counted", width: 14, style: rupees },
+      { header: t("archive.legacy.cols.difference"), key: "diff", width: 14, style: rupees },
+      { header: t("archive.legacy.cols.handedTo"), key: "to", width: 20 },
+      { header: t("archive.legacy.cols.handedAt"), key: "at", width: 20 },
+      { header: t("archive.legacy.cols.notes"), key: "notes", width: 30 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    for (const { h, fn, collector, handedTo: to } of cash) {
+      ws.addRow({
+        fn: fn ?? "",
+        collector: collector ?? "",
+        recorded: h.recordedTotalPaise / 100,
+        counted: h.countedPaise / 100,
+        diff: (h.countedPaise - h.recordedTotalPaise) / 100,
+        to: to ?? "",
+        at: h.handedAt.toISOString().slice(0, 16).replace("T", " "),
+        notes: h.notes ?? "",
+      });
+    }
+  }
+}
+
+/** "When" for a gift: the function (with its date) and/or the give-by date. */
+export function giftWhenText(t: Translator, locale: Locale, g: Pick<GiftRow, "functionName" | "functionDate" | "giveBy">): string {
+  const parts: string[] = [];
+  if (g.functionName) parts.push(g.functionDate ? `${g.functionName} (${formatDay(locale, g.functionDate)})` : g.functionName);
+  if (g.giveBy) parts.push(t("gifts.giveByLine", { date: formatDay(locale, g.giveBy) }));
+  return parts.join(" · ");
+}
+
+/** GFT-06: the gift list as a sheet (amounts in rupees). */
+export function addGiftListSheet(wb: ExcelJS.Workbook, rows: GiftRow[], t: Translator, locale: Locale) {
   const ws = wb.addWorksheet(sheetName(t("archive.sheets.gifts"), "Gifts"));
   ws.columns = [
-    { header: t("archive.cols.date"), key: "date", width: 14 },
-    { header: t("archive.cols.givenBy"), key: "giver", width: 26 },
-    { header: t("archive.cols.type"), key: "type", width: 20 },
-    { header: t("archive.cols.amount"), key: "amount", width: 14, style: rupees },
-    { header: t("archive.cols.item"), key: "item", width: 24 },
-    { header: t("archive.cols.estValue"), key: "est", width: 14, style: rupees },
-    { header: t("archive.cols.function"), key: "fn", width: 20 },
-    { header: t("archive.cols.receivedFor"), key: "for", width: 16 },
-    { header: t("archive.cols.envelope"), key: "env", width: 10 },
-    { header: t("archive.cols.recordedBy"), key: "by", width: 20 },
-    { header: t("archive.cols.notes"), key: "notes", width: 30 },
+    { header: t("gifts.cols.gift"), key: "gift", width: 28 },
+    { header: t("gifts.cols.category"), key: "category", width: 18 },
+    { header: t("gifts.cols.when"), key: "when", width: 30 },
+    { header: t("gifts.cols.forWhom"), key: "forWhom", width: 24 },
+    { header: t("gifts.cols.families"), key: "families", width: 30 },
+    { header: t("gifts.cols.needed"), key: "needed", width: 10 },
+    { header: t("gifts.cols.bought"), key: "bought", width: 10 },
+    { header: t("gifts.cols.status"), key: "status", width: 14 },
+    { header: t("gifts.cols.assignee"), key: "assignee", width: 20 },
+    { header: t("gifts.cols.unitCost"), key: "unit", width: 14, style: rupees },
+    { header: t("gifts.cols.total"), key: "total", width: 14, style: rupees },
+    { header: t("gifts.cols.shop"), key: "shop", width: 24 },
+    { header: t("gifts.cols.notes"), key: "notes", width: 30 },
   ];
   ws.getRow(1).font = { bold: true };
-  for (const g of gifts) {
+  for (const g of rows) {
     ws.addRow({
-      date: g.receivedOn ?? "",
-      giver: g.householdName ?? g.giverName ?? "",
-      type: t(`gifts.types.${g.type}`),
-      amount: g.amountPaise != null ? g.amountPaise / 100 : "",
-      item: g.itemDescription ?? "",
-      est: g.estValuePaise != null ? g.estValuePaise / 100 : "",
-      fn: g.functionName ?? "",
-      for: t(`archive.receivedFor.${g.receivedFor}` as MessageKey) + (g.receivedForNote ? ` (${g.receivedForNote})` : ""),
-      env: g.envelopeNo ?? "",
-      by: g.recordedByName ?? "",
+      gift: g.name,
+      category: t(`gifts.categories.${g.category}`),
+      when: giftWhenText(t, locale, g),
+      forWhom: g.forWhom ?? "",
+      families: g.recipients.map((r) => r.name).join(", "),
+      needed: g.needed ?? "",
+      bought: g.quantityBought,
+      status: t(`gifts.statuses.${g.status}`),
+      assignee: g.assigneeName ?? "",
+      unit: g.unitCostPaise != null ? g.unitCostPaise / 100 : "",
+      total: g.totalCostPaise != null ? g.totalCostPaise / 100 : "",
+      shop: g.source ?? "",
       notes: g.notes ?? "",
     });
   }
+}
+
+/** GFT-06: the gift list download. */
+export async function buildGiftListWorkbook(rows: GiftRow[], t: Translator, locale: Locale): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  addGiftListSheet(wb, rows, t, locale);
+  return toBuffer(wb);
+}
+
+/**
+ * For the archive (EVT-08): the gift list and the thank-you tracker (GFT-06/08), plus any gifts
+ * received and cash hand-overs recorded before ADR-0036.
+ */
+export async function buildGiftsWorkbook(db: Tx, c: GiftCtx, t: Translator, locale: Locale): Promise<Buffer> {
+  const [rows, tracker] = await Promise.all([listGiftItems(db, c, {}, new Date(), 100_000), listTracker(db, c, {})]);
+  const wb = new ExcelJS.Workbook();
+  addGiftListSheet(wb, rows, t, locale);
   const ty = wb.addWorksheet(sheetName(t("archive.sheets.thankYous"), "Thank-yous"));
   ty.columns = [
     { header: t("archive.cols.household"), key: "h", width: 28 },
@@ -302,6 +411,7 @@ export async function buildGiftsWorkbook(db: Tx, c: GiftCtx, t: Translator): Pro
       text: r.draftText ?? "",
     });
   }
+  await addLegacyReceivedSheets(db, wb, c.eventId, t);
   return toBuffer(wb);
 }
 

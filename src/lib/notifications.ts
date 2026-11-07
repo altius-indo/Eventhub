@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { Tx } from "@/db";
 import { eventMembers, events, notificationPrefs, notifications, userIdentifiers, users, vendorContacts, vendors, type NotificationRow } from "@/db/schema";
-import { isLocale, translateDynamic, type Locale } from "@/i18n/core";
+import { formatDay, isLocale, translateDynamic, type Locale } from "@/i18n/core";
 import { cancelQueued, enqueue } from "./outbox";
 import { linkBase } from "@/lib/app-url";
 
@@ -23,7 +23,8 @@ const EMAIL_DEFAULT: Record<Category, boolean> = {
   headcount: true,
   usage: true,
   vendors: true,
-  gifts: false,
+  // Gifts to give that are due soon (GFT-06) and thank-you reminders; no amounts in either.
+  gifts: true,
 };
 
 export function categoryOf(kind: string): Category {
@@ -58,6 +59,8 @@ export function renderNotification(locale: Locale, n: Pick<NotificationRow, "kin
   const vars: Record<string, string | number> = Object.fromEntries(Object.entries(n.data ?? {}).map(([k, v]) => [k, v ?? ""]));
   // Channels are stored as ids ("whatsapp"); show their names ("WhatsApp", "ईमेल").
   if (typeof vars.channel === "string") vars.channel = translateDynamic(locale, `broadcasts.channelNames.${vars.channel}`) ?? vars.channel;
+  // Dates are stored as YYYY-MM-DD; show them the way the reader writes dates ("10 Dec 2026").
+  if (typeof vars.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(vars.date)) vars.date = formatDay(locale, vars.date);
   return translateDynamic(locale, `notifications.kinds.${n.kind}`, vars) ?? n.kind;
 }
 

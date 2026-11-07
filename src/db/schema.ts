@@ -1607,11 +1607,80 @@ export const messageOptOuts = pgTable(
   (t) => [primaryKey({ columns: [t.eventId, t.channel, t.address] })],
 );
 
+// ---------------------------------------------------------------------------
+// Gifts to give — GFT-01..07 (ADR-0036)
+// ---------------------------------------------------------------------------
+
+export const giftItemCategory = pgEnum("gift_item_category", ["return_gift", "family", "helpers_staff", "vendor", "other"]);
+/** How many to buy: a fixed number, or one per invited family / guest / adult guest of a function. */
+export const giftQuantityMode = pgEnum("gift_quantity_mode", ["fixed", "per_family", "per_guest", "per_adult"]);
+export const giftItemStatus = pgEnum("gift_item_status", ["to_buy", "ordered", "bought", "given"]);
+
+/** A gift the family plans to give (GFT-01..05). Hosts and Planners (GFT-07). */
+export const giftItems = pgTable(
+  "gift_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    category: giftItemCategory("category").notNull().default("other"),
+    /** When it's given (GFT-02): at a function and/or by a date. */
+    functionId: uuid("function_id").references(() => functions.id, { onDelete: "set null" }),
+    giveBy: date("give_by"),
+    quantityMode: giftQuantityMode("quantity_mode").notNull().default("fixed"),
+    quantityFixed: integer("quantity_fixed"),
+    /** Whose invitees the linked modes count; null = the item's own function. */
+    quantityFunctionId: uuid("quantity_function_id").references(() => functions.id, { onDelete: "set null" }),
+    /** Spares on top of the count. */
+    quantityExtra: integer("quantity_extra").notNull().default(0),
+    quantityBought: integer("quantity_bought").notNull().default(0),
+    status: giftItemStatus("status").notNull().default("to_buy"),
+    /** Free text, e.g. "Groom's sisters" (GFT-04). */
+    forWhom: text("for_whom"),
+    unitCostPaise: bigint("unit_cost_paise", { mode: "number" }),
+    assigneeId: uuid("assignee_id").references(() => users.id, { onDelete: "set null" }),
+    /** Where to buy it (shop, website). */
+    source: text("source"),
+    notes: text("notes"),
+    /** Day the "due soon" reminder went out (GFT-06). */
+    remindedOn: date("reminded_on"),
+    /** The needed-by date that reminder was about: a new date (e.g. a rescheduled function) re-arms it. */
+    remindedFor: date("reminded_for"),
+    version: integer("version").notNull().default(1),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("gift_items_event_status_idx").on(t.eventId, t.status), index("gift_items_event_fn_idx").on(t.eventId, t.functionId)],
+);
+
+/** Families a gift is for (GFT-04, optional). Removed with the family. */
+export const giftItemRecipients = pgTable(
+  "gift_item_recipients",
+  {
+    giftItemId: uuid("gift_item_id")
+      .notNull()
+      .references(() => giftItems.id, { onDelete: "cascade" }),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    eventId: uuid("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+  },
+  (t) => [unique("gift_item_recipients_uq").on(t.giftItemId, t.householdId), index("gift_item_recipients_household_idx").on(t.householdId)],
+);
+
+// Legacy (received gifts, GFT v1) — no longer used; drop after the owner confirms.
+// gifts, cash_handovers and gift_imports stay defined so drizzle doesn't generate drops (ADR-0036).
 export const giftType = pgEnum("gift_type", ["cash", "upi", "cheque", "item", "gold", "voucher", "other"]);
 export const giftReceivedFor = pgEnum("gift_received_for", ["bride", "groom", "couple", "parents", "other"]);
 export const giftSource = pgEnum("gift_source", ["manual", "envelope", "import"]);
 
-/** Gift register (GFT-01). Private to Hosts and Planners with gift access (GFT-07). */
+/** Legacy register of received gifts. No longer used. */
 export const gifts = pgTable(
   "gifts",
   {
@@ -1651,7 +1720,7 @@ export const gifts = pgTable(
   ],
 );
 
-/** Cash hand-over per collector and function (GFT-03). */
+/** Legacy cash hand-over of received gifts. No longer used. */
 export const cashHandovers = pgTable(
   "cash_handovers",
   {
@@ -1696,6 +1765,8 @@ export const giftImports = pgTable("gift_imports", {
   committedAt: ts("committed_at"),
   createdAt: createdAt(),
 });
+
+// End of legacy received-gift tables.
 
 /** Thank-you note templates per language (GFT-09). Merge fields never include amounts. */
 export const thankYouTemplates = pgTable("thank_you_templates", {
@@ -1840,8 +1911,7 @@ export type NotificationRow = typeof notifications.$inferSelect;
 export type Broadcast = typeof broadcasts.$inferSelect;
 export type OutboundMessage = typeof outboundMessages.$inferSelect;
 export type MessageChannel = (typeof messageChannel.enumValues)[number];
-export type Gift = typeof gifts.$inferSelect;
-export type CashHandover = typeof cashHandovers.$inferSelect;
+export type GiftItem = typeof giftItems.$inferSelect;
 export type ThankYou = typeof thankYous.$inferSelect;
 export type ThankYouTemplate = typeof thankYouTemplates.$inferSelect;
 

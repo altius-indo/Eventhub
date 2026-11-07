@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
-import type { GiftAccess, MemberRole } from "@/db/schema";
+import type { MemberRole } from "@/db/schema";
 import {
   changeMemberRole,
   EventError,
@@ -11,7 +11,6 @@ import {
   inviteMember,
   removeMember,
   revokeInvitation,
-  setGiftAccess,
 } from "@/lib/events";
 import { parseIdentifier } from "@/lib/identifiers";
 import { getEventContext } from "@/lib/server/event-context";
@@ -20,7 +19,6 @@ import { appUrl, getTranslator, requireStepUp } from "@/lib/server/session";
 type State = { error?: string; info?: string };
 
 const isRole = (v: unknown): v is MemberRole => v === "host" || v === "planner";
-const isGiftAccess = (v: unknown): v is GiftAccess => v === "none" || v === "record" || v === "full";
 
 async function errorMessage(err: unknown): Promise<State> {
   const { t } = await getTranslator();
@@ -79,7 +77,6 @@ export async function updateMemberAction(eventId: string, _prev: State, formData
   if (!ctx) return { error: t("common.notAllowed") };
   const userId = String(formData.get("userId"));
   const role = formData.get("role");
-  const gift = formData.get("giftAccess");
   const db = getDb();
   const member = await getMembership(db, eventId, userId);
   if (!member) return { error: t("common.somethingWrong") };
@@ -87,9 +84,6 @@ export async function updateMemberAction(eventId: string, _prev: State, formData
     if (isRole(role) && role !== member.role) {
       if (member.role === "host") await requireStepUp(ctx, `/events/${eventId}/members`);
       await changeMemberRole(db, eventId, userId, role, ctx.actor);
-    }
-    if (isGiftAccess(gift) && (role ?? member.role) === "planner" && gift !== member.giftAccess) {
-      await setGiftAccess(db, eventId, userId, gift, ctx.actor);
     }
   } catch (err) {
     return errorMessage(err);

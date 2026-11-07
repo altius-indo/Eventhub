@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
-import { bookings, documentBlobs, documents, gifts, invoices, messages, payments, quotes, services, vendors, type DocumentRow } from "@/db/schema";
+import { bookings, documentBlobs, documents, invoices, messages, payments, quotes, services, vendors, type DocumentRow } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 import { documentKey, getStore } from "./storage";
 import { runStorageDeletions, queueStorageDeletion } from "./storage-gc";
@@ -33,8 +33,7 @@ export type DocumentOwner =
   | { invoiceId: string }
   | { paymentId: string }
   | { serviceId: string }
-  | { messageId: string }
-  | { giftId: string };
+  | { messageId: string };
 
 export const DOCUMENT_KINDS = ["contract", "quote", "invoice", "receipt", "brief", "other"] as const;
 
@@ -57,16 +56,16 @@ const cleanName = (name: string) =>
 
 async function checkOwner(tx: Tx, eventId: string, owner: DocumentOwner): Promise<Partial<Record<keyof UnionKeys, string>>> {
   const [[key, id]] = Object.entries(owner) as [string, string][];
-  const found = async (t: typeof vendors | typeof quotes | typeof bookings | typeof invoices | typeof payments | typeof services | typeof messages | typeof gifts) => {
+  const found = async (t: typeof vendors | typeof quotes | typeof bookings | typeof invoices | typeof payments | typeof services | typeof messages) => {
     const [row] = await tx.select({ id: t.id }).from(t).where(and(eq(t.id, id), eq(t.eventId, eventId)));
     return !!row;
   };
-  const table = { vendorId: vendors, quoteId: quotes, bookingId: bookings, invoiceId: invoices, paymentId: payments, serviceId: services, messageId: messages, giftId: gifts }[key as keyof UnionKeys];
+  const table = { vendorId: vendors, quoteId: quotes, bookingId: bookings, invoiceId: invoices, paymentId: payments, serviceId: services, messageId: messages }[key as keyof UnionKeys];
   if (!table || !(await found(table))) throw new DocumentError("invalid");
   return { [key]: id };
 }
 
-type UnionKeys = { vendorId: 1; quoteId: 1; bookingId: 1; invoiceId: 1; paymentId: 1; serviceId: 1; messageId: 1; giftId: 1 };
+type UnionKeys = { vendorId: 1; quoteId: 1; bookingId: 1; invoiceId: 1; paymentId: 1; serviceId: 1; messageId: 1 };
 
 export async function saveDocument(
   db: Database,
@@ -162,7 +161,6 @@ export async function listDocuments(db: Tx, eventId: string, owner: DocumentOwne
     paymentId: documents.paymentId,
     serviceId: documents.serviceId,
     messageId: documents.messageId,
-    giftId: documents.giftId,
   }[key];
   return db
     .select()
@@ -172,8 +170,8 @@ export async function listDocuments(db: Tx, eventId: string, owner: DocumentOwne
 }
 
 /**
- * Gift photos and chat attachments have their own access rules (gift access, thread audience),
- * so the shared planning-documents route and action must not serve or delete them.
+ * Chat attachments have their own access rules (thread audience), and legacy received-gift
+ * photos (ADR-0036) are no longer shown, so the planning-documents route and action skip both.
  */
 export function isPlanningDocument(doc: Pick<DocumentRow, "giftId" | "messageId">) {
   return !doc.giftId && !doc.messageId;

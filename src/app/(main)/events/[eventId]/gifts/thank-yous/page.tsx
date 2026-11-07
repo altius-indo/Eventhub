@@ -5,11 +5,10 @@ import { SubmitButton } from "@/components/submit-button";
 import { Alert, Badge, Card, CardTitle, Field, Input, LinkButton, PageHeader, Select, buttonClass } from "@/components/ui";
 import { getDb } from "@/db";
 import { formatDateTime, type MessageKey } from "@/i18n/core";
-import { thankedStats } from "@/lib/gifts";
 import { getEventContext } from "@/lib/server/event-context";
 import { dctx } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
-import { deliveryFailed, listTemplates, listTracker, trackerFilterKeys, type TrackerFilters } from "@/lib/thank-yous";
+import { deliveryFailed, listTemplates, listTracker, thankedStats, trackerFilterKeys, type TrackerFilters } from "@/lib/thank-yous";
 import { statusTone } from "../shared";
 import { draftManyAction } from "./actions";
 
@@ -48,8 +47,8 @@ export default async function ThankYousPage({ params, searchParams }: PageProps<
       {typeof sp.sent === "string" && <Alert tone="success">{t("thankYous.sentInfo", { count: sp.sent, skipped: String(sp.skipped ?? "0") })}</Alert>}
 
       <Card>
-        <form method="get" className="grid gap-2 sm:grid-cols-5" role="search">
-          <Input name="q" defaultValue={filters.q ?? ""} placeholder={t("gifts.search")} aria-label={t("gifts.search")} className="sm:col-span-2" />
+        <form method="get" className="grid gap-2 sm:grid-cols-4" role="search">
+          <Input name="q" defaultValue={filters.q ?? ""} placeholder={t("thankYous.search")} aria-label={t("thankYous.search")} className="sm:col-span-2" />
           <Select name="status" defaultValue={filters.status ?? ""} aria-label={t("thankYous.status")}>
             <option value="">{t("thankYous.allStatuses")}</option>
             {(["not_started", "drafted", "sent", "not_needed"] as const).map((s) => (
@@ -58,18 +57,13 @@ export default async function ThankYousPage({ params, searchParams }: PageProps<
               </option>
             ))}
           </Select>
-          <Select name="gift" defaultValue={filters.gift ?? ""} aria-label={t("thankYous.giftFilter")}>
-            <option value="">{t("thankYous.anyGift")}</option>
-            <option value="yes">{t("thankYous.gaveGift")}</option>
-            <option value="no">{t("thankYous.noGift")}</option>
-          </Select>
           <div className="flex gap-2">
-            <Select name="attended" defaultValue={filters.attended ?? ""} aria-label={t("gifts.attended")}>
+            <Select name="attended" defaultValue={filters.attended ?? ""} aria-label={t("thankYous.attended")}>
               <option value="">{t("thankYous.anyAttendance")}</option>
-              <option value="yes">{t("gifts.attended")}</option>
+              <option value="yes">{t("thankYous.attended")}</option>
             </Select>
             <button type="submit" className={buttonClass("secondary")}>
-              {t("gifts.filter")}
+              {t("thankYous.filter")}
             </button>
           </div>
         </form>
@@ -111,8 +105,7 @@ export default async function ThankYousPage({ params, searchParams }: PageProps<
                 <Link href={`${base}/${r.householdId}`} className="flex min-h-11 flex-wrap items-center gap-2 py-2 hover:text-primary">
                   <span className="font-medium">{r.householdName}</span>
                   <Badge tone={statusTone[r.status]}>{t(`thankYous.statuses.${r.status}`)}</Badge>
-                  {r.giftCount > 0 && <Badge tone="primary">{t("thankYous.gifts", { count: r.giftCount })}</Badge>}
-                  {r.attended && <Badge>{t("gifts.attended")}</Badge>}
+                  {r.attended && <Badge>{t("thankYous.attended")}</Badge>}
                   {r.status === "sent" && deliveryFailed(r.delivery) ? (
                     <Badge tone="danger">{t("thankYous.deliveryFailed")}</Badge>
                   ) : (

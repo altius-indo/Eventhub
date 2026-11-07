@@ -1,309 +1,301 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { auditLogs, eventMembers, gifts, notifications } from "@/db/schema";
+import ExcelJS from "exceljs";
+import { auditLogs, cashHandovers, eventMembers, functions, giftItemRecipients, giftItems, gifts, notifications } from "@/db/schema";
+import { createTranslator } from "@/i18n/core";
+import { buildGiftsWorkbook } from "@/lib/exports";
+import { renderNotification } from "@/lib/notifications";
 import { createEvent } from "@/lib/events";
-import { createFunction } from "@/lib/functions";
-import { commitGiftImport, createGiftImport, getGiftImport, matchHousehold, reviewGiftImport } from "@/lib/gift-import";
+import { createFunction, deleteFunction } from "@/lib/functions";
 import {
-  createGift,
-  createHandover,
-  deleteGift,
-  envelopeDate,
-  ERASED_GIVER,
-  getGift,
-  giftScope,
+  autoStatus,
+  createGiftItem,
+  deleteGiftItem,
+  getGiftItem,
   giftSummary,
-  householdsWithoutGift,
-  listGifts,
-  listHandovers,
-  openCash,
-  recordEnvelopes,
-  updateGift,
-  GiftError,
+  listGiftItems,
+  markGiven,
+  neededQuantityOf,
+  recordBought,
+  sendGiftReminders,
+  setGiftRecipients,
+  setGiftStatus,
+  updateGiftItem,
+  whenDate,
   type GiftCtx,
+  type GiftItemInput,
 } from "@/lib/gifts";
-import { deleteDocument, isPlanningDocument, saveDocument } from "@/lib/documents";
 import { createHousehold, deleteHousehold, guestSchema } from "@/lib/guests";
-import { ForbiddenError, type PolicySubject } from "@/lib/policy";
+import { ForbiddenError } from "@/lib/policy";
 import { actorOf, db, makeUser, resetDb } from "./helpers";
 
 beforeEach(resetDb);
 
 const blank = { startTime: null, endTime: null, venueName: null, venueAddress: null, mapUrl: null, dressCode: null, description: null };
-const hh = (name: string, side: "bride" | "groom" | "both" = "bride") => ({ name, side, address: null, city: null, postalCode: null, notes: null });
+const hh = (name: string) => ({ name, side: "bride" as const, address: null, city: null, postalCode: null, notes: null });
 const g = (v: Record<string, unknown>) => guestSchema.parse(v);
-const host = (eventId: string, user: { id: string }): GiftCtx => ({ eventId, actor: actorOf({ id: user.id, isAppAdmin: false }), subject: { isAppAdmin: false, membership: { role: "host", giftAccess: "none" } } });
-const planner = (eventId: string, user: { id: string }, giftAccess: "none" | "record" | "full"): GiftCtx => ({
-  eventId,
-  actor: actorOf({ id: user.id, isAppAdmin: false }),
-  subject: { isAppAdmin: false, membership: { role: "planner", giftAccess } },
-});
+const NOW = new Date("2026-12-05T06:00:00Z"); // 11:30 IST
 
 async function setup() {
   const hostUser = await makeUser("host@example.com", "Asha");
   const actor = actorOf(hostUser);
   const event = await createEvent(db(), actor, { name: "Wedding", coupleNames: "Priya & Arjun" });
   const sangeet = await createFunction(db(), event.id, actor, { name: "Sangeet", date: "2026-12-10", ...blank });
-  const wedding = await createFunction(db(), event.id, actor, { name: "Wedding", date: "2026-12-11", ...blank });
-  const sharma = await createHousehold(db(), event.id, actor, { household: hh("Sharma family"), members: [g({ name: "Rajesh Sharma", phone: "9876543210" }), g({ name: "Sunita" })] });
-  const verma = await createHousehold(db(), event.id, actor, { household: hh("Verma", "groom"), members: [g({ name: "Anil Verma", phone: "9999988888" })] });
-  const rec = await makeUser("rec@example.com", "Ravi");
-  const rec2 = await makeUser("rec2@example.com", "Meena");
-  await db().insert(eventMembers).values([
-    { eventId: event.id, userId: rec.id, role: "planner", giftAccess: "record" },
-    { eventId: event.id, userId: rec2.id, role: "planner", giftAccess: "record" },
-  ]);
-  return { hostUser, event, sangeet, wedding, sharma, verma, H: host(event.id, hostUser), R: planner(event.id, rec, "record"), R2: planner(event.id, rec2, "record"), rec, rec2 };
+  const wedding = await createFunction(db(), event.id, actor, { name: "Wedding", date: "2026-12-20", ...blank });
+  // Sangeet: 3 families, 6 guests, 4 adults. Wedding: 1 family.
+  const sharma = await createHousehold(db(), event.id, actor, {
+    household: hh("Sharma"),
+    members: [g({ name: "Rajesh" }), g({ name: "Meena" }), g({ name: "Chintu", ageGroup: "child" })],
+    functionIds: [sangeet.id, wedding.id],
+  });
+  const verma = await createHousehold(db(), event.id, actor, { household: hh("Verma"), members: [g({ name: "Anil" }), g({ name: "Baby", ageGroup: "infant" })], functionIds: [sangeet.id] });
+  const gupta = await createHousehold(db(), event.id, actor, { household: hh("Gupta"), members: [g({ name: "Raj" })], functionIds: [sangeet.id] });
+  const plannerUser = await makeUser("planner@example.com", "Ravi");
+  await db().insert(eventMembers).values({ eventId: event.id, userId: plannerUser.id, role: "planner" });
+  const H: GiftCtx = { eventId: event.id, actor, subject: { isAppAdmin: false, membership: { role: "host", giftAccess: "none" } } };
+  const P: GiftCtx = { eventId: event.id, actor: actorOf(plannerUser), subject: { isAppAdmin: false, membership: { role: "planner", giftAccess: "none" } } };
+  return { hostUser, plannerUser, actor, event, sangeet, wedding, sharma, verma, gupta, H, P };
 }
 
-const KEY = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const fixed = (name: string, n: number, extra: Partial<GiftItemInput> = {}): GiftItemInput => ({ name, quantityMode: "fixed", quantityFixed: n, ...extra });
 
-describe("gift register", () => {
-  it("records, edits with a version check and audits every change without amounts", async () => {
+describe("gift list items (GFT-01..05)", () => {
+  it("creates and edits items, with a version check", async () => {
     const s = await setup();
-    const { gift } = await createGift(db(), s.H, { householdId: s.sharma.household.id, type: "cash", amountPaise: 510000, functionId: s.sangeet.id, envelopeNo: "12" });
-    expect(gift.recordedBy).toBe(s.hostUser.id);
-    await expect(updateGift(db(), s.H, gift.id, 99, { householdId: s.sharma.household.id, type: "cash", amountPaise: 1 })).rejects.toMatchObject({ code: "stale" });
-    const { gift: g2 } = await updateGift(db(), s.H, gift.id, 1, { householdId: s.sharma.household.id, type: "item", itemDescription: "Silver lamp", amountPaise: null });
-    expect([g2.type, g2.amountPaise, g2.itemDescription, g2.version]).toEqual(["item", null, "Silver lamp", 2]);
-    await expect(createGift(db(), s.H, { type: "cash", amountPaise: 100 })).rejects.toMatchObject({ code: "no_giver" });
-    await expect(createGift(db(), s.H, { giverName: "Uncle", type: "cash" })).rejects.toMatchObject({ code: "no_value" });
-    await deleteGift(db(), s.H, gift.id);
-    const logs = await db().select().from(auditLogs).where(eq(auditLogs.eventId, s.event.id));
-    const giftLogs = logs.filter((l) => l.action.startsWith("gift."));
-    expect(giftLogs.map((l) => l.action).sort()).toEqual(["gift.deleted", "gift.recorded", "gift.updated"]);
-    for (const l of giftLogs) expect(JSON.stringify(l.data)).not.toMatch(/5100|510000/);
+    const item = await createGiftItem(db(), s.H, fixed("Shawl", 4, { category: "family", forWhom: "Groom's sisters", giveBy: "2026-12-08", unitCostPaise: 1500_00, source: "Lajpat Nagar" }));
+    expect(item).toMatchObject({ name: "Shawl", category: "family", forWhom: "Groom's sisters", status: "to_buy", quantityBought: 0, version: 1 });
+    const v2 = await updateGiftItem(db(), s.H, item.id, 1, fixed("Pashmina shawl", 5, { category: "family" }));
+    expect(v2).toMatchObject({ name: "Pashmina shawl", quantityFixed: 5, version: 2, forWhom: null });
+    await expect(updateGiftItem(db(), s.H, item.id, 1, fixed("Again", 5))).rejects.toMatchObject({ code: "stale" });
+    await expect(createGiftItem(db(), s.H, { name: "", quantityMode: "fixed", quantityFixed: 1 })).rejects.toMatchObject({ code: "invalid" });
+    await expect(createGiftItem(db(), s.H, { name: "No number", quantityMode: "fixed" })).rejects.toMatchObject({ code: "needs_quantity" });
+    await deleteGiftItem(db(), s.H, item.id);
+    expect(await db().select().from(giftItems)).toHaveLength(0);
   });
 
-  it("rejects a household or function from another event", async () => {
+  it("rejects functions, families and assignees from another event", async () => {
     const s = await setup();
-    const other = await createEvent(db(), actorOf(s.hostUser), { name: "Other" });
-    const fh = await createHousehold(db(), other.id, actorOf(s.hostUser), { household: hh("X"), members: [g({ name: "X" })] });
-    await expect(createGift(db(), s.H, { householdId: fh.household.id, type: "cash", amountPaise: 100 })).rejects.toMatchObject({ code: "bad_household" });
-  });
-});
-
-describe("privacy (GFT-07)", () => {
-  it("a planner without gift access gets nothing", async () => {
-    const s = await setup();
-    const none = planner(s.event.id, s.rec, "none");
-    expect(() => giftScope(none.subject)).toThrow(ForbiddenError);
-    await expect(listGifts(db(), none)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(createGift(db(), none, { giverName: "A", type: "cash", amountPaise: 100 })).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(recordEnvelopes(db(), none, s.sangeet.id, [{ clientKey: KEY(1), giverName: "A", amountPaise: 100 }])).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(openCash(db(), none)).rejects.toBeInstanceOf(ForbiddenError);
-    const vendorish: PolicySubject = { isAppAdmin: false, membership: null, vendor: { vendorId: KEY(9) } };
-    await expect(listGifts(db(), { ...none, subject: vendorish })).rejects.toBeInstanceOf(ForbiddenError);
+    const other = await createEvent(db(), s.actor, { name: "Other" });
+    const otherFn = await createFunction(db(), other.id, s.actor, { name: "Haldi", date: "2026-12-01", ...blank });
+    const otherHh = await createHousehold(db(), other.id, s.actor, { household: hh("Kapoor"), members: [g({ name: "K" })] });
+    const outsider = await makeUser("out@example.com");
+    await expect(createGiftItem(db(), s.H, fixed("A", 1, { functionId: otherFn.id }))).rejects.toMatchObject({ code: "bad_function" });
+    await expect(createGiftItem(db(), s.H, fixed("A", 1, { householdIds: [otherHh.household.id] }))).rejects.toMatchObject({ code: "bad_household" });
+    await expect(createGiftItem(db(), s.H, fixed("A", 1, { assigneeId: outsider.id }))).rejects.toMatchObject({ code: "bad_assignee" });
+    const item = await createGiftItem(db(), s.H, fixed("A", 1, { householdIds: [s.sharma.household.id] }));
+    await expect(setGiftRecipients(db(), s.H, item.id, [s.verma.household.id, otherHh.household.id])).rejects.toMatchObject({ code: "bad_household" });
+    // Nothing changed on the failed attempt.
+    expect((await getGiftItem(db(), s.H, item.id)).recipients.map((r) => r.name)).toEqual(["Sharma"]);
+    // Another event's item looks like a missing one.
+    const O: GiftCtx = { ...s.H, eventId: other.id };
+    await expect(getGiftItem(db(), O, item.id)).rejects.toMatchObject({ code: "not_found" });
+    await expect(setGiftStatus(db(), O, item.id, "bought")).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("record-only planners see and edit only their own entries, and no totals", async () => {
+  it("links quantities to the guest list: per family / guest / adult, plus spares", async () => {
     const s = await setup();
-    const { gift: hostGift } = await createGift(db(), s.H, { householdId: s.verma.household.id, type: "cash", amountPaise: 1100_00 });
-    const { gift: mine } = await createGift(db(), s.R, { householdId: s.sharma.household.id, type: "cash", amountPaise: 500_00 });
-    expect((await listGifts(db(), s.R)).map((x) => x.id)).toEqual([mine.id]);
-    expect((await listGifts(db(), s.R2)).map((x) => x.id)).toEqual([]);
-    expect((await listGifts(db(), s.H)).length).toBe(2);
-    await expect(getGift(db(), s.R, hostGift.id)).rejects.toMatchObject({ code: "not_found" });
-    await expect(updateGift(db(), s.R, hostGift.id, 1, { giverName: "x", type: "cash", amountPaise: 1 })).rejects.toMatchObject({ code: "not_found" });
-    await expect(deleteGift(db(), s.R2, mine.id)).rejects.toMatchObject({ code: "not_found" });
-    await expect(giftSummary(db(), s.R)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(householdsWithoutGift(db(), s.R)).rejects.toBeInstanceOf(ForbiddenError);
-    const full = planner(s.event.id, s.rec, "full");
-    expect((await giftSummary(db(), full)).total.amountPaise).toBe(1600_00);
+    const perFamily = await createGiftItem(db(), s.H, { name: "Mithai box", category: "return_gift", functionId: s.sangeet.id, quantityMode: "per_family", quantityExtra: 5 });
+    const perGuest = await createGiftItem(db(), s.H, { name: "Bangles", functionId: s.sangeet.id, quantityMode: "per_guest" });
+    const perAdult = await createGiftItem(db(), s.H, { name: "Potli", functionId: s.wedding.id, quantityMode: "per_adult", quantityFunctionId: s.sangeet.id, quantityExtra: 1 });
+    expect(await neededQuantityOf(db(), s.event.id, perFamily)).toBe(8); // 3 families + 5
+    expect(await neededQuantityOf(db(), s.event.id, perGuest)).toBe(6);
+    expect(await neededQuantityOf(db(), s.event.id, perAdult)).toBe(5); // 4 adults at the Sangeet + 1
+    // A family invited later raises the count.
+    await createHousehold(db(), s.event.id, s.actor, { household: hh("Jain"), members: [g({ name: "J" })], functionIds: [s.sangeet.id] });
+    expect((await getGiftItem(db(), s.H, perFamily.id)).needed).toBe(9);
   });
 
-  it("gift photos can't be deleted or treated as planning documents through the shared documents route", async () => {
+  it("needs a function for linked quantities", async () => {
     const s = await setup();
-    const { gift } = await createGift(db(), s.H, { householdId: s.sharma.household.id, type: "item", itemDescription: "Lamp" });
-    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
-    const doc = await saveDocument(db(), s.event.id, s.H.actor, { owner: { giftId: gift.id }, kind: "other", filename: "lamp.png", data: Buffer.concat([png, Buffer.alloc(64)]) });
-    expect(isPlanningDocument(doc)).toBe(false);
-    await expect(deleteDocument(db(), s.event.id, s.H.actor, doc.id, { planningOnly: true })).rejects.toMatchObject({ code: "not_found" });
-  });
-});
-
-describe("envelope mode (GFT-02)", () => {
-  it("stores an entry once across retries and two devices", async () => {
-    const s = await setup();
-    const item = { clientKey: KEY(1), householdId: s.sharma.household.id, amountPaise: 2100_00, envelopeNo: "7" };
-    const first = await recordEnvelopes(db(), s.R, s.sangeet.id, [item]);
-    expect(first.created).toEqual([KEY(1)]);
-    for (let i = 0; i < 3; i++) {
-      const again = await recordEnvelopes(db(), s.R, s.sangeet.id, [item, item]);
-      expect([again.created, again.existing]).toEqual([[], [KEY(1)]]);
-    }
-    // Same queue synced from a second device (and concurrently).
-    const both = await Promise.all([recordEnvelopes(db(), s.R, s.sangeet.id, [item]), recordEnvelopes(db(), s.R, s.sangeet.id, [item, { ...item, clientKey: KEY(2), envelopeNo: "8" }])]);
-    expect(both.flatMap((b) => b.created)).toEqual([KEY(2)]);
-    const rows = await db().select().from(gifts).where(eq(gifts.eventId, s.event.id));
-    expect(rows.filter((r) => r.clientKey === KEY(1))).toHaveLength(1);
-    expect(rows[0].source).toBe("envelope");
+    await expect(createGiftItem(db(), s.H, { name: "Box", quantityMode: "per_family" })).rejects.toMatchObject({ code: "needs_function" });
+    const item = await createGiftItem(db(), s.H, { name: "Box", functionId: s.sangeet.id, quantityMode: "per_family" });
+    await deleteFunction(db(), s.event.id, s.sangeet.id, s.actor);
+    const [row] = await db().select().from(giftItems).where(eq(giftItems.id, item.id));
+    await expect(neededQuantityOf(db(), s.event.id, row)).rejects.toMatchObject({ code: "needs_function" });
+    // The list still shows it, without a count.
+    expect((await getGiftItem(db(), s.H, item.id)).needed).toBeNull();
   });
 
-  it("flags a duplicate envelope number in the same function, allows unknown givers, rejects per item", async () => {
+  it("moves to bought when enough are bought; 'given' never moves back", async () => {
     const s = await setup();
-    await recordEnvelopes(db(), s.R, s.sangeet.id, [{ clientKey: KEY(1), householdId: s.sharma.household.id, amountPaise: 100_00, envelopeNo: "15" }]);
-    const r = await recordEnvelopes(db(), s.R2, s.sangeet.id, [
-      { clientKey: KEY(2), giverName: "Unknown uncle", amountPaise: 501_00, envelopeNo: "15" },
-      { clientKey: KEY(3), giverName: "No value", amountPaise: null },
-      { clientKey: KEY(4), householdId: KEY(99), amountPaise: 100 },
-    ]);
-    expect(r.created).toEqual([KEY(2)]);
-    expect(r.duplicateEnvelopes).toEqual([{ clientKey: KEY(2), envelopeNo: "15" }]);
-    expect(r.rejected).toEqual([
-      { clientKey: KEY(3), code: "no_value" },
-      { clientKey: KEY(4), code: "bad_household" },
-    ]);
-    // Another function: the same number is fine.
-    const w = await recordEnvelopes(db(), s.R2, s.wedding.id, [{ clientKey: KEY(5), giverName: "A", amountPaise: 100, envelopeNo: "15" }]);
-    expect(w.duplicateEnvelopes).toEqual([]);
-    const { duplicateEnvelope } = await createGift(db(), s.H, { giverName: "B", type: "cash", amountPaise: 100, functionId: s.sangeet.id, envelopeNo: "15" });
-    expect(duplicateEnvelope).toBe(true);
+    const item = await createGiftItem(db(), s.H, { name: "Mithai box", functionId: s.sangeet.id, quantityMode: "per_family", quantityExtra: 5 });
+    let r = await recordBought(db(), s.H, item.id, { add: 3 });
+    expect(r).toMatchObject({ quantityBought: 3, status: "to_buy" });
+    r = await setGiftStatus(db(), s.H, item.id, "ordered");
+    r = await recordBought(db(), s.H, item.id, { add: 5 });
+    expect(r).toMatchObject({ quantityBought: 8, status: "bought" });
+    r = await recordBought(db(), s.H, item.id, { add: -100 });
+    expect(r.quantityBought).toBe(0);
+    // Marking given leaves the count alone.
+    r = await markGiven(db(), s.H, item.id);
+    expect(r).toMatchObject({ status: "given", quantityBought: 0 });
+    r = await recordBought(db(), s.H, item.id, { set: 2 });
+    expect(r.status).toBe("given");
+    // Reopening a given item follows the counts: 2 of 8 → to buy.
+    r = await setGiftStatus(db(), s.H, item.id, "to_buy");
+    expect(r).toMatchObject({ status: "to_buy", quantityBought: 2 });
+    expect(autoStatus("given", 0, 10)).toBe("given");
+    expect(autoStatus("to_buy", 0, 0)).toBe("to_buy");
+    // Marking bought fills the count up to what's needed.
+    const coins = await createGiftItem(db(), s.H, fixed("Coins", 10));
+    expect(await setGiftStatus(db(), s.H, coins.id, "bought")).toMatchObject({ quantityBought: 10 });
+    // All bought, then given, then reopened: back to "bought", not stuck on "to buy".
+    await markGiven(db(), s.H, coins.id);
+    expect(await setGiftStatus(db(), s.H, coins.id, "to_buy")).toMatchObject({ status: "bought", quantityBought: 10 });
+  });
+
+  it("rejects a bought count from a stale page", async () => {
+    const s = await setup();
+    const item = await createGiftItem(db(), s.H, fixed("Coins", 10));
+    await recordBought(db(), s.P, item.id, { add: 2 }); // someone else, meanwhile (version 2)
+    await expect(recordBought(db(), s.H, item.id, { set: 5 }, 1)).rejects.toMatchObject({ code: "stale" });
+    expect(await recordBought(db(), s.H, item.id, { set: 5 }, 2)).toMatchObject({ quantityBought: 5, version: 3 });
+  });
+
+  it("removes a family's recipient link when the family is deleted", async () => {
+    const s = await setup();
+    const item = await createGiftItem(db(), s.H, fixed("Shawl", 2, { householdIds: [s.sharma.household.id, s.verma.household.id] }));
+    await deleteHousehold(db(), s.event.id, s.verma.household.id, s.actor);
+    expect((await getGiftItem(db(), s.H, item.id)).recipients.map((r) => r.name)).toEqual(["Sharma"]);
+    expect(await db().select().from(giftItemRecipients)).toHaveLength(1);
   });
 });
 
-describe("cash reconciliation (GFT-03)", () => {
-  it("snapshots open cash, flags a discrepancy to Hosts only, and leaves later entries open", async () => {
+describe("views and summary (GFT-06)", () => {
+  it("filters, orders by when it's needed, and summarises", async () => {
     const s = await setup();
-    await recordEnvelopes(db(), s.R, s.sangeet.id, [
-      { clientKey: KEY(1), householdId: s.sharma.household.id, amountPaise: 2100_00 },
-      { clientKey: KEY(2), giverName: "Guest", amountPaise: 1100_00 },
-      { clientKey: KEY(3), giverName: "Item", type: "item", itemDescription: "Watch" },
-    ]);
-    await recordEnvelopes(db(), s.R2, s.sangeet.id, [{ clientKey: KEY(4), giverName: "Other", amountPaise: 500_00 }]);
-    const open = await openCash(db(), s.R);
-    expect(open).toEqual([expect.objectContaining({ functionId: s.sangeet.id, collectorUserId: s.rec.id, count: 2, totalPaise: 3200_00 })]);
-    expect((await openCash(db(), s.H)).length).toBe(2);
-    // A record-only collector can't record someone else's hand-over.
-    await expect(createHandover(db(), s.R, { functionId: s.sangeet.id, collectorUserId: s.rec2.id, countedPaise: 0, handedToName: "Dad" })).rejects.toBeInstanceOf(GiftError);
-    const h = await createHandover(db(), s.R, { functionId: s.sangeet.id, collectorUserId: s.rec.id, countedPaise: 3100_00, handedToUserId: s.hostUser.id });
-    expect([h.count, h.handover.recordedTotalPaise, h.discrepancyPaise]).toEqual([2, 3200_00, -100_00]);
-    const notes = await db().select().from(notifications).where(eq(notifications.eventId, s.event.id));
-    expect(notes.map((n) => [n.userId, n.kind])).toEqual([[s.hostUser.id, "gift.handover_discrepancy"]]);
-    expect(notes[0].data).toMatchObject({ function: "Sangeet" });
+    // Sangeet 12-10 (within 7 days of 12-05), Wedding 12-20, give-by 12-03 (overdue), undated.
+    const box = await createGiftItem(db(), s.H, { name: "Mithai box", category: "return_gift", functionId: s.sangeet.id, quantityMode: "per_family", quantityExtra: 5, unitCostPaise: 250_00 });
+    const shawl = await createGiftItem(db(), s.H, fixed("Shawl", 4, { category: "family", forWhom: "Groom's sisters", functionId: s.wedding.id, giveBy: "2026-12-03", assigneeId: s.plannerUser.id }));
+    const envelope = await createGiftItem(db(), s.H, fixed("Envelopes for staff", 20, { category: "helpers_staff", functionId: s.wedding.id, unitCostPaise: 100_00 }));
+    const later = await createGiftItem(db(), s.H, fixed("Thank-you hamper", 2, { category: "vendor" }));
+    await setGiftStatus(db(), s.H, envelope.id, "bought");
 
-    // Synced after the hand-over: open again, not part of the snapshot.
-    await recordEnvelopes(db(), s.R, s.sangeet.id, [{ clientKey: KEY(5), giverName: "Late", amountPaise: 300_00 }]);
-    expect(await openCash(db(), s.R)).toEqual([expect.objectContaining({ count: 1, totalPaise: 300_00 })]);
-    const hs = await listHandovers(db(), s.R);
-    expect(hs.map((x) => [x.recordedTotalPaise, x.currentTotalPaise])).toEqual([[3200_00, 3200_00]]);
-    expect(await listHandovers(db(), s.R2)).toEqual([]);
+    const all = await listGiftItems(db(), s.H, {}, NOW);
+    expect(all.map((r) => r.name)).toEqual(["Shawl", "Mithai box", "Envelopes for staff", "Thank-you hamper"]);
+    expect(whenDate("2026-12-03", "2026-12-20")).toBe("2026-12-03");
+    const byName = Object.fromEntries(all.map((r) => [r.name, r]));
+    expect(byName["Shawl"]).toMatchObject({ when: "2026-12-03", overdue: true, dueSoon: true, assigneeName: "Ravi" });
+    expect(byName["Mithai box"]).toMatchObject({ needed: 8, remaining: 8, dueSoon: true, overdue: false, totalCostPaise: 2000_00 });
+    expect(byName["Envelopes for staff"]).toMatchObject({ dueSoon: false, remaining: 0 });
+    expect(byName["Thank-you hamper"]).toMatchObject({ when: null, dueSoon: false });
 
-    // Handed-over cash: locked for the collector; a Host's edit shows up as a changed total.
-    const [handed] = (await listGifts(db(), s.R)).filter((x) => x.handedOver && x.giverName === "Guest");
-    await expect(updateGift(db(), s.R, handed.id, handed.version, { giverName: "Guest", type: "cash", amountPaise: 1000_00 })).rejects.toMatchObject({ code: "handed_over" });
-    await updateGift(db(), s.H, handed.id, handed.version, { giverName: "Guest", type: "cash", amountPaise: 1000_00, functionId: s.sangeet.id });
-    const [after] = await listHandovers(db(), s.H);
-    expect([after.recordedTotalPaise, after.currentTotalPaise]).toEqual([3200_00, 3100_00]);
-  });
+    const names = async (f: Record<string, string>, c: GiftCtx = s.H) => (await listGiftItems(db(), c, f, NOW)).map((r) => r.name);
+    expect(await names({ due: "week" })).toEqual(["Shawl", "Mithai box"]);
+    expect(await names({ category: "return_gift" })).toEqual(["Mithai box"]);
+    expect(await names({ status: "bought" })).toEqual(["Envelopes for staff"]);
+    expect(await names({ fn: s.wedding.id })).toEqual(["Shawl", "Envelopes for staff"]);
+    expect(await names({ fn: "none" })).toEqual(["Thank-you hamper"]);
+    expect(await names({ q: "sisters" })).toEqual(["Shawl"]);
+    expect(await names({ q: "50%_" })).toEqual([]);
+    expect(await names({ mine: "1" }, s.P)).toEqual(["Shawl"]);
 
-  it("matching counts don't notify", async () => {
-    const s = await setup();
-    await recordEnvelopes(db(), s.R, s.sangeet.id, [{ clientKey: KEY(1), giverName: "A", amountPaise: 100_00 }]);
-    const h = await createHandover(db(), s.R, { functionId: s.sangeet.id, collectorUserId: s.rec.id, countedPaise: 100_00, handedToName: "Papa" });
-    expect(h.discrepancyPaise).toBe(0);
-    expect(await db().select().from(notifications)).toHaveLength(0);
-    await expect(createHandover(db(), s.R, { functionId: s.sangeet.id, collectorUserId: s.rec.id, countedPaise: 0, handedToName: "Papa" })).rejects.toMatchObject({ code: "nothing_to_hand_over" });
-  });
-
-  it("the collector must be a member of the event", async () => {
-    const s = await setup();
-    const outsider = await makeUser("outsider@example.com", "Stranger");
-    await expect(createHandover(db(), s.H, { functionId: s.sangeet.id, collectorUserId: outsider.id, countedPaise: 100_00, handedToName: "Papa" })).rejects.toMatchObject({ code: "bad_member" });
+    const sum = await giftSummary(db(), s.H, NOW);
+    expect(sum).toEqual({ items: 4, itemsDone: 1, totalNeeded: 34, totalBought: 20, remaining: 14, dueSoon: 2, estimatedCostPaise: 2000_00 + 2000_00 });
+    // A limited page keeps the same stable order; the summary still counts everything.
+    expect((await listGiftItems(db(), s.H, {}, NOW, 2)).map((r) => r.name)).toEqual(["Shawl", "Mithai box"]);
+    expect((await giftSummary(db(), s.H, NOW)).items).toBe(4);
+    void box;
+    void shawl;
+    void later;
   });
 });
 
-describe("envelope date (GFT-02)", () => {
-  it("uses the event-timezone date of the entry time, clamped against bad device clocks", async () => {
-    const now = new Date("2026-12-10T20:00:00Z"); // 01:30 on 11 Dec in Kolkata
-    expect(envelopeDate(undefined, now, "Asia/Kolkata")).toBe("2026-12-11");
-    // Recorded offline at 23:50 IST on the 10th, synced after midnight.
-    expect(envelopeDate("2026-12-10T18:20:00Z", now, "Asia/Kolkata")).toBe("2026-12-10");
-    // Ahead of the server by more than 5 minutes, or more than 7 days old: the sync time is used.
-    expect(envelopeDate("2026-12-12T10:00:00Z", now, "Asia/Kolkata")).toBe("2026-12-11");
-    expect(envelopeDate("2026-11-20T10:00:00Z", now, "Asia/Kolkata")).toBe("2026-12-11");
-
+describe("access and audit (GFT-07)", () => {
+  it("lets Planners view and edit; outsiders and vendors can't", async () => {
     const s = await setup();
-    await recordEnvelopes(db(), s.R, s.sangeet.id, [{ clientKey: KEY(1), giverName: "Late night", amountPaise: 100_00, at: "2026-12-10T18:20:00Z" }], now);
-    const [row] = await db().select().from(gifts).where(eq(gifts.eventId, s.event.id));
-    expect(row.receivedOn).toBe("2026-12-10");
+    const item = await createGiftItem(db(), s.P, fixed("Coins", 10));
+    await recordBought(db(), s.P, item.id, { add: 4 });
+    expect((await listGiftItems(db(), s.P)).map((r) => r.quantityBought)).toEqual([4]);
+    const outsider: GiftCtx = { ...s.P, subject: { isAppAdmin: false, membership: null } };
+    const vendor: GiftCtx = { ...s.P, subject: { isAppAdmin: false, membership: null, vendor: { vendorId: "v1" } } };
+    await expect(listGiftItems(db(), outsider)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(createGiftItem(db(), vendor, fixed("X", 1))).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("audits create, edit, status and delete with the name only (no costs)", async () => {
+    const s = await setup();
+    const item = await createGiftItem(db(), s.H, fixed("Silver coin", 10, { unitCostPaise: 1234_00 }));
+    await updateGiftItem(db(), s.H, item.id, 1, fixed("Silver coin", 12, { unitCostPaise: 1234_00 }));
+    await recordBought(db(), s.H, item.id, { add: 12 });
+    await deleteGiftItem(db(), s.H, item.id);
+    const logs = await db().select().from(auditLogs).where(and(eq(auditLogs.eventId, s.event.id), eq(auditLogs.entityType, "gift_item")));
+    expect(logs.map((l) => l.action)).toEqual(["gift_item.created", "gift_item.updated", "gift_item.status_changed", "gift_item.deleted"]);
+    for (const l of logs) expect(l.data).toEqual({ name: "Silver coin" });
+    expect(JSON.stringify(logs)).not.toMatch(/1234|123400/);
   });
 });
 
-describe("summaries (GFT-05)", () => {
-  it("totals by function, received-for and type, and lists families with no gift", async () => {
+describe("due-soon reminder (GFT-06)", () => {
+  it("notifies the assignee once, or the Hosts when nobody is assigned", async () => {
     const s = await setup();
-    await createGift(db(), s.H, { householdId: s.sharma.household.id, type: "cash", amountPaise: 1100_00, functionId: s.sangeet.id, receivedFor: "bride" });
-    await createGift(db(), s.H, { giverName: "Friend", type: "item", itemDescription: "Vase", estValuePaise: 2000_00, functionId: s.wedding.id });
-    const sum = await giftSummary(db(), s.H);
-    expect(sum.total).toEqual({ count: 2, amountPaise: 1100_00, estValuePaise: 2000_00 });
-    expect(sum.byFunction.map((r) => [r.label, r.amountPaise])).toEqual([
-      ["Sangeet", 1100_00],
-      ["Wedding", 0],
-    ]);
-    expect(sum.byReceivedFor.find((r) => r.key === "bride")?.count).toBe(1);
-    expect(sum.byType.find((r) => r.key === "item")?.estValuePaise).toBe(2000_00);
-    expect((await householdsWithoutGift(db(), s.H)).map((h) => h.name)).toEqual(["Verma"]);
-  });
-});
+    await createGiftItem(db(), s.H, fixed("Shawl", 4, { giveBy: "2026-12-11", assigneeId: s.plannerUser.id }));
+    await createGiftItem(db(), s.H, { name: "Mithai box", functionId: s.sangeet.id, quantityMode: "per_family" });
+    const later = await createGiftItem(db(), s.H, fixed("Hamper", 2, { functionId: s.wedding.id }));
+    const done = await createGiftItem(db(), s.H, fixed("Coins", 3, { giveBy: "2026-12-06" }));
+    await setGiftStatus(db(), s.H, done.id, "bought");
 
-describe("import (GFT-04)", () => {
-  const csv = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
-
-  it("matches names, keeps unmatched rows for review, and commits once", async () => {
-    const s = await setup();
-    const file = csv(
-      ["Name,Amount,Envelope,Function,Item", "sharma  FAMILY,\"5,100\",1,Sangeet,", "Anil Verma,2100,2,wedding,", "Mystery guest,1100,3,,", ",500,4,,", "Gupta ji,,5,,Silver bowl", "Bad,abc,6,,"].join("\n"),
+    expect(await sendGiftReminders(db(), NOW)).toBe(2);
+    expect(await sendGiftReminders(db(), new Date("2026-12-06T06:00:00Z"))).toBe(0);
+    const rows = await db().select().from(notifications).where(eq(notifications.kind, "gift.due"));
+    expect(rows.map((n) => [n.userId, n.data.name]).sort()).toEqual(
+      [
+        [s.plannerUser.id, "Shawl"],
+        [s.hostUser.id, "Mithai box"],
+      ].sort(),
     );
-    const imp = await createGiftImport(db(), s.H, "tally.csv", file);
-    expect(imp.rows.map((r) => [r.decision, r.error ?? null])).toEqual([
-      ["match", null],
-      ["match", null],
-      ["free_text", null],
-      ["skip", "no_name"],
-      ["free_text", null],
-      ["skip", "bad_amount"],
-    ]);
-    expect(imp.rows[0].householdId).toBe(s.sharma.household.id);
-    expect(imp.rows[0].amountPaise).toBe(5100_00);
-    expect(imp.rows[1].householdId).toBe(s.verma.household.id);
-    // Review: link the mystery guest to Verma, skip Gupta ji.
-    await reviewGiftImport(db(), s.H, imp.id, [
-      { index: 2, decision: "match", householdId: s.verma.household.id },
-      { index: 4, decision: "skip" },
-    ]);
-    await expect(reviewGiftImport(db(), s.H, imp.id, [{ index: 3, decision: "free_text" }])).rejects.toMatchObject({ code: "invalid" });
-    const r = await commitGiftImport(db(), s.H, imp.id, "2026-12-20");
-    expect(r).toEqual({ created: 3, skipped: 3 });
-    await expect(commitGiftImport(db(), s.H, imp.id, "2026-12-20")).rejects.toMatchObject({ code: "already_done" });
-    const rows = await listGifts(db(), s.H, { source: "import" });
-    expect(rows.map((x) => x.householdName).sort()).toEqual(["Sharma family", "Verma", "Verma"]);
-    expect((await getGiftImport(db(), s.H, imp.id)).committedAt).not.toBeNull();
-    // Imported tallies aren't cash anyone is holding.
-    expect(await openCash(db(), s.H)).toEqual([]);
-    await expect(createGiftImport(db(), s.R, "x.csv", file)).rejects.toBeInstanceOf(ForbiddenError);
+    expect(rows.every((n) => n.href === `/events/${s.event.id}/gifts`)).toBe(true);
+    // The Wedding (12-20) comes within 7 days on 12-13 (IST): reminded then, once.
+    expect(await sendGiftReminders(db(), new Date("2026-12-12T18:00:00Z"))).toBe(0);
+    expect(await sendGiftReminders(db(), new Date("2026-12-12T19:00:00Z"))).toBe(1);
+    // Rescheduling the function re-arms the reminder for the new date, once.
+    await db().update(functions).set({ date: "2026-12-16" }).where(eq(functions.id, s.wedding.id));
+    expect(await sendGiftReminders(db(), new Date("2026-12-13T06:00:00Z"))).toBe(1);
+    expect(await sendGiftReminders(db(), new Date("2026-12-14T06:00:00Z"))).toBe(0);
+    // So does moving the give-by date.
+    await updateGiftItem(db(), s.H, later.id, 1, fixed("Hamper", 2, { giveBy: "2026-12-15" }));
+    expect(await sendGiftReminders(db(), new Date("2026-12-14T06:00:00Z"))).toBe(1);
+    const [row] = await db().select().from(giftItems).where(eq(giftItems.id, later.id));
+    expect(row.remindedFor).toBe("2026-12-15");
   });
 
-  it("matching is case/space-insensitive, then phone, then a unique partial", () => {
-    const list = [
-      { id: "a", name: "Sharma Family", members: ["Rajesh Sharma"], phones: ["+919876543210"] },
-      { id: "b", name: "Verma", members: ["Anil"], phones: [] },
-      { id: "c", name: "Vermani", members: [], phones: [] },
-    ];
-    expect(matchHousehold("  sharma   family ", null, list)).toBe("a");
-    expect(matchHousehold("Unknown", "+919876543210", list)).toBe("a");
-    expect(matchHousehold("rajesh", null, list)).toBe("a");
-    expect(matchHousehold("verm", null, list)).toBeNull();
+  it("shows the date in the reader's language", async () => {
+    const s = await setup();
+    await createGiftItem(db(), s.H, fixed("Shawl", 4, { giveBy: "2026-12-10" }));
+    await sendGiftReminders(db(), NOW);
+    const [n] = await db().select().from(notifications).where(eq(notifications.kind, "gift.due"));
+    expect(n.data.date).toBe("2026-12-10");
+    const en = renderNotification("en", n);
+    const hi = renderNotification("hi", n);
+    expect(en).toContain("Shawl");
+    expect(en).not.toContain("2026-12-10");
+    expect(en).toMatch(/10 Dec 2026/);
+    expect(hi).not.toContain("2026-12-10");
+    expect(hi).toMatch(/10 दिस॰? 2026|10 दिसं॰? 2026|10 दिसंबर 2026/);
   });
 });
 
-describe("erasure (EVT-09)", () => {
-  it("anonymises a family's gifts when they are deleted, keeping totals", async () => {
+describe("archive (EVT-08)", () => {
+  const sheetsOf = async (buf: Buffer) => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    return wb;
+  };
+
+  it("adds read-only sheets for gifts received before the change, only when there are any", async () => {
     const s = await setup();
-    await recordEnvelopes(db(), s.R, s.sangeet.id, [{ clientKey: KEY(1), householdId: s.sharma.household.id, amountPaise: 2100_00 }]);
-    await deleteHousehold(db(), s.event.id, s.sharma.household.id, actorOf(s.hostUser));
-    const [row] = await db().select().from(gifts).where(eq(gifts.eventId, s.event.id));
-    expect([row.householdId, row.guestId, row.giverName, row.amountPaise]).toEqual([null, null, ERASED_GIVER, 2100_00]);
-    expect(await openCash(db(), s.R)).toEqual([expect.objectContaining({ totalPaise: 2100_00 })]);
+    const t = createTranslator("en");
+    await createGiftItem(db(), s.H, fixed("Shawl", 4));
+    let wb = await sheetsOf(await buildGiftsWorkbook(db(), s.H, t, "en"));
+    expect(wb.worksheets.map((w) => w.name)).toEqual(["Gifts to give", "Thank-you notes"]);
+
+    await db().insert(gifts).values({ eventId: s.event.id, householdId: s.sharma.household.id, type: "cash", amountPaise: 5100_00, envelopeNo: "12", recordedBy: s.hostUser.id });
+    await db().insert(cashHandovers).values({ eventId: s.event.id, functionId: s.sangeet.id, collectorUserId: s.hostUser.id, recordedTotalPaise: 5100_00, countedPaise: 5000_00, handedToName: "Papa" });
+    wb = await sheetsOf(await buildGiftsWorkbook(db(), s.H, t, "en"));
+    expect(wb.worksheets.map((w) => w.name)).toEqual(["Gifts to give", "Thank-you notes", "Gifts received to 7 Nov 2026", "Cash hand-overs (old)"]);
+    const received = wb.getWorksheet("Gifts received to 7 Nov 2026")!;
+    expect(received.getRow(2).values).toEqual(expect.arrayContaining(["Sharma", "Cash shagun (envelope)", 5100, "12", "Asha"]));
+    const cash = wb.getWorksheet("Cash hand-overs (old)")!;
+    expect(cash.getRow(2).values).toEqual(expect.arrayContaining(["Sangeet", "Asha", 5100, 5000, -100, "Papa"]));
   });
 });

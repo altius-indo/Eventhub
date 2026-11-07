@@ -92,6 +92,20 @@
       "when": 1793566413369,
       "tag": "0012_gallery_review_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794068536953,
+      "tag": "0013_gifts_to_give",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794071148266,
+      "tag": "0014_gift_reminded_for",
+      "breakpoints": true
     }
   ]
 }
