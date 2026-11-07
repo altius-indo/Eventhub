@@ -14,7 +14,7 @@ import {
   type MessageChannel,
   type ThankYou,
 } from "@/db/schema";
-import { isLocale } from "@/i18n/core";
+import { createTranslator, isLocale } from "@/i18n/core";
 import { audit } from "./audit";
 import { DeliveryError } from "./delivery";
 import type { GiftCtx } from "./gifts";
@@ -38,6 +38,12 @@ export class ThankYouError extends Error {
 
 export const MERGE_FIELDS = ["guestName", "coupleNames", "functionsAttended", "personalLine"] as const;
 export type MergeField = (typeof MERGE_FIELDS)[number];
+/**
+ * Still accepted in templates written before gifts received stopped being tracked (ADR-0036);
+ * rendered as the plain word for "gift" in the template's language. Not offered for new ones.
+ */
+export const LEGACY_FIELDS = ["giftItem"] as const;
+const ACCEPTED: readonly string[] = [...MERGE_FIELDS, ...LEGACY_FIELDS];
 /** Everything a note can contain. There is deliberately no amount here. */
 export type NoteVars = Record<MergeField, string>;
 
@@ -64,17 +70,19 @@ export function templateFields(body: string): string[] {
 
 /** A template may only use the whitelisted fields and may not contain an amount. */
 export function validateTemplate(body: string): void {
-  const bad = templateFields(body).filter((f) => !(MERGE_FIELDS as readonly string[]).includes(f));
+  const bad = templateFields(body).filter((f) => !ACCEPTED.includes(f));
   if (bad.length) throw new ThankYouError("unknown_field");
   if (containsAmount(body)) throw new ThankYouError("contains_amount");
 }
 
 /**
  * Fills a template. Only whitelisted fields exist, and the result is scrubbed of amounts.
- * Anything else in braces (e.g. {giftItem} from older templates) renders as nothing.
+ * {giftItem} (older templates) becomes `giftWord`, e.g. "gift" / "उपहार"; anything else, nothing.
  */
-export function renderNote(body: string, vars: NoteVars): string {
-  const filled = body.replace(/\{(\w+)\}/g, (m, k: string) => ((MERGE_FIELDS as readonly string[]).includes(k) ? (vars[k as MergeField] ?? "") : ""));
+export function renderNote(body: string, vars: NoteVars, giftWord = ""): string {
+  const filled = body.replace(/\{(\w+)\}/g, (m, k: string) =>
+    k === "giftItem" ? giftWord : (MERGE_FIELDS as readonly string[]).includes(k) ? (vars[k as MergeField] ?? "") : "",
+  );
   return scrubAmounts(filled)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -255,7 +263,7 @@ export async function saveDraft(
       const [tpl] = await tx.select().from(thankYouTemplates).where(and(eq(thankYouTemplates.id, input.templateId), eq(thankYouTemplates.eventId, c.eventId)));
       if (!tpl) throw new ThankYouError("no_template");
       const { vars } = await noteVarsFor(tx, c.eventId, householdId, (input.personalLine ?? "").slice(0, 300));
-      text = renderNote(tpl.body, vars);
+      text = renderNote(tpl.body, vars, createTranslator(isLocale(tpl.locale) ? tpl.locale : "en")("thankYous.giftFallback"));
       templateId = tpl.id;
     }
     const status = "drafted";

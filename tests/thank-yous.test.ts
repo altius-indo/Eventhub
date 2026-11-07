@@ -48,8 +48,9 @@ async function setup() {
 describe("templates and rendering (GFT-09)", () => {
   it("allows only whitelisted fields and no amounts", () => {
     expect(() => validateTemplate("Dear {guestName}, thank you for coming to {functionsAttended}. Love, {coupleNames}")).not.toThrow();
-    // Gift items are no longer a merge field (ADR-0036).
-    expect(() => validateTemplate("Thank you for the {giftItem}")).toThrow(ThankYouError);
+    // Older templates may still say {giftItem} (ADR-0036); other unknown fields are refused.
+    expect(() => validateTemplate("Thank you for the {giftItem}")).not.toThrow();
+    expect(() => validateTemplate("Thank you for the {giftAmount}")).toThrow(ThankYouError);
     expect(() => validateTemplate("Thanks for {amount}")).toThrow(ThankYouError);
     expect(() => validateTemplate("Thanks for the ₹5,100 shagun")).toThrow(ThankYouError);
     expect(() => validateTemplate("Thanks for Rs. 1100")).toThrow(ThankYouError);
@@ -65,8 +66,18 @@ describe("templates and rendering (GFT-09)", () => {
     expect(ty.draftText).toContain("Priya & Arjun");
     expect(ty.draftText).not.toMatch(/5100|5,100|₹/);
     expect(renderNote("{guestName} {amount}", { guestName: "A", coupleNames: "", functionsAttended: "", personalLine: "" })).toBe("A");
-    expect(renderNote("Thanks for the {giftItem}, {guestName}.", { guestName: "Verma", coupleNames: "", functionsAttended: "", personalLine: "" })).toBe("Thanks for the , Verma.");
+    expect(renderNote("Thanks for the {giftItem}, {guestName}.", { guestName: "Verma", coupleNames: "", functionsAttended: "", personalLine: "" }, "gift")).toBe("Thanks for the gift, Verma.");
     await expect(saveDraft(db(), s.H, s.sharma.household.id, { text: "Thank you for ₹5,100!" })).rejects.toMatchObject({ code: "contains_amount" });
+  });
+
+  it("old templates with {giftItem} still save and draft, with the word for gift in their language", async () => {
+    const s = await setup();
+    const en = await saveTemplate(db(), s.H, null, { locale: "en", name: "E", body: "Thanks for the lovely {giftItem}." });
+    const hi = await saveTemplate(db(), s.H, null, { locale: "hi", name: "H", body: "सुंदर {giftItem} के लिए धन्यवाद।" });
+    // Re-saving an old template works too.
+    await expect(saveTemplate(db(), s.H, en.id, { locale: "en", name: "E", body: en.body })).resolves.toBeTruthy();
+    expect((await saveDraft(db(), s.H, s.verma.household.id, { templateId: en.id })).draftText).toBe("Thanks for the lovely gift.");
+    expect((await saveDraft(db(), s.H, s.verma.household.id, { templateId: hi.id })).draftText).toBe("सुंदर उपहार के लिए धन्यवाद।");
   });
 
   it("lists every family of the event; attended means a member was checked in", async () => {

@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { auditLogs, eventMembers, giftItemRecipients, giftItems, notifications } from "@/db/schema";
+import ExcelJS from "exceljs";
+import { auditLogs, cashHandovers, eventMembers, functions, giftItemRecipients, giftItems, gifts, notifications } from "@/db/schema";
+import { createTranslator } from "@/i18n/core";
+import { buildGiftsWorkbook } from "@/lib/exports";
+import { renderNotification } from "@/lib/notifications";
 import { createEvent } from "@/lib/events";
 import { createFunction, deleteFunction } from "@/lib/functions";
 import {
@@ -122,15 +126,30 @@ describe("gift list items (GFT-01..05)", () => {
     expect(r).toMatchObject({ quantityBought: 8, status: "bought" });
     r = await recordBought(db(), s.H, item.id, { add: -100 });
     expect(r.quantityBought).toBe(0);
+    // Marking given leaves the count alone.
     r = await markGiven(db(), s.H, item.id);
-    expect(r).toMatchObject({ status: "given", quantityBought: 8 });
+    expect(r).toMatchObject({ status: "given", quantityBought: 0 });
     r = await recordBought(db(), s.H, item.id, { set: 2 });
     expect(r.status).toBe("given");
+    // Reopening a given item follows the counts: 2 of 8 → to buy.
+    r = await setGiftStatus(db(), s.H, item.id, "to_buy");
+    expect(r).toMatchObject({ status: "to_buy", quantityBought: 2 });
     expect(autoStatus("given", 0, 10)).toBe("given");
     expect(autoStatus("to_buy", 0, 0)).toBe("to_buy");
     // Marking bought fills the count up to what's needed.
     const coins = await createGiftItem(db(), s.H, fixed("Coins", 10));
     expect(await setGiftStatus(db(), s.H, coins.id, "bought")).toMatchObject({ quantityBought: 10 });
+    // All bought, then given, then reopened: back to "bought", not stuck on "to buy".
+    await markGiven(db(), s.H, coins.id);
+    expect(await setGiftStatus(db(), s.H, coins.id, "to_buy")).toMatchObject({ status: "bought", quantityBought: 10 });
+  });
+
+  it("rejects a bought count from a stale page", async () => {
+    const s = await setup();
+    const item = await createGiftItem(db(), s.H, fixed("Coins", 10));
+    await recordBought(db(), s.P, item.id, { add: 2 }); // someone else, meanwhile (version 2)
+    await expect(recordBought(db(), s.H, item.id, { set: 5 }, 1)).rejects.toMatchObject({ code: "stale" });
+    expect(await recordBought(db(), s.H, item.id, { set: 5 }, 2)).toMatchObject({ quantityBought: 5, version: 3 });
   });
 
   it("removes a family's recipient link when the family is deleted", async () => {
@@ -173,6 +192,9 @@ describe("views and summary (GFT-06)", () => {
 
     const sum = await giftSummary(db(), s.H, NOW);
     expect(sum).toEqual({ items: 4, itemsDone: 1, totalNeeded: 34, totalBought: 20, remaining: 14, dueSoon: 2, estimatedCostPaise: 2000_00 + 2000_00 });
+    // A limited page keeps the same stable order; the summary still counts everything.
+    expect((await listGiftItems(db(), s.H, {}, NOW, 2)).map((r) => r.name)).toEqual(["Shawl", "Mithai box"]);
+    expect((await giftSummary(db(), s.H, NOW)).items).toBe(4);
     void box;
     void shawl;
     void later;
@@ -226,8 +248,54 @@ describe("due-soon reminder (GFT-06)", () => {
     // The Wedding (12-20) comes within 7 days on 12-13 (IST): reminded then, once.
     expect(await sendGiftReminders(db(), new Date("2026-12-12T18:00:00Z"))).toBe(0);
     expect(await sendGiftReminders(db(), new Date("2026-12-12T19:00:00Z"))).toBe(1);
-    // Moving the date re-arms the reminder.
-    await updateGiftItem(db(), s.H, later.id, 1, fixed("Hamper", 2, { giveBy: "2026-12-14" }));
+    // Rescheduling the function re-arms the reminder for the new date, once.
+    await db().update(functions).set({ date: "2026-12-16" }).where(eq(functions.id, s.wedding.id));
     expect(await sendGiftReminders(db(), new Date("2026-12-13T06:00:00Z"))).toBe(1);
+    expect(await sendGiftReminders(db(), new Date("2026-12-14T06:00:00Z"))).toBe(0);
+    // So does moving the give-by date.
+    await updateGiftItem(db(), s.H, later.id, 1, fixed("Hamper", 2, { giveBy: "2026-12-15" }));
+    expect(await sendGiftReminders(db(), new Date("2026-12-14T06:00:00Z"))).toBe(1);
+    const [row] = await db().select().from(giftItems).where(eq(giftItems.id, later.id));
+    expect(row.remindedFor).toBe("2026-12-15");
+  });
+
+  it("shows the date in the reader's language", async () => {
+    const s = await setup();
+    await createGiftItem(db(), s.H, fixed("Shawl", 4, { giveBy: "2026-12-10" }));
+    await sendGiftReminders(db(), NOW);
+    const [n] = await db().select().from(notifications).where(eq(notifications.kind, "gift.due"));
+    expect(n.data.date).toBe("2026-12-10");
+    const en = renderNotification("en", n);
+    const hi = renderNotification("hi", n);
+    expect(en).toContain("Shawl");
+    expect(en).not.toContain("2026-12-10");
+    expect(en).toMatch(/10 Dec 2026/);
+    expect(hi).not.toContain("2026-12-10");
+    expect(hi).toMatch(/10 दिस॰? 2026|10 दिसं॰? 2026|10 दिसंबर 2026/);
+  });
+});
+
+describe("archive (EVT-08)", () => {
+  const sheetsOf = async (buf: Buffer) => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    return wb;
+  };
+
+  it("adds read-only sheets for gifts received before the change, only when there are any", async () => {
+    const s = await setup();
+    const t = createTranslator("en");
+    await createGiftItem(db(), s.H, fixed("Shawl", 4));
+    let wb = await sheetsOf(await buildGiftsWorkbook(db(), s.H, t, "en"));
+    expect(wb.worksheets.map((w) => w.name)).toEqual(["Gifts to give", "Thank-you notes"]);
+
+    await db().insert(gifts).values({ eventId: s.event.id, householdId: s.sharma.household.id, type: "cash", amountPaise: 5100_00, envelopeNo: "12", recordedBy: s.hostUser.id });
+    await db().insert(cashHandovers).values({ eventId: s.event.id, functionId: s.sangeet.id, collectorUserId: s.hostUser.id, recordedTotalPaise: 5100_00, countedPaise: 5000_00, handedToName: "Papa" });
+    wb = await sheetsOf(await buildGiftsWorkbook(db(), s.H, t, "en"));
+    expect(wb.worksheets.map((w) => w.name)).toEqual(["Gifts to give", "Thank-you notes", "Gifts received to 7 Nov 2026", "Cash hand-overs (old)"]);
+    const received = wb.getWorksheet("Gifts received to 7 Nov 2026")!;
+    expect(received.getRow(2).values).toEqual(expect.arrayContaining(["Sharma", "Cash shagun (envelope)", 5100, "12", "Asha"]));
+    const cash = wb.getWorksheet("Cash hand-overs (old)")!;
+    expect(cash.getRow(2).values).toEqual(expect.arrayContaining(["Sangeet", "Asha", 5100, 5000, -100, "Papa"]));
   });
 });

@@ -36,23 +36,29 @@ invited family / guest / adult of a function, plus spares), for whom (free text,
 families in `gift_item_recipients`), purchase status (to buy → ordered → bought → given) with the
 number bought, unit cost, who's buying and where to buy. Linked quantities are computed live from
 `function_invites`, so the count follows the guest list; when it's covered, "to buy"/"ordered"
-becomes "bought" automatically, and "given" never moves back.
+becomes "bought" automatically, and "given" never moves back on its own. Marking an item bought
+fills the count up to what's needed; marking it given leaves the count alone; reopening a given
+item lands on what the counts say ("bought" if enough were bought). List totals come from one
+aggregate query, so they're never cut by the list's page limit.
 
 Hosts and Planners both view and edit the list and the thank-you notes (`gifts.view`,
 `gifts.manage`); the "gift access" grant and `gifts.record` are gone (the `gift_access` column stays,
 unused). The gift list isn't money that needs Host approval: it is tracked separately from the budget
 (families who want it in the budget add a standalone budget line, BGT-02).
 
-A daily job notifies the person buying (or the Hosts) once per item when it isn't fully bought and is
-needed within 7 days; changing the item's date re-arms it. Notices carry no costs.
+A daily job notifies the person buying (or the Hosts) once per item and needed-by date when it isn't
+fully bought and is needed within 7 days. The item stores the date the reminder was about
+(`reminded_for`), so a moved give-by date or a rescheduled function re-arms it. Notices carry no
+costs, and their date is shown in the reader's language.
 
 Thank-you notes (GFT-08..10) stay, decoupled from gifts: the tracker covers every family, "attended"
-means a member was checked in, and the `{giftItem}` merge field is removed (older templates render
-without it).
+means a member was checked in, and `{giftItem}` is no longer offered as a merge field. Older
+templates that use it still save and render it as the word for "gift" in the template's language.
 
 The legacy tables `gifts`, `cash_handovers` and `gift_imports` stay in the schema, marked legacy, so
 no data is dropped by this change; their code (register, envelope mode, offline queue, cash, import,
-gift photos) is removed. Two small legacy guards remain until the drop: deleting a family blanks the
+gift photos) is removed. Their rows stay reachable read-only: the archive's gifts workbook adds a
+"Gifts received" sheet (and a cash hand-overs sheet) when an event has any. Two small legacy guards remain until the drop: deleting a family blanks the
 name of its old received-gift rows (their check constraint needs a giver once the link is nulled),
 and guest erasure still deletes photos attached to them (EVT-09).
 
@@ -62,5 +68,6 @@ and guest erasure still deletes photos attached to them (EVT-09).
   gone.
 - A follow-up migration drops the legacy tables, types and `documents.gift_id` once the owner
   confirms; the legacy guards in `guests.ts` and `retention.ts` go with it.
-- The archive's gifts workbook now holds the gift list and the thank-you tracker.
+- The archive's gifts workbook now holds the gift list and the thank-you tracker, plus the legacy
+  received-gift sheets while those rows exist.
 - Gift notifications (category "gifts") now email by default, since they carry no amounts.
