@@ -224,13 +224,11 @@ export async function updateGiftItem(db: Database, c: GiftCtx, id: string, versi
     if (old.version !== version) throw new GiftError("stale");
     await checkRefs(tx, c.eventId, v);
     const fields = fieldsOf(v);
-    // A new date gets a new "due soon" reminder.
-    const moved = fields.functionId !== old.functionId || fields.giveBy !== old.giveBy;
     const needed = await neededOrNullTx(tx, c.eventId, fields);
     const status = autoStatus(old.status, old.quantityBought, needed);
     const [item] = await tx
       .update(giftItems)
-      .set({ ...fields, status, remindedOn: moved ? null : old.remindedOn, version: old.version + 1, updatedAt: new Date() })
+      .set({ ...fields, status, version: old.version + 1, updatedAt: new Date() })
       .where(eq(giftItems.id, id))
       .returning();
     if (v.householdIds) await writeRecipients(tx, c.eventId, id, v.householdIds);
@@ -265,8 +263,9 @@ export async function setGiftRecipients(db: Database, c: GiftCtx, id: string, ho
 }
 
 /**
- * Sets the purchase status (GFT-05). Marking it bought or given fills the bought count up to
- * what's needed, so the list and the summary agree.
+ * Sets the purchase status (GFT-05). Marking it bought fills the bought count up to what's
+ * needed; marking it given leaves the count as it is. Reopening a given item ("to buy" or
+ * "ordered") lands on what the counts say: "bought" when enough are bought.
  */
 export async function setGiftStatus(db: Database, c: GiftCtx, id: string, status: GiftStatus): Promise<GiftItem> {
   assertCan(c.subject, "gifts.manage");
@@ -274,16 +273,19 @@ export async function setGiftStatus(db: Database, c: GiftCtx, id: string, status
   return db.transaction(async (tx) => {
     const old = await lockItem(tx, c.eventId, id);
     let bought = old.quantityBought;
-    if (status === "bought" || status === "given") {
+    let next = status;
+    if (status === "bought") {
       const needed = await neededOrNullTx(tx, c.eventId, old);
       if (needed !== null && bought < needed) bought = needed;
+    } else if (old.status === "given" && (status === "to_buy" || status === "ordered")) {
+      next = autoStatus(status, bought, await neededOrNullTx(tx, c.eventId, old));
     }
     const [item] = await tx
       .update(giftItems)
-      .set({ status, quantityBought: bought, version: old.version + 1, updatedAt: new Date() })
+      .set({ status: next, quantityBought: bought, version: old.version + 1, updatedAt: new Date() })
       .where(eq(giftItems.id, id))
       .returning();
-    if (status !== old.status) await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift_item.status_changed", entityType: "gift_item", entityId: id, data: { name: item.name } });
+    if (next !== old.status) await audit(tx, { eventId: c.eventId, actor: c.actor, action: "gift_item.status_changed", entityType: "gift_item", entityId: id, data: { name: item.name } });
     return item;
   });
 }
@@ -295,12 +297,14 @@ export const markGiven = (db: Database, c: GiftCtx, id: string) => setGiftStatus
  * negative). The count stays within 0..100,000; once it covers what's needed, "to buy" and
  * "ordered" become "bought". "Given" is never moved back.
  */
-export async function recordBought(db: Database, c: GiftCtx, id: string, change: { set: number } | { add: number }): Promise<GiftItem> {
+export async function recordBought(db: Database, c: GiftCtx, id: string, change: { set: number } | { add: number }, version?: number): Promise<GiftItem> {
   assertCan(c.subject, "gifts.manage");
   const n = "set" in change ? change.set : change.add;
   if (!Number.isInteger(n) || Math.abs(n) > MAX_QTY) throw new GiftError("invalid");
   return db.transaction(async (tx) => {
     const old = await lockItem(tx, c.eventId, id);
+    // From a form that showed a count (the edit page): someone else changed it meanwhile.
+    if (version !== undefined && old.version !== version) throw new GiftError("stale");
     const bought = Math.max(0, Math.min(MAX_QTY, "set" in change ? change.set : old.quantityBought + change.add));
     const needed = await neededOrNullTx(tx, c.eventId, old);
     const status = autoStatus(old.status, bought, needed);
@@ -409,7 +413,8 @@ const byWhen = (a: GiftRow, b: GiftRow) => {
   return a.name.localeCompare(b.name);
 };
 
-export async function listGiftItems(db: Tx, c: GiftCtx, filters: GiftFilters = {}, now = new Date()): Promise<GiftRow[]> {
+/** The list (GFT-06), at most `limit` rows in a stable order (the archive asks for more). */
+export async function listGiftItems(db: Tx, c: GiftCtx, filters: GiftFilters = {}, now = new Date(), limit = LIST_LIMIT): Promise<GiftRow[]> {
   assertCan(c.subject, "gifts.view");
   const conds: (SQL | undefined)[] = [eq(giftItems.eventId, c.eventId)];
   if (filters.status && (GIFT_STATUSES as readonly string[]).includes(filters.status)) conds.push(eq(giftItems.status, filters.status as GiftStatus));
@@ -422,7 +427,11 @@ export async function listGiftItems(db: Tx, c: GiftCtx, filters: GiftFilters = {
     const p = `%${escapeLike(filters.q)}%`;
     conds.push(or(ilike(giftItems.name, p), ilike(giftItems.forWhom, p)));
   }
-  const [rows, counts, today] = await Promise.all([baseQuery(db).where(and(...conds)).limit(2000), invitedCounts(db, c.eventId), eventToday(db, c.eventId, now)]);
+  const rows = await baseQuery(db)
+    .where(and(...conds))
+    .orderBy(sql`least(${giftItems.giveBy}, ${functions.date}) asc nulls last`, asc(giftItems.name), asc(giftItems.id))
+    .limit(Math.max(1, Math.min(limit, 100_000)));
+  const [counts, today] = await Promise.all([invitedCounts(db, c.eventId), eventToday(db, c.eventId, now)]);
   const recips = await recipientsOf(
     db,
     rows.map((r) => r.item.id),
@@ -440,6 +449,9 @@ export async function getGiftItem(db: Tx, c: GiftCtx, id: string, now = new Date
   return toRow(row, counts, today, recips.get(id) ?? []);
 }
 
+/** Rows on one page of the list; totals come from giftSummary, which has no limit. */
+export const LIST_LIMIT = 2000;
+
 export type GiftSummary = {
   items: number;
   /** Items fully bought or already given. */
@@ -451,22 +463,59 @@ export type GiftSummary = {
   estimatedCostPaise: number;
 };
 
-export function summarise(rows: GiftRow[]): GiftSummary {
-  const s: GiftSummary = { items: rows.length, itemsDone: 0, totalNeeded: 0, totalBought: 0, remaining: 0, dueSoon: 0, estimatedCostPaise: 0 };
-  for (const r of rows) {
-    if (!stillToBuy(r.status, r.quantityBought, r.needed)) s.itemsDone++;
-    s.totalNeeded += r.needed ?? 0;
-    s.totalBought += r.needed === null ? r.quantityBought : Math.min(r.quantityBought, r.needed);
-    s.remaining += r.remaining;
-    if (r.dueSoon) s.dueSoon++;
-    s.estimatedCostPaise += r.totalCostPaise ?? 0;
-  }
-  return s;
-}
-
-/** Totals over the whole list (filters don't apply), for the summary card and dashboard. */
+/**
+ * Totals over the whole list (filters and the list limit don't apply), for the summary card and
+ * the dashboard. One query: needed quantities are computed in SQL the same way as neededQuantity.
+ */
 export async function giftSummary(db: Tx, c: GiftCtx, now = new Date()): Promise<GiftSummary> {
-  return summarise(await listGiftItems(db, c, {}, now));
+  assertCan(c.subject, "gifts.view");
+  const today = await eventToday(db, c.eventId, now);
+  const soon = addDays(today, DUE_SOON_DAYS);
+  const res = await db.execute(sql`
+    with counts as (
+      select fi.function_id,
+        count(distinct g.household_id)::int as families,
+        count(*)::int as guests,
+        (count(*) filter (where g.age_group = 'adult'))::int as adults
+      from function_invites fi join guests g on g.id = fi.guest_id
+      where g.event_id = ${c.eventId}
+      group by fi.function_id
+    ), items as (
+      select gi.status, gi.quantity_bought as bought, gi.unit_cost_paise as unit_cost,
+        least(gi.give_by, f.date) as when_d,
+        case
+          when gi.quantity_mode = 'fixed' then coalesce(gi.quantity_fixed, 0)
+          when coalesce(gi.quantity_function_id, gi.function_id) is null then null
+          else coalesce(case gi.quantity_mode when 'per_family' then cn.families when 'per_guest' then cn.guests else cn.adults end, 0) + gi.quantity_extra
+        end as needed
+      from gift_items gi
+      left join functions f on f.id = gi.function_id
+      left join counts cn on cn.function_id = coalesce(gi.quantity_function_id, gi.function_id)
+      where gi.event_id = ${c.eventId}
+    ), flagged as (
+      select *, (status <> 'given' and (status in ('to_buy', 'ordered') or (needed is not null and bought < needed))) as open from items
+    )
+    select
+      count(*)::int as items,
+      (count(*) filter (where not open))::int as items_done,
+      coalesce(sum(coalesce(needed, 0)), 0)::bigint as total_needed,
+      coalesce(sum(case when needed is null then bought else least(bought, needed) end), 0)::bigint as total_bought,
+      coalesce(sum(case when status = 'given' or needed is null then 0 else greatest(needed - bought, 0) end), 0)::bigint as remaining,
+      (count(*) filter (where open and when_d is not null and when_d <= ${soon}::date))::int as due_soon,
+      coalesce(sum(coalesce(unit_cost * needed, 0)), 0)::bigint as cost
+    from flagged
+  `);
+  const r = (res.rows[0] ?? {}) as Record<string, unknown>;
+  const n = (k: string) => Number(r[k] ?? 0);
+  return {
+    items: n("items"),
+    itemsDone: n("items_done"),
+    totalNeeded: n("total_needed"),
+    totalBought: n("total_bought"),
+    remaining: n("remaining"),
+    dueSoon: n("due_soon"),
+    estimatedCostPaise: n("cost"),
+  };
 }
 
 /** Families to choose as recipients (names only). */
@@ -491,9 +540,10 @@ export async function assigneeOptions(db: Tx, c: GiftCtx) {
 // ---------------------------------------------------------------------------
 
 /**
- * Once per item: when it isn't fully bought and is needed within 7 days (or is overdue), its
- * assignee (or the Hosts, when nobody is assigned or the assignee left the team) is notified
- * in-app and by email. Moving the date re-arms the reminder.
+ * Once per item and needed-by date: when it isn't fully bought and is needed within 7 days (or
+ * is overdue), its assignee (or the Hosts, when nobody is assigned or the assignee left the
+ * team) is notified in-app and by email. A new needed-by date (a moved give-by date or a
+ * rescheduled function) re-arms the reminder.
  */
 export async function sendGiftReminders(db: Database, now = new Date(), appUrl?: string): Promise<number> {
   const candidates = await db
@@ -501,13 +551,13 @@ export async function sendGiftReminders(db: Database, now = new Date(), appUrl?:
     .from(giftItems)
     .innerJoin(events, eq(events.id, giftItems.eventId))
     .leftJoin(functions, eq(functions.id, giftItems.functionId))
-    .where(and(isNull(events.deletedAt), isNull(giftItems.remindedOn), ne(giftItems.status, "given")));
+    .where(and(isNull(events.deletedAt), ne(giftItems.status, "given")));
   const countsByEvent = new Map<string, Map<string, FunctionHeadcount>>();
   let sent = 0;
   for (const r of candidates) {
     const today = todayIn(r.timezone, now);
     const when = whenDate(r.item.giveBy, r.functionDate);
-    if (!when || when > addDays(today, DUE_SOON_DAYS)) continue;
+    if (!when || when > addDays(today, DUE_SOON_DAYS) || r.item.remindedFor === when) continue;
     let counts = countsByEvent.get(r.item.eventId);
     if (!counts) {
       counts = await invitedCounts(db, r.item.eventId);
@@ -518,8 +568,8 @@ export async function sendGiftReminders(db: Database, now = new Date(), appUrl?:
       // Claim the item first, so two overlapping runs never notify twice.
       const claimed = await tx
         .update(giftItems)
-        .set({ remindedOn: today })
-        .where(and(eq(giftItems.id, r.item.id), isNull(giftItems.remindedOn)))
+        .set({ remindedOn: today, remindedFor: when })
+        .where(and(eq(giftItems.id, r.item.id), or(isNull(giftItems.remindedFor), ne(giftItems.remindedFor, when))))
         .returning({ id: giftItems.id });
       if (claimed.length === 0) return false;
       const input = { kind: "gift.due", data: { name: r.item.name, date: when }, href: `/events/${r.item.eventId}/gifts`, appUrl };

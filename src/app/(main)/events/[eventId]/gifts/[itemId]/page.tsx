@@ -36,7 +36,7 @@ export default async function EditGiftPage({ params }: PageProps<"/events/[event
 
       <Card>
         <CardTitle>{t("gifts.fields.bought")}</CardTitle>
-        <SimpleForm action={setBoughtAction.bind(null, eventId, item.id)} className="flex flex-wrap items-end gap-2">
+        <SimpleForm action={setBoughtAction.bind(null, eventId, item.id, item.version)} className="flex flex-wrap items-end gap-2">
           <Field label={item.needed === null ? t("gifts.needsFunction") : t("gifts.neededBought", { bought: item.quantityBought, needed: item.needed })} htmlFor="gift-bought">
             <Input id="gift-bought" name="bought" type="number" inputMode="numeric" min={0} max={100000} defaultValue={item.quantityBought} className="w-32" />
           </Field>

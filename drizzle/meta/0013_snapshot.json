@@ -1,5 +1,5 @@
 {
-  "id": "cf0d8eb5-adce-4f33-a39a-952da2b91932",
+  "id": "8b3d36fe-8e4c-4faa-a627-9e48a1b3f527",
   "prevId": "f18daf9c-34c7-4c67-acf3-b15c831cee3e",
   "version": "7",
   "dialect": "postgresql",
@@ -3972,6 +3972,12 @@
         },
         "reminded_on": {
           "name": "reminded_on",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reminded_for": {
+          "name": "reminded_for",
           "type": "date",
           "primaryKey": false,
           "notNull": false

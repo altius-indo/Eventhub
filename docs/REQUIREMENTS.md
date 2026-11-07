@@ -279,16 +279,16 @@ Event
 - **GFT-02 (M)** **When**: each gift is given at a **function** and/or by a **give-by date**; the earlier of the two is when it's needed. Gifts without either are listed as "no date yet".
 - **GFT-03 (M)** **How many**: a **fixed number**, or **linked to the guest list**: one per invited family, per invited guest or per invited adult of a function (by default the gift's own function), plus **spares**. Linked quantities follow invitation changes live.
 - **GFT-04 (S)** **For whom (optional)**: free text (e.g. "Groom's sisters", "drivers") and/or particular families from the guest list. Removing a family removes the link.
-- **GFT-05 (M)** **Purchase status**: *to buy → ordered → bought → given*, with the **number bought so far**. When the bought count covers what's needed, *to buy*/*ordered* becomes *bought* automatically; *given* never moves back on its own. Optional cost per gift, who's buying and where to buy.
+- **GFT-05 (M)** **Purchase status**: *to buy → ordered → bought → given*, with the **number bought so far**. When the bought count covers what's needed, *to buy*/*ordered* becomes *bought* automatically; *given* never moves back on its own, and reopening a given gift returns it to *bought* if enough were bought. Optional cost per gift, who's buying and where to buy.
 - **GFT-06 (M)** **Views and reminders**:
   - **List** grouped by when, with search (gift, for whom), status tabs and quick filters (due this week, return gifts, mine, function, category); each row shows needed vs bought with progress and one-tap actions (+1 / +N bought, mark ordered / bought / given).
   - **Summary**: items ready, total needed, bought and still to buy, items due within 7 days that aren't bought, and the estimated total cost. Gifts are tracked **separately from the wedding budget** (add a standalone budget line, BGT-02, to budget for them).
-  - **Due soon**: once per gift, the person buying (or the Hosts if nobody is assigned) is notified in-app and by email when it isn't fully bought and is needed within 7 days.
-  - **Export** to Excel, and a dashboard card ("X of Y bought, N due this week").
+  - **Due soon**: once per gift and needed-by date (a rescheduled function or new give-by date re-arms it), the person buying (or the Hosts if nobody is assigned) is notified in-app and by email when it isn't fully bought and is needed within 7 days.
+  - **Export** to Excel, and a dashboard card ("X of Y bought, N due this week"). The full archive (EVT-08) also keeps any gifts received and cash hand-overs recorded before this change, read-only.
 - **GFT-07 (M)** **Access**: Hosts and Planners view and edit the gift list and thank-you notes (and the App Admin, as for every event). Guests and vendors never see it. Creating, changing (incl. status) and deleting gifts is in the audit log, without costs.
 - **GFT-08 (M)** **Thank-you tracker**: per household, status *not started → drafted → sent* (plus *not needed*), channel, sent date and sent by. All families of the event are listed; "attended" means a member was checked in at a function.
 - **GFT-09 (M)** **Thank-you notes**:
-  - **Templates**: per language (English, Hindi, …) with merge fields: guest name, couple names, functions attended and a personal line. **Amounts are never inserted** into messages.
+  - **Templates**: per language (English, Hindi, …) with merge fields: guest name, couple names, functions attended and a personal line (older templates' gift-item field renders as the word for "gift"). **Amounts are never inserted** into messages.
   - **Review before sending**: each note can be personalised individually; bulk send with per-household review.
   - **Channels**: WhatsApp, email or SMS through the messaging module, with delivery status tracked.
   - **Printed cards**: export names and postal addresses as Excel or a label PDF, then mark them sent manually.

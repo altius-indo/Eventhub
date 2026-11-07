@@ -5,7 +5,7 @@ import { Alert, Badge, Card, CardTitle, LinkButton, PageHeader, buttonClass } fr
 import { getDb } from "@/db";
 import { formatDay, formatInr, type Locale, type Translator } from "@/i18n/core";
 import { listFunctions } from "@/lib/functions";
-import { cleanGiftFilters, GIFT_CATEGORIES, GIFT_STATUSES, listGiftItems, summarise, type GiftRow, type GiftStatus } from "@/lib/gifts";
+import { cleanGiftFilters, GIFT_CATEGORIES, GIFT_STATUSES, giftSummary, listGiftItems, type GiftRow, type GiftStatus } from "@/lib/gifts";
 import { getEventContext } from "@/lib/server/event-context";
 import { dctx } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
@@ -31,8 +31,7 @@ export default async function GiftsPage({ params, searchParams }: PageProps<"/ev
   const db = getDb();
   const filters = cleanGiftFilters(sp);
   const c = dctx(ctx);
-  const [rows, all, fns] = await Promise.all([listGiftItems(db, c, filters), listGiftItems(db, c), listFunctions(db, eventId)]);
-  const summary = summarise(all);
+  const [rows, summary, fns] = await Promise.all([listGiftItems(db, c, filters), giftSummary(db, c), listFunctions(db, eventId)]);
   const canEdit = ctx.can("gifts.manage");
   const base = `/events/${eventId}/gifts`;
   const query = new URLSearchParams(filters as Record<string, string>).toString();
@@ -52,7 +51,7 @@ export default async function GiftsPage({ params, searchParams }: PageProps<"/ev
         subtitle={t("gifts.intro")}
         action={
           <div className="flex flex-wrap gap-2">
-            {all.length > 0 && (
+            {summary.items > 0 && (
               <a href={`${base}/export${query ? `?${query}` : ""}`} className={buttonClass("secondary")}>
                 {t("gifts.export")}
               </a>
@@ -65,7 +64,7 @@ export default async function GiftsPage({ params, searchParams }: PageProps<"/ev
       {sp.saved === "1" && <Alert tone="success">{t("gifts.saved")}</Alert>}
       {sp.deleted === "1" && <Alert tone="success">{t("gifts.deleted")}</Alert>}
 
-      {all.length === 0 ? (
+      {summary.items === 0 ? (
         <Card>
           <p className="text-sm text-muted">{t("gifts.empty")}</p>
         </Card>

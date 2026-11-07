@@ -1645,8 +1645,10 @@ export const giftItems = pgTable(
     /** Where to buy it (shop, website). */
     source: text("source"),
     notes: text("notes"),
-    /** Day the "due soon" reminder went out, so it's sent once per item (GFT-06). */
+    /** Day the "due soon" reminder went out (GFT-06). */
     remindedOn: date("reminded_on"),
+    /** The needed-by date that reminder was about: a new date (e.g. a rescheduled function) re-arms it. */
+    remindedFor: date("reminded_for"),
     version: integer("version").notNull().default(1),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),

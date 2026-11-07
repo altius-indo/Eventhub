@@ -28,6 +28,7 @@ CREATE TABLE "gift_items" (
 	"source" text,
 	"notes" text,
 	"reminded_on" date,
+	"reminded_for" date,
 	"version" integer DEFAULT 1 NOT NULL,
 	"created_by" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,

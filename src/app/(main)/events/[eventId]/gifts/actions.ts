@@ -63,13 +63,13 @@ export async function deleteGiftItemAction(eventId: string, id: string, _p: Stat
 }
 
 /** Sets the bought count from the edit page. */
-export async function setBoughtAction(eventId: string, id: string, _p: State, fd: FormData): Promise<State> {
+export async function setBoughtAction(eventId: string, id: string, version: number, _p: State, fd: FormData): Promise<State> {
   const { ctx, t, ok } = await guard(eventId);
   if (!ok || !isUuid(id)) return { error: t("common.notAllowed") };
   const raw = String(fd.get("bought") ?? "").trim();
   if (!/^\d{1,6}$/.test(raw)) return { error: t("gifts.errors.invalid") };
   try {
-    await recordBought(getDb(), dctx(ctx), id, { set: Number(raw) });
+    await recordBought(getDb(), dctx(ctx), id, { set: Number(raw) }, version);
   } catch (e) {
     return { error: giftErrorText(t, e) };
   }
