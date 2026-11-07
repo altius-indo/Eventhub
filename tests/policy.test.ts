@@ -20,12 +20,15 @@ describe("policy", () => {
     for (const p of permissions) expect(decide(vendor, p)).toBe(p.startsWith("portal.") ? "allow" : "deny");
   });
 
-  it("gift management needs full gift access for Planners", () => {
-    const access = (giftAccess: "none" | "record" | "full") => ({ isAppAdmin: false, membership: { role: "planner" as const, giftAccess } });
-    expect(decide(access("none"), "gifts.record")).toBe("deny");
-    expect(decide(access("record"), "gifts.record")).toBe("allow");
-    expect(decide(access("record"), "gifts.manage")).toBe("deny");
-    expect(decide(access("full"), "gifts.manage")).toBe("allow");
+  it("Hosts and Planners view and edit the gift list, whatever the old gift-access grant (GFT-07)", () => {
+    for (const giftAccess of ["none", "record", "full"] as const) {
+      const p = { isAppAdmin: false, membership: { role: "planner" as const, giftAccess } };
+      expect(decide(p, "gifts.view")).toBe("allow");
+      expect(decide(p, "gifts.manage")).toBe("allow");
+    }
+    expect(decide(host, "gifts.manage")).toBe("allow");
+    expect(decide(outsider, "gifts.view")).toBe("deny");
+    expect(decide({ isAppAdmin: false, membership: null, vendor: { vendorId: "v1" } }, "gifts.view")).toBe("deny");
   });
 
   it("non-members can do nothing", () => {
@@ -48,16 +51,6 @@ describe("policy", () => {
     for (const p of ["event.update", "event.delete", "members.manage", "approvals.decide", "website.publish", "audit.view", "platform.manage"] as const) {
       expect(decide(planner, p)).toBe("deny");
     }
-  });
-
-  it("gift access for Planners follows what the Host granted", () => {
-    expect(decide(planner, "gifts.view")).toBe("deny");
-    expect(decide(planner, "gifts.record")).toBe("deny");
-    const recorder = { ...planner, membership: { role: "planner" as const, giftAccess: "record" as const } };
-    expect(decide(recorder, "gifts.record")).toBe("allow");
-    expect(decide(recorder, "gifts.view")).toBe("deny");
-    const full = { ...planner, membership: { role: "planner" as const, giftAccess: "full" as const } };
-    expect(decide(full, "gifts.view")).toBe("allow");
   });
 
   it("Hosts and Planners view, upload and moderate the gallery; vendors only through the portal (GAL-02/04)", () => {

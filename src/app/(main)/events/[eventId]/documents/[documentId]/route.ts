@@ -10,7 +10,7 @@ export async function GET(_req: Request, { params }: RouteContext<"/events/[even
   if (!isUuid(documentId)) return new Response("Not found", { status: 404 });
   try {
     const { doc, data } = await getDocument(getDb(), eventId, documentId);
-    // Gift photos are served by the gift photo route, which checks gift access (GFT-07).
+    // Legacy received-gift photos (ADR-0036) are never served.
     if (doc.giftId) return new Response("Not found", { status: 404 });
     return new Response(new Uint8Array(data), {
       headers: {

@@ -5,7 +5,6 @@ import {
   checkIns,
   events,
   functions,
-  gifts,
   guests,
   households,
   outboundMessages,
@@ -15,10 +14,10 @@ import {
   type MessageChannel,
   type ThankYou,
 } from "@/db/schema";
-import { createTranslator, isLocale } from "@/i18n/core";
+import { isLocale } from "@/i18n/core";
 import { audit } from "./audit";
 import { DeliveryError } from "./delivery";
-import { MONEY_TYPES, type GiftCtx } from "./gifts";
+import type { GiftCtx } from "./gifts";
 import { notifyHosts } from "./notifications";
 import { enqueue, estimate, planMessages, registerTemplate, type EnqueueItem } from "./outbox";
 import { assertCan } from "./policy";
@@ -27,6 +26,8 @@ import { todayIn } from "./tasks";
 /**
  * Thank-you tracker and notes (GFT-08..10). Merge fields are a fixed whitelist without any
  * amount; notes are scrubbed of money amounts before they are stored and again when sent.
+ * Independent of the gift list (ADR-0036): the tracker covers every family of the event, and
+ * "attended" means a member was checked in at any function.
  */
 
 export class ThankYouError extends Error {
@@ -35,7 +36,7 @@ export class ThankYouError extends Error {
   }
 }
 
-export const MERGE_FIELDS = ["guestName", "coupleNames", "functionsAttended", "giftItem", "personalLine"] as const;
+export const MERGE_FIELDS = ["guestName", "coupleNames", "functionsAttended", "personalLine"] as const;
 export type MergeField = (typeof MERGE_FIELDS)[number];
 /** Everything a note can contain. There is deliberately no amount here. */
 export type NoteVars = Record<MergeField, string>;
@@ -56,11 +57,6 @@ export function scrubAmounts(text: string): string {
     .replace(/[ \t]{2,}/g, " ");
 }
 
-/** Gift items with ₹ or digits get a warning before a note is drafted from them. */
-export function itemNeedsCheck(item: string): boolean {
-  return /[₹\d०-९]/.test(item);
-}
-
 /** Placeholders used in a template body, e.g. {guestName}. */
 export function templateFields(body: string): string[] {
   return [...body.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
@@ -73,7 +69,10 @@ export function validateTemplate(body: string): void {
   if (containsAmount(body)) throw new ThankYouError("contains_amount");
 }
 
-/** Fills a template. Only whitelisted fields exist, and the result is scrubbed of amounts. */
+/**
+ * Fills a template. Only whitelisted fields exist, and the result is scrubbed of amounts.
+ * Anything else in braces (e.g. {giftItem} from older templates) renders as nothing.
+ */
 export function renderNote(body: string, vars: NoteVars): string {
   const filled = body.replace(/\{(\w+)\}/g, (m, k: string) => ((MERGE_FIELDS as readonly string[]).includes(k) ? (vars[k as MergeField] ?? "") : ""));
   return scrubAmounts(filled)
@@ -146,7 +145,6 @@ export type TrackerRow = {
   version: number;
   sentAt: Date | null;
   sentByName: string | null;
-  giftCount: number;
   attended: boolean;
   delivery: string | null;
 };
@@ -155,12 +153,11 @@ export type TrackerRow = {
 export const FAILED_DELIVERY = new Set(["failed", "skipped_optout", "skipped_quota", "skipped_unavailable"]);
 export const deliveryFailed = (status: string | null | undefined) => !!status && FAILED_DELIVERY.has(status);
 
-export const trackerFilterKeys = ["status", "gift", "attended", "q"] as const;
+export const trackerFilterKeys = ["status", "attended", "q"] as const;
 export type TrackerFilters = Partial<Record<(typeof trackerFilterKeys)[number], string>>;
 
 export async function listTracker(db: Tx, c: GiftCtx, filters: TrackerFilters = {}): Promise<TrackerRow[]> {
   assertCan(c.subject, "gifts.view");
-  const giftCount = sql<number>`(select count(*) from ${gifts} where ${gifts.householdId} = ${households.id})::int`;
   const attended = sql<boolean>`exists (select 1 from ${checkIns} ci join ${guests} g on g.id = ci.guest_id where g.household_id = ${households.id})`;
   const sentBy = sql<string | null>`(select name from users where id = ${thankYous.sentBy})`;
   const delivery = sql<string | null>`(select o.status from ${outboundMessages} o where o.thank_you_id = ${thankYous.id} order by o.created_at desc limit 1)`;
@@ -168,8 +165,6 @@ export async function listTracker(db: Tx, c: GiftCtx, filters: TrackerFilters = 
   const st = filters.status;
   if (st === "not_started") conds.push(or(isNull(thankYous.id), eq(thankYous.status, "not_started")));
   else if (st === "drafted" || st === "sent" || st === "not_needed") conds.push(eq(thankYous.status, st));
-  if (filters.gift === "yes") conds.push(sql`${giftCount} > 0`);
-  if (filters.gift === "no") conds.push(sql`${giftCount} = 0`);
   if (filters.attended === "yes") conds.push(attended);
   if (filters.q) conds.push(sql`${households.name} ilike ${`%${filters.q.replace(/[\\%_]/g, "\\$&")}%`}`);
   const rows = await db
@@ -185,7 +180,6 @@ export async function listTracker(db: Tx, c: GiftCtx, filters: TrackerFilters = 
       version: thankYous.version,
       sentAt: thankYous.sentAt,
       sentByName: sentBy,
-      giftCount,
       attended,
       delivery,
     })
@@ -198,7 +192,7 @@ export async function listTracker(db: Tx, c: GiftCtx, filters: TrackerFilters = 
 }
 
 /** Merge values for one family: never an amount. */
-export async function noteVarsFor(db: Tx, eventId: string, householdId: string, personalLine = ""): Promise<{ vars: NoteVars; itemWarning: boolean }> {
+export async function noteVarsFor(db: Tx, eventId: string, householdId: string, personalLine = ""): Promise<{ vars: NoteVars }> {
   const [h] = await db.select({ name: households.name }).from(households).where(and(eq(households.id, householdId), eq(households.eventId, eventId)));
   if (!h) throw new ThankYouError("not_found");
   const [ev] = await db.select({ name: events.name, coupleNames: events.coupleNames }).from(events).where(eq(events.id, eventId));
@@ -218,19 +212,13 @@ export async function noteVarsFor(db: Tx, eventId: string, householdId: string, 
         .innerJoin(functions, eq(functions.id, rsvps.functionId))
         .where(and(eq(guests.householdId, householdId), eq(rsvps.status, "attending")))
         .orderBy(asc(functions.date));
-  const items = (await db.select({ type: gifts.type, item: gifts.itemDescription }).from(gifts).where(and(eq(gifts.eventId, eventId), eq(gifts.householdId, householdId))))
-    .filter((g) => !MONEY_TYPES.has(g.type) && g.item)
-    .map((g) => g.item!);
-  const itemWarning = items.some(itemNeedsCheck);
   return {
     vars: {
       guestName: h.name,
       coupleNames: ev?.coupleNames || ev?.name || "",
       functionsAttended: attended.map((f) => f.name).join(", "),
-      giftItem: scrubAmounts(items.join(", ")).trim(),
       personalLine: personalLine.trim(),
     },
-    itemWarning,
   };
 }
 
@@ -267,8 +255,6 @@ export async function saveDraft(
       const [tpl] = await tx.select().from(thankYouTemplates).where(and(eq(thankYouTemplates.id, input.templateId), eq(thankYouTemplates.eventId, c.eventId)));
       if (!tpl) throw new ThankYouError("no_template");
       const { vars } = await noteVarsFor(tx, c.eventId, householdId, (input.personalLine ?? "").slice(0, 300));
-      // No item recorded: a plain "gift" in the template's language keeps the sentence whole.
-      if (!vars.giftItem) vars.giftItem = createTranslator(isLocale(tpl.locale) ? tpl.locale : "en")("thankYous.giftFallback");
       text = renderNote(tpl.body, vars);
       templateId = tpl.id;
     }
@@ -478,6 +464,22 @@ export async function labelsXlsx(rows: Awaited<ReturnType<typeof addressLabels>>
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
+/** Share of families thanked (GFT-10): sent / (all families except "not needed"). */
+export async function thankedStats(db: Tx, eventId: string) {
+  const [r] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      sent: sql<number>`count(*) filter (where ${thankYous.status} = 'sent')::int`,
+      notNeeded: sql<number>`count(*) filter (where ${thankYous.status} = 'not_needed')::int`,
+      drafted: sql<number>`count(*) filter (where ${thankYous.status} = 'drafted')::int`,
+    })
+    .from(households)
+    .leftJoin(thankYous, eq(thankYous.householdId, households.id))
+    .where(eq(households.eventId, eventId));
+  const base = r.total - r.notNeeded;
+  return { ...r, pct: base > 0 ? Math.round((r.sent / base) * 100) : 0 };
+}
+
 // ---------------------------------------------------------------------------
 // Reminders (GFT-10)
 // ---------------------------------------------------------------------------
@@ -486,7 +488,7 @@ export const THANK_YOU_REMINDER_WEEKS = 4;
 
 /**
  * Weekly, from N weeks after the event's last function, Hosts are told how many families who
- * gave a gift or attended still aren't thanked. Run daily; it fires on the weekly anniversary.
+ * attended still aren't thanked. Run daily; it fires on the weekly anniversary.
  */
 export async function sendThankYouReminders(db: Database, now = new Date()): Promise<number> {
   const evs = await db
@@ -508,7 +510,7 @@ export async function sendThankYouReminders(db: Database, now = new Date()): Pro
   return sent;
 }
 
-/** Families who gave a gift or checked in, without a sent / not-needed thank-you. */
+/** Families who attended (a member checked in), without a sent / not-needed thank-you. */
 export async function unthankedCount(db: Tx, eventId: string): Promise<number> {
   const [r] = await db
     .select({ n: sql<number>`count(*)::int` })
@@ -518,25 +520,19 @@ export async function unthankedCount(db: Tx, eventId: string): Promise<number> {
       and(
         eq(households.eventId, eventId),
         sql`coalesce(${thankYous.status}::text, 'not_started') not in ('sent', 'not_needed')`,
-        sql`(exists (select 1 from ${gifts} where ${gifts.householdId} = ${households.id}) or exists (select 1 from ${checkIns} ci join ${guests} g on g.id = ci.guest_id where g.household_id = ${households.id}))`,
+        sql`exists (select 1 from ${checkIns} ci join ${guests} g on g.id = ci.guest_id where g.household_id = ${households.id})`,
       ),
     );
   return r.n;
 }
 
-
-/** One family's thank-you page: their row (if any), gifts (no amounts) and merge preview. */
+/** One family's thank-you page: their row (if any) and merge preview. */
 export async function getThankYou(db: Tx, c: GiftCtx, householdId: string) {
   assertCan(c.subject, "gifts.view");
   const [h] = await db.select().from(households).where(and(eq(households.id, householdId), eq(households.eventId, c.eventId)));
   if (!h) throw new ThankYouError("not_found");
   const [row] = await db.select().from(thankYous).where(eq(thankYous.householdId, householdId));
-  const giftList = await db
-    .select({ id: gifts.id, type: gifts.type, item: gifts.itemDescription, functionName: functions.name })
-    .from(gifts)
-    .leftJoin(functions, eq(functions.id, gifts.functionId))
-    .where(and(eq(gifts.eventId, c.eventId), eq(gifts.householdId, householdId)));
   const delivery = row ? await latestDelivery(db, row.id) : null;
-  const { vars, itemWarning } = await noteVarsFor(db, c.eventId, householdId);
-  return { household: h, row: row ?? null, gifts: giftList, vars, itemWarning, delivery };
+  const { vars } = await noteVarsFor(db, c.eventId, householdId);
+  return { household: h, row: row ?? null, vars, delivery };
 }

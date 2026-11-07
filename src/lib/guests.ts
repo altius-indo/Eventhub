@@ -15,7 +15,6 @@ import {
 } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 import { freezeDueLocks } from "./caterer-headcount";
-import { anonymiseGiftsOfHousehold } from "./gifts";
 import { releaseHouseholdMedia } from "./gallery";
 import { assertFunctionsInEvent, NotFoundError } from "./functions";
 import { isUuid } from "./ids";
@@ -191,8 +190,12 @@ export async function updateHousehold(db: Database, eventId: string, householdId
 
 export async function deleteHousehold(db: Database, eventId: string, householdId: string, actor: Actor) {
   await db.transaction(async (tx) => {
-    // Erasure (EVT-09): their gifts stay for reconciliation, without the name or link.
-    await anonymiseGiftsOfHousehold(tx, eventId, householdId);
+    // Legacy received-gift rows (ADR-0036; table kept until the owner confirms the drop): blank
+    // the name and notes, which also keeps their "giver or household" check valid once the link
+    // is nulled. Gift-list recipients (gift_item_recipients) go with the household by cascade.
+    await tx.execute(
+      sql`update gifts set giver_name = '—', received_for_note = null, notes = null, updated_at = now() where event_id = ${eventId} and household_id = ${householdId}`,
+    );
     await freezeDueLocks(tx, eventId, null);
     // Their gallery uploads stop counting against the event's storage now (LIM-01).
     await releaseHouseholdMedia(tx, eventId, householdId);

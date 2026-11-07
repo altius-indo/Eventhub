@@ -38,7 +38,7 @@ export default async function EventLayout({ children, params }: LayoutProps<"/ev
     { href: `${base}/vendors`, label: t("nav.vendors") },
     { href: `${base}/budget`, label: t("nav.budget") },
     { href: `${base}/messages`, label: t("nav.messages") },
-    ...(ctx.can("gifts.record") ? [{ href: `${base}/gifts`, label: t("nav.gifts") }] : []),
+    ...(ctx.can("gifts.view") ? [{ href: `${base}/gifts`, label: t("nav.gifts") }] : []),
     { href: `${base}/website`, label: t("nav.website") },
     ...(ctx.can("gallery.view") ? [{ href: `${base}/gallery`, label: t("nav.gallery") }] : []),
     { href: `${base}/tasks`, label: t("nav.tasks") },

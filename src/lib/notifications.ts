@@ -23,7 +23,8 @@ const EMAIL_DEFAULT: Record<Category, boolean> = {
   headcount: true,
   usage: true,
   vendors: true,
-  gifts: false,
+  // Gifts to give that are due soon (GFT-06) and thank-you reminders; no amounts in either.
+  gifts: true,
 };
 
 export function categoryOf(kind: string): Category {

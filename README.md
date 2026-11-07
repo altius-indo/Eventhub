@@ -10,7 +10,7 @@ A web app for planning large, multi-day Indian weddings: itinerary, guests and l
 
 - Passwordless login with a one-time code by email, or by phone over SMS/WhatsApp. No passwords. 30-day sliding sessions, device list and sign-out, step-up re-verification for sensitive actions.
 - Events: create, edit, delete with a 7-day restore window, and a purge job.
-- Team: invite by phone or email as **Host** or **Planner**. An event always keeps at least one Host. Hosts can give Planners gift access (record-only or full).
+- Team: invite by phone or email as **Host** or **Planner**. An event always keeps at least one Host.
 - Permission policy for App Admin / Host / Planner (§2.1 of the requirements).
 - Approval engine: Planner changes go to a Host queue to approve, reject or request changes. Change types plug in from later milestones.
 - Activity (audit) log, including App Admin access.
@@ -69,7 +69,7 @@ A web app for planning large, multi-day Indian weddings: itinerary, guests and l
 - Notification centre with a bell, plus email preferences per category. A usage page shows messages sent against each channel's limit, with warnings at 80% and 95%.
 - Vendor portal: invite a vendor by phone or email; they log in with a one-time code to see their requests and briefs, submit and revise quotes, follow bookings and payment status, upload invoices, see their run-sheet items and chat with the team.
 - Caterers see the live headcount for the functions they're booked on (totals only, no names), get alerts when it moves, can acknowledge it and export it. Planners can lock a final count before the function.
-- Gifts (Hosts, or Planners with gift access): gift register, a fast envelope mode that works offline, cash hand-over with discrepancy alerts, tally-sheet import, summaries and families with no gift recorded.
+- Gifts to give (Hosts and Planners, ADR-0036): a list of return gifts and gifts for family, helpers and vendors, with when (function or give-by date), how many (fixed, or one per invited family / guest / adult plus spares), for whom, purchase status with quick "+1 bought" actions, a summary, due-this-week reminders, Excel export and a dashboard card.
 - Thank-you notes: tracker, templates in English and Hindi (amounts are never included), review and bulk send, printed-card labels, and a reminder 4 weeks after the wedding.
 - Messages are sent through a retrying queue. Email works via Resend; WhatsApp and SMS show "not connected" until provider accounts are set up.
 

@@ -34,11 +34,6 @@ export default async function MembersPage({ params }: PageProps<"/events/[eventI
                     <span className="font-medium">{user.name}</span>
                     {isSelf && <span className="text-sm text-muted">({t("members.you")})</span>}
                     <Badge tone={member.role === "host" ? "primary" : "neutral"}>{t(`roles.${member.role}`)}</Badge>
-                    {member.role === "planner" && member.giftAccess !== "none" && (
-                      <Badge tone="warning">
-                        {t("members.giftAccess")}: {t(`members.gift.${member.giftAccess}`)}
-                      </Badge>
-                    )}
                   </div>
                   {canManage && <p className="mt-0.5 break-all text-sm text-muted">{ids.join(" · ")}</p>}
                   {canManage && (
@@ -52,22 +47,6 @@ export default async function MembersPage({ params }: PageProps<"/events/[eventI
                             <option value="planner">{t("roles.planner")}</option>
                           </Select>
                         </label>
-                        {member.role === "planner" && (
-                          <label className="text-sm">
-                            <span className="sr-only">{t("members.giftAccess")}</span>
-                            <Select name="giftAccess" defaultValue={member.giftAccess} className="min-h-10 w-auto text-sm">
-                              <option value="none">
-                                {t("members.giftAccess")}: {t("members.gift.none")}
-                              </option>
-                              <option value="record">
-                                {t("members.giftAccess")}: {t("members.gift.record")}
-                              </option>
-                              <option value="full">
-                                {t("members.giftAccess")}: {t("members.gift.full")}
-                              </option>
-                            </Select>
-                          </label>
-                        )}
                         <SubmitButton variant="secondary" className="min-h-10">
                           {t("common.save")}
                         </SubmitButton>

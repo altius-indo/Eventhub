@@ -51,7 +51,6 @@ export const permissions = [
   "portal.gallery",
   "reports.view",
   "gifts.view",
-  "gifts.record",
   "website.edit",
   "website.publish",
   "gallery.view",
@@ -96,6 +95,9 @@ const PLANNER: Partial<Record<Permission, Decision>> = {
   "limits.view": "allow",
   "headcount.lock": "allow",
   "reports.view": "allow",
+  // Gifts to give and thank-you notes (GFT-07)
+  "gifts.view": "allow",
+  "gifts.manage": "allow",
   "website.edit": "allow",
   "gallery.view": "allow",
   "gallery.upload": "allow",
@@ -115,9 +117,6 @@ export function decide(subject: PolicySubject, permission: Permission): Decision
   if (PORTAL.has(permission)) return !m && subject.vendor ? "allow" : "deny";
   if (!m) return "deny";
   if (m.role === "host") return "allow";
-
-  if (permission === "gifts.view" || permission === "gifts.manage") return m.giftAccess === "full" ? "allow" : "deny";
-  if (permission === "gifts.record") return m.giftAccess === "none" ? "deny" : "allow";
   return PLANNER[permission] ?? "deny";
 }
 

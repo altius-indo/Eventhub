@@ -8,7 +8,6 @@ import {
   events,
   users,
   type Event,
-  type GiftAccess,
   type MemberRole,
 } from "@/db/schema";
 import { createTranslator, type Locale } from "@/i18n/core";
@@ -327,22 +326,6 @@ export async function changeMemberRole(db: Database, eventId: string, memberUser
       entityType: "member",
       entityId: memberUserId,
       data: { name: await memberName(tx, memberUserId), role, from: member.role },
-    });
-  });
-}
-
-export async function setGiftAccess(db: Database, eventId: string, memberUserId: string, access: GiftAccess, actor: Actor) {
-  await db.transaction(async (tx) => {
-    const member = await getMembership(tx, eventId, memberUserId);
-    if (!member) throw new EventError("not_found");
-    await tx.update(eventMembers).set({ giftAccess: access }).where(eq(eventMembers.id, member.id));
-    await audit(tx, {
-      eventId,
-      actor,
-      action: "member.gift_access_changed",
-      entityType: "member",
-      entityId: memberUserId,
-      data: { name: await memberName(tx, memberUserId), access, from: member.giftAccess },
     });
   });
 }

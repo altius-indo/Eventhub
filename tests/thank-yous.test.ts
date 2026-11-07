@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { checkIns, devOutbox, eventMembers, notifications, outboundMessages, thankYous } from "@/db/schema";
 import { createEvent } from "@/lib/events";
 import { createFunction } from "@/lib/functions";
-import { createGift, thankedStats, type GiftCtx } from "@/lib/gifts";
+import type { GiftCtx } from "@/lib/gifts";
 import { createHousehold, guestSchema } from "@/lib/guests";
 import { processOutbox } from "@/lib/outbox";
 import { ForbiddenError } from "@/lib/policy";
@@ -20,6 +20,7 @@ import {
   sendThankYous,
   sendThankYouReminders,
   setStatus,
+  thankedStats,
   unthankedCount,
   validateTemplate,
   ThankYouError,
@@ -46,7 +47,9 @@ async function setup() {
 
 describe("templates and rendering (GFT-09)", () => {
   it("allows only whitelisted fields and no amounts", () => {
-    expect(() => validateTemplate("Dear {guestName}, thank you for the {giftItem}. Love, {coupleNames}")).not.toThrow();
+    expect(() => validateTemplate("Dear {guestName}, thank you for coming to {functionsAttended}. Love, {coupleNames}")).not.toThrow();
+    // Gift items are no longer a merge field (ADR-0036).
+    expect(() => validateTemplate("Thank you for the {giftItem}")).toThrow(ThankYouError);
     expect(() => validateTemplate("Thanks for {amount}")).toThrow(ThankYouError);
     expect(() => validateTemplate("Thanks for the ₹5,100 shagun")).toThrow(ThankYouError);
     expect(() => validateTemplate("Thanks for Rs. 1100")).toThrow(ThankYouError);
@@ -54,36 +57,39 @@ describe("templates and rendering (GFT-09)", () => {
     expect(containsAmount("See you on 12 December")).toBe(false);
   });
 
-  it("never renders an amount, even when the family gave cash and an item note has one", async () => {
+  it("never renders an amount, and old templates with {giftItem} render without it", async () => {
     const s = await setup();
-    await createGift(db(), s.H, { householdId: s.sharma.household.id, type: "cash", amountPaise: 5100_00 });
-    await createGift(db(), s.H, { householdId: s.sharma.household.id, type: "item", itemDescription: "Silver lamp (₹ 4,500)" });
-    const tpl = await saveTemplate(db(), s.H, null, { locale: "en", name: "Warm", body: "Dear {guestName}, thank you for the {giftItem}. {personalLine} — {coupleNames}" });
-    const ty = await saveDraft(db(), s.H, s.sharma.household.id, { templateId: tpl.id, personalLine: "Loved dancing with you." });
+    const tpl = await saveTemplate(db(), s.H, null, { locale: "en", name: "Warm", body: "Dear {guestName}, thank you for coming. {personalLine} — {coupleNames}" });
+    const ty = await saveDraft(db(), s.H, s.sharma.household.id, { templateId: tpl.id, personalLine: "Loved the ₹ 5,100 dance." });
     expect(ty.status).toBe("drafted");
-    expect(ty.draftText).toContain("Silver lamp");
     expect(ty.draftText).toContain("Priya & Arjun");
-    expect(ty.draftText).not.toMatch(/5100|5,100|4,500|4500|₹/);
-    expect(renderNote("{guestName} {amount}", { guestName: "A", coupleNames: "", functionsAttended: "", giftItem: "", personalLine: "" })).toBe("A");
+    expect(ty.draftText).not.toMatch(/5100|5,100|₹/);
+    expect(renderNote("{guestName} {amount}", { guestName: "A", coupleNames: "", functionsAttended: "", personalLine: "" })).toBe("A");
+    expect(renderNote("Thanks for the {giftItem}, {guestName}.", { guestName: "Verma", coupleNames: "", functionsAttended: "", personalLine: "" })).toBe("Thanks for the , Verma.");
     await expect(saveDraft(db(), s.H, s.sharma.household.id, { text: "Thank you for ₹5,100!" })).rejects.toMatchObject({ code: "contains_amount" });
   });
 
-  it("uses a plain word for the gift when no item is recorded, in the template's language", async () => {
+  it("lists every family of the event; attended means a member was checked in", async () => {
     const s = await setup();
-    await createGift(db(), s.H, { householdId: s.verma.household.id, type: "cash", amountPaise: 1100_00 });
-    const en = await saveTemplate(db(), s.H, null, { locale: "en", name: "E", body: "Thanks for the lovely {giftItem}." });
-    const hi = await saveTemplate(db(), s.H, null, { locale: "hi", name: "H", body: "सुंदर {giftItem} के लिए धन्यवाद।" });
-    expect((await saveDraft(db(), s.H, s.verma.household.id, { templateId: en.id })).draftText).toBe("Thanks for the lovely gift.");
-    expect((await saveDraft(db(), s.H, s.verma.household.id, { templateId: hi.id })).draftText).toBe("सुंदर उपहार के लिए धन्यवाद।");
+    await db().insert(checkIns).values({ eventId: s.event.id, functionId: s.sangeet.id, guestId: s.sharma.members[0].id, checkedInAt: new Date(), checkedInBy: s.hostUser.id, source: "manual" });
+    const all = await listTracker(db(), s.H);
+    expect(all.map((r) => [r.householdName, r.attended])).toEqual([
+      ["Gupta", false],
+      ["Sharma family", true],
+      ["Verma", false],
+    ]);
+    expect((await listTracker(db(), s.H, { attended: "yes" })).map((r) => r.householdName)).toEqual(["Sharma family"]);
   });
 
-  it("is Hosts / full access only", async () => {
+  it("is for Hosts and Planners, not outsiders (GFT-07)", async () => {
     const s = await setup();
-    const rec = await makeUser("rec@example.com");
-    await db().insert(eventMembers).values({ eventId: s.event.id, userId: rec.id, role: "planner", giftAccess: "record" });
-    const R: GiftCtx = { eventId: s.event.id, actor: actorOf(rec), subject: { isAppAdmin: false, membership: { role: "planner", giftAccess: "record" } } };
-    await expect(listTracker(db(), R)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(saveTemplate(db(), R, null, { locale: "en", name: "x", body: "x" })).rejects.toBeInstanceOf(ForbiddenError);
+    const planner = await makeUser("planner@example.com");
+    await db().insert(eventMembers).values({ eventId: s.event.id, userId: planner.id, role: "planner" });
+    const P: GiftCtx = { eventId: s.event.id, actor: actorOf(planner), subject: { isAppAdmin: false, membership: { role: "planner", giftAccess: "none" } } };
+    expect(await listTracker(db(), P)).toHaveLength(3);
+    await expect(saveTemplate(db(), P, null, { locale: "en", name: "x", body: "x" })).resolves.toBeTruthy();
+    const O: GiftCtx = { eventId: s.event.id, actor: actorOf(planner), subject: { isAppAdmin: false, membership: null } };
+    await expect(listTracker(db(), O)).rejects.toBeInstanceOf(ForbiddenError);
   });
 });
 
@@ -155,10 +161,11 @@ describe("sending (GFT-08/09)", () => {
 });
 
 describe("reminders (GFT-10)", () => {
-  it("weekly from four weeks after the last function while families who gave or came are unthanked", async () => {
+  it("weekly from four weeks after the last function while families who came are unthanked", async () => {
     const s = await setup();
-    await createGift(db(), s.H, { householdId: s.verma.household.id, type: "cash", amountPaise: 100 });
+    const mehendi = await createFunction(db(), s.event.id, actorOf(s.hostUser), { name: "Mehendi", date: "2026-12-09", ...blank });
     await db().insert(checkIns).values({ eventId: s.event.id, functionId: s.sangeet.id, guestId: s.sharma.members[0].id, checkedInAt: new Date(), checkedInBy: s.hostUser.id, source: "manual" });
+    await db().insert(checkIns).values({ eventId: s.event.id, functionId: mehendi.id, guestId: s.verma.members[0].id, checkedInAt: new Date(), checkedInBy: s.hostUser.id, source: "manual" });
     expect(await unthankedCount(db(), s.event.id)).toBe(2);
     // Last function 2026-12-10 → reminders on 01-07, 01-14, … (IST).
     expect(await sendThankYouReminders(db(), new Date("2027-01-06T06:00:00Z"))).toBe(0);

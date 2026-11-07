@@ -46,7 +46,7 @@ import {
   toggleFavourite,
   type Uploader,
 } from "@/lib/gallery";
-import { createGift, createHandover, recordEnvelopes, type GiftCtx } from "@/lib/gifts";
+import { createGiftItem, sendGiftReminders, type GiftCtx } from "@/lib/gifts";
 import { resolveGuestToken, sendGuestLink } from "@/lib/guest-links";
 import { renderNotification } from "@/lib/notifications";
 import { requestOtp } from "@/lib/otp";
@@ -477,13 +477,13 @@ describe("guest messages", () => {
     const w = await world();
     const fam = await w.family("Kapoor", "en", { email: "kapoor@example.com" }, [w.mehendi.id]);
     const G: GiftCtx = { eventId: w.event.id, actor: w.actor, subject: hostS };
-    await createGift(db(), G, { householdId: fam.household.id, type: "item", itemDescription: "Silver lamp" });
-    const tpl = await saveTemplate(db(), G, null, { locale: "en", name: "Warm", body: "Dear {guestName}, thank you for the {giftItem}. {personalLine} {coupleNames}" });
+    const tpl = await saveTemplate(db(), G, null, { locale: "en", name: "Warm", body: "Dear {guestName}, thank you for coming. {personalLine} {coupleNames}" });
     const ty = await saveDraft(db(), G, fam.household.id, { templateId: tpl.id, personalLine: "Loved dancing with you." });
     await sendThankYous(db(), G, [ty.id], { bulk: false });
     const [m] = await fresh();
     expect(m.subject).toBe(COUPLE);
-    expect(m.body).toContain("Silver lamp");
+    expect(m.body).toContain("Dear Kapoor");
+    expect(m.body).toContain("Loved dancing with you.");
     expect(m.body.match(URL_RE)).toBeNull();
   });
 
@@ -680,24 +680,22 @@ describe("limits, retention and gifts", () => {
     expect(kinds).toEqual(expect.arrayContaining(["retention.reminder", "vendor.retention"]));
   });
 
-  it("gift notifications (cash hand-over discrepancy, thank-you reminder) are in-app only and link to gifts", async () => {
+  it("gift notifications (gift due soon, thank-you reminder) link to gifts and carry no costs", async () => {
     const w = await world();
-    const rec = await makeUser("rec@example.com", "Ravi");
-    const { eventMembers } = await import("@/db/schema");
-    await db().insert(eventMembers).values({ eventId: w.event.id, userId: rec.id, role: "planner", giftAccess: "record" });
-    const R: GiftCtx = { eventId: w.event.id, actor: actorOf(rec), subject: { isAppAdmin: false, membership: { role: "planner", giftAccess: "record" } } };
-    await recordEnvelopes(db(), R, w.sangeet.id, [{ clientKey: "00000000-0000-4000-8000-000000000001", giverName: "Uncle", amountPaise: 1100_00 }]);
-    await createHandover(db(), R, { functionId: w.sangeet.id, collectorUserId: rec.id, countedPaise: 1000_00, handedToName: "Papa" });
-    const fam = await w.family("Kapoor", "en", { email: "kapoor@example.com" }, []);
-    await createGift(db(), { eventId: w.event.id, actor: w.actor, subject: hostS }, { householdId: fam.household.id, type: "item", itemDescription: "Lamp" });
+    const G: GiftCtx = { eventId: w.event.id, actor: w.actor, subject: hostS };
+    await createGiftItem(db(), G, { name: "Silver coin", category: "return_gift", functionId: w.sangeet.id, quantityMode: "fixed", quantityFixed: 10, unitCostPaise: 2345_00 });
+    // Sangeet is on 2026-12-10: within 7 days on 12-05 (IST).
+    expect(await sendGiftReminders(db(), new Date("2026-12-05T06:00:00Z"))).toBe(1);
+    const fam = await w.family("Kapoor", "en", { email: "kapoor@example.com" }, [w.sangeet.id]);
+    const { checkIns } = await import("@/db/schema");
+    await db().insert(checkIns).values({ eventId: w.event.id, functionId: w.sangeet.id, guestId: fam.guest.id, checkedInAt: new Date(), checkedInBy: w.host.id, source: "manual" });
     // 4 weeks after the last function (2026-12-10).
     expect(await sendThankYouReminders(db(), new Date("2027-01-07T06:00:00Z"))).toBe(1);
     await fresh();
     const rows = await checkNotifications();
-    expect(rows.map((n) => n.kind)).toEqual(expect.arrayContaining(["gift.handover_discrepancy", "thank_you.reminder"]));
-    // No gift amounts go out by email.
-    const gm = (await outbox()).filter((m) => /1,?000|1,?100|100\.00/.test(m.body));
-    expect(gm).toHaveLength(0);
+    expect(rows.map((n) => n.kind)).toEqual(expect.arrayContaining(["gift.due", "thank_you.reminder"]));
+    // Gift costs never go out by email.
+    expect((await outbox()).filter((m) => /2,?345/.test(m.body))).toHaveLength(0);
   });
 });
 

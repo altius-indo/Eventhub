@@ -11,6 +11,7 @@ import { invitedCounts, listFunctions } from "@/lib/functions";
 import { guestStats } from "@/lib/guests";
 import { headcounts } from "@/lib/rsvp";
 import { arrivalsBoard } from "@/lib/transfers";
+import { giftSummary } from "@/lib/gifts";
 import { taskSummary, todayIn } from "@/lib/tasks";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
@@ -30,7 +31,8 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
   const { event } = ctx;
   const today = todayIn(event.timezone);
   // RPT-01: every card's data in one round of parallel queries.
-  const [counts, pendingMap, stats, fns, invited, tasks, facts, due, gaps, heads, arrivals] = await Promise.all([
+  const canGifts = ctx.can("gifts.view");
+  const [counts, pendingMap, stats, fns, invited, tasks, facts, due, gaps, heads, arrivals, gifts] = await Promise.all([
     memberCounts(db, eventId),
     countPendingApprovals(db, [eventId]),
     guestStats(db, eventId),
@@ -43,6 +45,7 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
     headcounts(db, eventId),
     // Travel times are wall-clock in the event's timezone, so "today" there is the right day.
     arrivalsBoard(db, eventId, { date: today, windowMinutes: 24 * 60, direction: "arrival" }),
+    canGifts ? giftSummary(db, { eventId, actor: ctx.actor, subject: ctx.subject }) : null,
   ]);
   const funnel = { invited: 0, responded: 0, attending: 0, maybe: 0, declined: 0, pending: 0 };
   for (const h of heads.values()) {
@@ -115,6 +118,22 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
         <p className={`text-2xl font-semibold ${tasks.overdue > 0 ? "text-danger" : ""}`}>{tasks.overdue + tasks.dueThisWeek}</p>
         <p className="text-sm text-muted">{t("dashboard.tasksSummary", { overdue: tasks.overdue, week: tasks.dueThisWeek, open: tasks.open })}</p>
       </Card>
+
+      {gifts && (
+        <Card>
+          <CardTitle action={<Link href={`${base}/gifts`} className="text-sm text-primary" aria-label={t("nav.gifts")}>→</Link>}>
+            {t("gifts.dashboard.title")}
+          </CardTitle>
+          {gifts.items === 0 ? (
+            <p className="text-sm text-muted">{t("gifts.dashboard.empty")}</p>
+          ) : (
+            <>
+              <p className="text-2xl font-semibold">{t("gifts.dashboard.line", { done: gifts.itemsDone, count: gifts.items })}</p>
+              <p className={`text-sm ${gifts.dueSoon > 0 ? "text-warning" : "text-muted"}`}>{t("gifts.dashboard.due", { count: gifts.dueSoon })}</p>
+            </>
+          )}
+        </Card>
+      )}
 
       <Card>
         <CardTitle action={<Link href={`${base}/members`} className="text-sm text-primary" aria-label={t("nav.members")}>→</Link>}>

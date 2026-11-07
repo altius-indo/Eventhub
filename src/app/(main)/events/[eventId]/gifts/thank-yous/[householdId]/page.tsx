@@ -10,7 +10,7 @@ import { getEventContext } from "@/lib/server/event-context";
 import { dctx } from "@/lib/server/money-form";
 import { getTranslator } from "@/lib/server/session";
 import { deliveryFailed, getThankYou, listTemplates, ThankYouError } from "@/lib/thank-yous";
-import { statusTone, typeLabel } from "../../shared";
+import { statusTone } from "../../shared";
 import { draftFromTemplateAction, resendAction, saveTextAction, sendOneAction, setStatusAction } from "../actions";
 
 /** One family's thank-you: draft from a template, personalise, send or mark thanked (GFT-08/09). */
@@ -40,7 +40,6 @@ export default async function ThankYouHousehold({ params, searchParams }: PagePr
       </Link>
       {sp.saved === "1" && <Alert tone="success">{t("common.saved")}</Alert>}
       {sp.sent === "1" && <Alert tone="success">{t("thankYous.sentOne")}</Alert>}
-      {data.itemWarning && <Alert tone="warning">{t("thankYous.itemWarning")}</Alert>}
       {status === "sent" && deliveryFailed(data.delivery?.status) && (
         <Card>
           <Alert tone="danger">{t("thankYous.deliveryFailedHelp")}</Alert>
@@ -50,13 +49,10 @@ export default async function ThankYouHousehold({ params, searchParams }: PagePr
         </Card>
       )}
 
+      {(data.vars.functionsAttended || row?.sentAt) && (
       <Card>
         <CardTitle>{t("thankYous.context")}</CardTitle>
         <ul className="space-y-1 text-sm">
-          {data.gifts.length === 0 && <li className="text-muted">{t("thankYous.noGiftRecorded")}</li>}
-          {data.gifts.map((g) => (
-            <li key={g.id}>{[typeLabel(t, g.type), g.item, g.functionName].filter(Boolean).join(" · ")}</li>
-          ))}
           {data.vars.functionsAttended && <li className="text-muted">{t("thankYous.attendedList", { list: data.vars.functionsAttended })}</li>}
           {row?.sentAt && (
             <li className="text-muted">
@@ -66,6 +62,7 @@ export default async function ThankYouHousehold({ params, searchParams }: PagePr
           )}
         </ul>
       </Card>
+      )}
 
       {templates.length > 0 && status !== "sent" && (
         <Card>
