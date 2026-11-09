@@ -101,17 +101,30 @@ export default async function ImportPreviewPage({ params, searchParams }: PagePr
               <p className="text-sm text-muted">{t("importer.functionsHelp")}</p>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {fns.map((fn) => (
-                  <label key={fn.id} className="block space-y-1 text-sm">
-                    <span className="font-medium">{t("importer.functionColumn", { name: fn.name })}</span>
-                    <Select name={`fncol_${fn.id}`} defaultValue={settings.functionColumns[fn.id] ?? ""}>
-                      <option value="">{t("importer.ignore")}</option>
-                      {imp.headers.map((h, i) => (
-                        <option key={i} value={i}>
-                          {h}
-                        </option>
-                      ))}
-                    </Select>
-                  </label>
+                  <div key={fn.id} className="space-y-2">
+                    <label className="block space-y-1 text-sm">
+                      <span className="font-medium">{t("importer.functionColumn", { name: fn.name })}</span>
+                      <Select name={`fncol_${fn.id}`} defaultValue={settings.functionColumns[fn.id] ?? ""}>
+                        <option value="">{t("importer.ignore")}</option>
+                        {imp.headers.map((h, i) => (
+                          <option key={i} value={i}>
+                            {h}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                    {preview?.columnModes[fn.id] && (
+                      <label className="block space-y-1 text-sm">
+                        <span className="font-medium">{t("importer.columnMeaning", { name: fn.name })}</span>
+                        <input type="hidden" name={`fnmode_default_${fn.id}`} value={preview.columnModes[fn.id]} />
+                        <input type="hidden" name={`fnmode_stored_${fn.id}`} value={settings.functionColumnModes?.[fn.id] ? "set" : "auto"} />
+                        <Select name={`fnmode_${fn.id}`} defaultValue={preview.columnModes[fn.id]}>
+                          <option value="replies">{t("importer.modeReplies")}</option>
+                          <option value="invites">{t("importer.modeInvites")}</option>
+                        </Select>
+                      </label>
+                    )}
+                  </div>
                 ))}
               </div>
               <fieldset>
@@ -155,6 +168,15 @@ export default async function ImportPreviewPage({ params, searchParams }: PagePr
               errors: preview.errors,
             })}
           </p>
+          {Object.keys(preview.columnModes).length > 0 && (
+            <ul className="mb-3 space-y-0.5 text-sm text-muted" data-testid="column-modes">
+              {Object.entries(preview.columnModes).map(([fnId, mode]) => (
+                <li key={fnId} data-mode={mode}>
+                  {t(`importer.readAs.${mode}`, { column: imp.headers[settings.functionColumns[fnId]] ?? fnName.get(fnId) ?? "" })}
+                </li>
+              ))}
+            </ul>
+          )}
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <SimpleForm action={commitImportAction.bind(null, eventId, importId)} className="space-y-2">
               <SubmitButton disabled={preview.importable + preview.updates === 0}>

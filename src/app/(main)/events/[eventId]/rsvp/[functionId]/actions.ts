@@ -11,7 +11,12 @@ type State = { error?: string; info?: string };
 
 const statusSchema = z.enum(["attending", "maybe", "declined", "clear"]).transform((s) => (s === "clear" ? null : s));
 const memberSchema = z.object({ guestId: z.string().uuid(), status: statusSchema });
-const familySchema = z.object({ householdId: z.string().uuid(), status: z.enum(["attending", "declined"]) });
+const familySchema = z.object({
+  householdId: z.string().uuid(),
+  status: z.enum(["attending", "declined"]),
+  /** Only the members shown on a filtered view; absent = the whole family. */
+  guestIds: z.array(z.string().uuid()).min(1).max(200).optional(),
+});
 
 async function run(eventId: string, fn: (ctx: Awaited<ReturnType<typeof getEventContext>>) => Promise<unknown>): Promise<State> {
   const ctx = await getEventContext(eventId);
@@ -40,7 +45,8 @@ export async function deskRsvpAction(eventId: string, functionId: string, formDa
 /** "Whole family attending / not attending" for this function. */
 export async function deskFamilyAction(eventId: string, functionId: string, formData: FormData): Promise<State> {
   return run(eventId, async (ctx) => {
-    const input = familySchema.parse({ householdId: formData.get("householdId"), status: formData.get("status") });
-    await setHouseholdRsvp(getDb(), eventId, ctx.actor, { householdId: input.householdId, functionId, status: input.status });
+    const ids = formData.getAll("guestIds");
+    const input = familySchema.parse({ householdId: formData.get("householdId"), status: formData.get("status"), guestIds: ids.length ? ids : undefined });
+    await setHouseholdRsvp(getDb(), eventId, ctx.actor, { householdId: input.householdId, guestIds: input.guestIds, functionId, status: input.status });
   });
 }

@@ -167,6 +167,34 @@ describe("rsvpDesk", () => {
     expect((await rsvpDesk(db(), other.id, s.mehendi.id)).counts.invited).toBe(0);
   });
 
+  it("on a filtered view, whole-family only changes the members shown", async () => {
+    const s = await setup();
+    const fam = await s.family("Verma", [{ name: "Anil" }, { name: "Kiran" }, { name: "Dev" }], [s.mehendi.id]);
+    await setRsvp(db(), s.event.id, s.actor, { guestId: fam.guests[0].id, functionId: s.mehendi.id, status: "declined" });
+
+    // Pending tab: Kiran and Dev shown, Anil hidden.
+    const pending = await rsvpDesk(db(), s.event.id, s.mehendi.id, { status: "pending" });
+    expect(pending.households[0]).toMatchObject({ invitedMembers: 3 });
+    expect(pending.households[0].members.map((m) => m.name)).toEqual(["Kiran", "Dev"]);
+    // Unfiltered, the family is complete.
+    expect((await rsvpDesk(db(), s.event.id, s.mehendi.id)).households[0]).toMatchObject({ invitedMembers: 3 });
+
+    const shownIds = pending.households[0].members.map((m) => m.id);
+    expect(await setHouseholdRsvp(db(), s.event.id, s.actor, { householdId: fam.household.id, guestIds: shownIds, functionId: s.mehendi.id, status: "attending" })).toBe(2);
+    expect((await answerOf(fam.guests[0].id, s.mehendi.id))?.status).toBe("declined");
+    expect((await answerOf(fam.guests[2].id, s.mehendi.id))?.status).toBe("attending");
+
+    // Ids from another family are ignored, and an empty list is rejected rather than meaning "everyone".
+    const other = await s.family("Sharma", [{ name: "Rajesh" }], [s.mehendi.id]);
+    await expect(
+      setHouseholdRsvp(db(), s.event.id, s.actor, { householdId: fam.household.id, guestIds: [other.guests[0].id], functionId: s.mehendi.id, status: "declined" }),
+    ).rejects.toMatchObject({ code: "not_invited" });
+    await expect(setHouseholdRsvp(db(), s.event.id, s.actor, { householdId: fam.household.id, guestIds: [], functionId: s.mehendi.id, status: "declined" })).rejects.toMatchObject({
+      code: "not_invited",
+    });
+    expect(await answerOf(other.guests[0].id, s.mehendi.id)).toBeUndefined();
+  });
+
   it("pages by family", async () => {
     const s = await setup();
     for (let i = 0; i < 45; i++) await s.family(`F${String(i).padStart(2, "0")}`, [{ name: `G${i}` }], [s.mehendi.id]);

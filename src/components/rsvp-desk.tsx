@@ -67,8 +67,21 @@ export function RsvpSegment({
   );
 }
 
-/** "Whole family attending / not attending" for one function. */
-export function FamilyRsvpButtons({ action, householdId, labels }: { action: Action; householdId: string; labels: { attending: string; declined: string } }) {
+/**
+ * "Whole family attending / not attending" for one function. On a filtered view pass the shown
+ * members' `guestIds` so only they change (the labels then say so).
+ */
+export function FamilyRsvpButtons({
+  action,
+  householdId,
+  guestIds,
+  labels,
+}: {
+  action: Action;
+  householdId: string;
+  guestIds?: string[];
+  labels: { attending: string; declined: string };
+}) {
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const pick = (status: "attending" | "declined") =>
@@ -76,6 +89,7 @@ export function FamilyRsvpButtons({ action, householdId, labels }: { action: Act
       const fd = new FormData();
       fd.set("householdId", householdId);
       fd.set("status", status);
+      for (const id of guestIds ?? []) fd.append("guestIds", id);
       const res = await action(fd);
       setError(res?.error ?? null);
     });

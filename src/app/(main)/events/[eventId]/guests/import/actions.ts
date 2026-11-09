@@ -12,6 +12,7 @@ import {
   parseSpreadsheet,
   saveImportSettings,
   type ColumnMapping,
+  type ColumnMode,
   type ImportResult,
   type ImportSettings,
 } from "@/lib/guest-import";
@@ -55,13 +56,21 @@ function readSettings(formData: FormData): ImportSettings {
     const c = col(v);
     if (m && c !== undefined) functionColumns[m[1]] = c;
   }
+  // A column's meaning (replies or invitations) follows detection until someone picks the other one.
+  const functionColumnModes: Record<string, ColumnMode> = {};
+  for (const fnId of Object.keys(functionColumns)) {
+    const chosen = formData.get(`fnmode_${fnId}`);
+    if (chosen !== "replies" && chosen !== "invites") continue;
+    if (formData.get(`fnmode_stored_${fnId}`) === "auto" && formData.get(`fnmode_default_${fnId}`) === chosen) continue;
+    functionColumnModes[fnId] = chosen;
+  }
   const inviteAll = [...new Set(formData.getAll("inviteAll").filter((v): v is string => typeof v === "string"))];
   // "Update existing" follows the file (on when it has invite/RSVP data) until someone changes the box.
   const checked = formData.get("updateExisting") === "1";
   const stored = formData.get("updateExisting_stored");
   const shownDefault = formData.get("updateExisting_default") === "1";
   const updateExisting = stored === "auto" && checked === shownDefault ? null : checked;
-  return { mapping, functionColumns, inviteAll, updateExisting };
+  return { mapping, functionColumns, functionColumnModes, inviteAll, updateExisting };
 }
 
 export async function updateMappingAction(eventId: string, importId: string, formData: FormData) {

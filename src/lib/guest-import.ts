@@ -191,16 +191,23 @@ export type ImportSettings = {
   mapping: ColumnMapping;
   /** Per-function columns (GST-04): function id → column index. */
   functionColumns: Record<string, number>;
+  /**
+   * How each function column is read: "replies" (Yes = attending, Maybe, No = not attending) or
+   * "invites" (Yes/x/✓ = invited, No/blank = not invited). Missing = detected from the column.
+   */
+  functionColumnModes?: Record<string, ColumnMode>;
   /** "Invite everyone in this file to": function ids. */
   inviteAll: string[];
   /** Update invitations/RSVPs of rows that match existing guests; null = default (on when the file has invite/RSVP data). */
   updateExisting: boolean | null;
 };
 export type StoredMapping = Record<string, number>;
+export type ColumnMode = "replies" | "invites";
 
 export function encodeSettings(s: ImportSettings): StoredMapping {
   const out: StoredMapping = { ...s.mapping } as StoredMapping;
   for (const [id, col] of Object.entries(s.functionColumns)) out[`fn:${id}`] = col;
+  for (const [id, mode] of Object.entries(s.functionColumnModes ?? {})) out[`fnmode:${id}`] = mode === "replies" ? 1 : 0;
   for (const id of s.inviteAll) out[`all:${id}`] = 1;
   if (s.updateExisting !== null) out.updateExisting = s.updateExisting ? 1 : 0;
   return out;
@@ -221,11 +228,13 @@ export function decodeSettings(stored: StoredMapping | ImportSettings, fns: { id
   }
   const functionColumns: Record<string, number> = {};
   const inviteAll: string[] = [];
+  const functionColumnModes: Record<string, ColumnMode> = {};
   for (const [k, v] of Object.entries(flat)) {
     if (k.startsWith("fn:") && valid.has(k.slice(3)) && col(v) !== undefined) functionColumns[k.slice(3)] = v;
+    if (k.startsWith("fnmode:") && valid.has(k.slice(7)) && (v === 0 || v === 1)) functionColumnModes[k.slice(7)] = v === 1 ? "replies" : "invites";
     if (k.startsWith("all:") && valid.has(k.slice(4)) && v === 1) inviteAll.push(k.slice(4));
   }
-  return { mapping, functionColumns, inviteAll, updateExisting: flat.updateExisting === undefined ? null : flat.updateExisting === 1 };
+  return { mapping, functionColumns, functionColumnModes, inviteAll, updateExisting: flat.updateExisting === undefined ? null : flat.updateExisting === 1 };
 }
 
 /** Whether the file says anything about invitations or replies (the "update existing" default). */
@@ -291,6 +300,35 @@ export function parseRsvpCell(raw: string): { status: RsvpStatus | null } | null
   return { status: k === "invited" ? null : k };
 }
 
+/** Words that can only be a reply (not a plain "invited" tick), for detecting a column's meaning. */
+const replyOnlyWords = new Set(
+  rsvpWords.flatMap(([k, words]) => (k === "invited" ? [] : words)).filter((w) => !["yes", "y", "no", "n", "हाँ", "हां", "नहीं", "ना"].includes(w)),
+);
+const cellKey = (raw: string) => norm(raw.replace(/\uFE0F/g, "")).replace(/[.!।]+$/, "").trim();
+
+/**
+ * Whether a function column holds replies or invitations: replies when the header says so
+ * (RSVP, reply, response, जवाब) or any cell is a reply-only word (maybe, attending, declined, शायद…).
+ */
+export function detectColumnMode(header: string, cells: string[]): ColumnMode {
+  if (/(rsvp|reply|response|जवाब)/i.test(header)) return "replies";
+  return cells.some((c) => replyOnlyWords.has(cellKey(c))) ? "replies" : "invites";
+}
+
+const invitationNo = new Set(["no", "n", "0", "false", "नहीं", "ना", "not invited"]);
+
+/**
+ * A cell of a function column read as invitations: Yes/x/✓/1 (and any reply word) → invited,
+ * No/0/blank → nothing, anything else → "unknown". Never records a reply.
+ */
+export function parseInviteCell(raw: string): { status: null } | null | "unknown" {
+  const v = cellKey(raw);
+  if (!v || invitationNo.has(v)) return null;
+  const k = rsvpLookup.get(v);
+  if (!k || k === "declined") return "unknown";
+  return { status: null };
+}
+
 // ---------------------------------------------------------------------------
 // Preview (validation + duplicates)
 // ---------------------------------------------------------------------------
@@ -347,6 +385,8 @@ export type ImportPreview = {
   warnings: number;
   households: number;
   updateExisting: boolean;
+  /** How each mapped function column was read (chosen or detected). */
+  columnModes: Record<string, ColumnMode>;
 };
 
 export type ExistingGuest = {
@@ -355,6 +395,7 @@ export type ExistingGuest = {
   phone: string | null;
   email: string | null;
   householdName: string;
+  householdId?: string;
   functionIds: string[];
   rsvp: Record<string, RsvpStatus>;
 };
@@ -376,12 +417,29 @@ export function buildPreview(
   const fnCols = Object.entries(settings.functionColumns);
   const header = (c: number) => headers[c] ?? `#${c + 1}`;
 
-  const existingPhones = new Map(existing.filter((g) => g.phone).map((g) => [g.phone!, g]));
-  const existingEmails = new Map(existing.filter((g) => g.email).map((g) => [g.email!, g]));
-  const existingNames = new Map(existing.map((g) => [`${norm(g.householdName)}|${norm(g.name)}`, g]));
+  // How each function column is read: chosen on the mapping screen, otherwise detected.
+  const columnModes: Record<string, ColumnMode> = {};
+  for (const [fnId, c] of fnCols) {
+    columnModes[fnId] = settings.functionColumnModes?.[fnId] ?? detectColumnMode(header(c), rows.map((r) => r[c] ?? ""));
+  }
+
+  type Known = (typeof existing)[number];
+  const index = (key: (g: Known) => string | null) => {
+    const m = new Map<string, Known[]>();
+    for (const g of existing) {
+      const k = key(g);
+      if (k) m.set(k, [...(m.get(k) ?? []), g]);
+    }
+    return m;
+  };
+  const existingPhones = index((g) => g.phone);
+  const existingEmails = index((g) => g.email);
+  const existingNames = index((g) => `${norm(g.householdName)}|${norm(g.name)}`);
   const seenPhones = new Map<string, number>();
   const seenEmails = new Map<string, number>();
   const seenNames = new Map<string, number>();
+  /** Existing guests already updated by an earlier row → that row. */
+  const matchedRows = new Map<string, number>();
 
   const out: PreviewRow[] = rows.map((r, i) => {
     const rowNo = i + 2;
@@ -414,59 +472,80 @@ export function buildPreview(
     const replies = new Map<string, RsvpStatus>();
     for (const [fnId, c] of fnCols) {
       const raw = (r[c] ?? "").trim();
-      const cell = parseRsvpCell(raw);
+      const cell = columnModes[fnId] === "replies" ? parseRsvpCell(raw) : parseInviteCell(raw);
       if (cell === "unknown") issues.push({ kind: "warning", code: "rsvpUnknown", value: raw, column: header(c) });
       else if (cell) {
         invited.add(fnId);
         if (cell.status) replies.set(fnId, cell.status);
       }
     }
-    // The generic RSVP column fills in every invited function without its own reply.
     const rawRsvp = get(r, "rsvp");
     const generic = parseRsvpCell(rawRsvp);
     if (generic === "unknown") issues.push({ kind: "warning", code: "rsvpUnknown", value: rawRsvp, column: header(mapping.rsvp!) });
-    else if (generic?.status) {
-      if (invited.size === 0) issues.push({ kind: "warning", code: "rsvpNoFunction", value: rawRsvp });
-      for (const fnId of invited) if (!replies.has(fnId)) replies.set(fnId, generic.status);
-    }
-    const functionIds = [...invited].sort((a, b) => (fnOrder.get(a) ?? 0) - (fnOrder.get(b) ?? 0));
-    const rsvps = functionIds.filter((id) => replies.has(id)).map((functionId) => ({ functionId, status: replies.get(functionId)! }));
+    const genericStatus = generic && generic !== "unknown" ? generic.status : null;
 
     const householdName = get(r, "household") || name;
     const { diet, notes: dietNotes } = parseDiet(get(r, "diet"));
 
-    // Duplicates: an earlier row in the file, or someone already on the guest list
+    // Duplicates: an earlier row in the file, or someone already on the guest list.
     const validPhone = phone && phone !== "invalid" ? phone : null;
     const validEmail = email && email !== "invalid" ? email : null;
     const nameKey = `${norm(householdName)}|${norm(name)}`;
     let existingGuestId: string | null = null;
     let changes: RsvpChange[] = [];
+    // Functions the generic RSVP column applies to: this row's invitations, plus (for a matched
+    // guest) the functions they're already invited to.
+    const genericTargets = new Set(invited);
     if (name) {
       const firstRow =
         (validPhone && seenPhones.get(validPhone)) || (validEmail && seenEmails.get(validEmail)) || seenNames.get(nameKey);
       if (firstRow) issues.push({ kind: "skip", code: "duplicateInFile", row: firstRow });
       else {
-        const match = (validPhone && existingPhones.get(validPhone)) || (validEmail && existingEmails.get(validEmail)) || existingNames.get(nameKey);
-        if (match) {
-          if (updateExisting && match.id) {
-            const has = new Set(match.functionIds ?? []);
-            changes = functionIds
-              .map((functionId) => {
-                const from = match.rsvp?.[functionId] ?? null;
-                return { functionId, newInvite: !has.has(functionId), from, to: replies.get(functionId) ?? from };
-              })
-              .filter((c) => c.newInvite || c.to !== c.from);
-          }
+        const byPhone = validPhone ? (existingPhones.get(validPhone) ?? []) : [];
+        const byEmail = validEmail ? (existingEmails.get(validEmail) ?? []) : [];
+        const byName = existingNames.get(nameKey) ?? [];
+        // Only the same person may be updated: same family + name, or a phone/email that belongs to
+        // exactly one guest whose name agrees. Families often share one mobile number.
+        const sameName = (g: Known) => norm(g.name) === norm(name);
+        const target =
+          (byName.length === 1 && byName[0]) ||
+          (byPhone.length === 1 && sameName(byPhone[0]) && byPhone[0]) ||
+          (byEmail.length === 1 && sameName(byEmail[0]) && byEmail[0]) ||
+          null;
+        const possible = byPhone[0] ?? byEmail[0] ?? byName[0];
+        const earlier = target?.id ? matchedRows.get(target.id) : undefined;
+        if (earlier) issues.push({ kind: "skip", code: "duplicateInFile", row: earlier });
+        else if (target && updateExisting && target.id) {
+          for (const id of target.functionIds ?? []) genericTargets.add(id);
+          const has = new Set(target.functionIds ?? []);
+          const wanted = [...new Set([...invited, ...(genericStatus ? genericTargets : [])])];
+          changes = wanted
+            .sort((a, b) => (fnOrder.get(a) ?? 0) - (fnOrder.get(b) ?? 0))
+            .map((functionId) => {
+              const from = target.rsvp?.[functionId] ?? null;
+              const to = replies.get(functionId) ?? genericStatus ?? from;
+              return { functionId, newInvite: !has.has(functionId), from, to };
+            })
+            .filter((c) => c.newInvite || c.to !== c.from);
           if (changes.length) {
-            existingGuestId = match.id!;
-            issues.push({ kind: "info", code: "updateExisting", name: match.name });
-          } else issues.push({ kind: "skip", code: "alreadyInList", name: match.name });
-        }
+            existingGuestId = target.id;
+            matchedRows.set(target.id, rowNo);
+            issues.push({ kind: "info", code: "updateExisting", name: target.name });
+          } else issues.push({ kind: "skip", code: "alreadyInList", name: target.name });
+        } else if (target ?? possible) issues.push({ kind: "skip", code: "alreadyInList", name: (target ?? possible)!.name });
       }
       if (validPhone && !seenPhones.has(validPhone)) seenPhones.set(validPhone, rowNo);
       if (validEmail && !seenEmails.has(validEmail)) seenEmails.set(validEmail, rowNo);
       if (!seenNames.has(nameKey)) seenNames.set(nameKey, rowNo);
     }
+
+    // The generic RSVP column fills in every invited function without its own reply.
+    if (genericStatus) {
+      if (genericTargets.size === 0) issues.push({ kind: "warning", code: "rsvpNoFunction", value: rawRsvp });
+      for (const fnId of invited) if (!replies.has(fnId)) replies.set(fnId, genericStatus);
+    }
+    const functionIds = [...invited].sort((a, b) => (fnOrder.get(a) ?? 0) - (fnOrder.get(b) ?? 0));
+    const rsvps = functionIds.filter((id) => replies.has(id)).map((functionId) => ({ functionId, status: replies.get(functionId)! }));
 
     const action: RowAction = issues.some((x) => x.kind === "error")
       ? "error"
@@ -515,6 +594,7 @@ export function buildPreview(
     warnings: out.filter((r) => r.issues.some((i) => i.kind === "warning")).length,
     households: new Set(importable.map((r) => r.householdKey)).size,
     updateExisting,
+    columnModes,
   };
 }
 
@@ -567,6 +647,7 @@ export async function saveImportSettings(db: Tx, eventId: string, importId: stri
   if (
     Object.values(settings.mapping).some((c) => !okCol(c!)) ||
     Object.entries(settings.functionColumns).some(([id, c]) => !valid.has(id) || !okCol(c)) ||
+    Object.entries(settings.functionColumnModes ?? {}).some(([id, m]) => !valid.has(id) || (m !== "replies" && m !== "invites")) ||
     settings.inviteAll.some((id) => !valid.has(id))
   ) {
     throw new ImportError("bad_setting");
@@ -577,7 +658,7 @@ export async function saveImportSettings(db: Tx, eventId: string, importId: stri
 export async function existingGuestsForDedup(db: Tx, eventId: string): Promise<ExistingGuest[]> {
   // Sequential: this also runs inside the commit transaction (one connection).
   const rows = await db
-    .select({ id: guests.id, name: guests.name, phone: guests.phone, email: guests.email, householdName: households.name })
+    .select({ id: guests.id, name: guests.name, phone: guests.phone, email: guests.email, householdName: households.name, householdId: households.id })
     .from(guests)
     .innerJoin(households, eq(households.id, guests.householdId))
     .where(eq(guests.eventId, eventId));
@@ -628,7 +709,8 @@ export async function commitImport(db: Database, eventId: string, importId: stri
 
     const fns = await listFunctions(tx, eventId);
     const settings = decodeSettings(mapping, fns, locked.headers.length);
-    const preview = buildPreview(locked.rows, settings, await existingGuestsForDedup(tx, eventId), fns, locked.headers);
+    const existing = await existingGuestsForDedup(tx, eventId);
+    const preview = buildPreview(locked.rows, settings, existing, fns, locked.headers);
     const rows = preview.rows.filter((r) => r.action === "create");
     const updates = preview.rows.filter((r) => r.action === "update");
 
@@ -638,6 +720,12 @@ export async function commitImport(db: Database, eventId: string, importId: stri
 
     const existingHouseholds = await tx.select().from(households).where(eq(households.eventId, eventId));
     const householdIds = new Map(existingHouseholds.map((h) => [norm(h.name), h.id]));
+    const householdNames = new Map(existingHouseholds.map((h) => [h.id, h.name]));
+    // One rsvp.recorded audit entry per family whose replies the import sets (EVT-06).
+    const fnName = new Map(fns.map((f) => [f.id, f.name]));
+    const replyLog = new Map<string, { guest: string; function: string; from: RsvpStatus | null; to: RsvpStatus }[]>();
+    const logReply = (householdId: string, guest: string, functionId: string, from: RsvpStatus | null, to: RsvpStatus) =>
+      replyLog.set(householdId, [...(replyLog.get(householdId) ?? []), { guest, function: fnName.get(functionId) ?? "", from, to }]);
     const memberCounts = new Map<string, number>();
     const groups = new Map<string, PreviewRow[]>();
     for (const r of rows) groups.set(r.householdKey, [...(groups.get(r.householdKey) ?? []), r]);
@@ -664,6 +752,7 @@ export async function commitImport(db: Database, eventId: string, importId: stri
           .returning();
         householdId = h.id;
         householdIds.set(key, h.id);
+        householdNames.set(h.id, h.name);
         isNew = true;
         createdHouseholds++;
       }
@@ -701,14 +790,17 @@ export async function commitImport(db: Database, eventId: string, importId: stri
         if (m.rsvps.length) {
           await tx.insert(rsvps).values(m.rsvps.map((a) => ({ functionId: a.functionId, guestId: g.id, status: a.status, recordedBy: actor.userId })));
           recorded += m.rsvps.length;
+          for (const a of m.rsvps) logReply(householdId, m.name, a.functionId, null, a.status);
         }
         createdGuests++;
       }
     }
 
     // Guests already on the list: add invitations and set replies only.
+    const existingById = new Map(existing.map((g) => [g.id, g]));
     for (const u of updates) {
       const guestId = u.existingGuestId!;
+      const known = existingById.get(guestId)!;
       const newInvites = u.changes.filter((c) => c.newInvite).map((c) => ({ functionId: c.functionId, guestId }));
       if (newInvites.length) await tx.insert(functionInvites).values(newInvites).onConflictDoNothing();
       for (const c of u.changes) {
@@ -718,7 +810,21 @@ export async function commitImport(db: Database, eventId: string, importId: stri
           .values({ functionId: c.functionId, guestId, status: c.to, recordedBy: actor.userId })
           .onConflictDoUpdate({ target: [rsvps.functionId, rsvps.guestId], set: { status: c.to, recordedBy: actor.userId, respondedAt: new Date() } });
         recorded++;
+        if (known.householdId) {
+          householdNames.set(known.householdId, known.householdName);
+          logReply(known.householdId, known.name, c.functionId, c.from, c.to);
+        }
       }
+    }
+    for (const [householdId, changes] of replyLog) {
+      await audit(tx, {
+        eventId,
+        actor,
+        action: "rsvp.recorded",
+        entityType: "household",
+        entityId: householdId,
+        data: { name: householdNames.get(householdId) ?? "", changes: changes.length, source: "import", importId, functions: [...new Set(changes.map((c) => c.function))], replies: changes },
+      });
     }
 
     const skipped = preview.rows.length - rows.length - updates.length;

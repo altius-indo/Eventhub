@@ -196,7 +196,7 @@ async function recordForFunction(
   db: Database,
   eventId: string,
   actor: Actor,
-  target: { guestId: string } | { householdId: string },
+  target: { guestId: string } | { householdId: string; guestIds?: string[] },
   input: z.infer<typeof setRsvpSchema>,
   now?: Date,
 ) {
@@ -214,6 +214,7 @@ async function recordForFunction(
           eq(functions.eventId, eventId),
           eq(guests.eventId, eventId),
           "guestId" in target ? eq(guests.id, target.guestId) : eq(guests.householdId, target.householdId),
+          "guestIds" in target && target.guestIds ? inArray(guests.id, target.guestIds) : undefined,
         ),
       );
     if (invited.length === 0) throw new RsvpError("not_invited");
@@ -255,16 +256,34 @@ export async function setRsvp(db: Database, eventId: string, actor: Actor, input
   return recordForFunction(db, eventId, actor, { guestId: input.guestId }, input, now);
 }
 
-/** "Whole family attending / not attending": every member of the family invited to the function. */
-export async function setHouseholdRsvp(db: Database, eventId: string, actor: Actor, input: { householdId: string } & z.infer<typeof setRsvpSchema>, now?: Date) {
-  if (!z.string().uuid().safeParse(input.householdId).success) throw new RsvpError("not_invited");
-  return recordForFunction(db, eventId, actor, { householdId: input.householdId }, input, now);
+/**
+ * "Whole family attending / not attending": every member of the family invited to the function,
+ * or only `guestIds` (the members shown on a filtered desk view) when given.
+ */
+export async function setHouseholdRsvp(
+  db: Database,
+  eventId: string,
+  actor: Actor,
+  input: { householdId: string; guestIds?: string[] } & z.infer<typeof setRsvpSchema>,
+  now?: Date,
+) {
+  const uuid = z.string().uuid();
+  if (!uuid.safeParse(input.householdId).success) throw new RsvpError("not_invited");
+  if (input.guestIds && (input.guestIds.length === 0 || !z.array(uuid).max(200).safeParse(input.guestIds).success)) throw new RsvpError("not_invited");
+  return recordForFunction(db, eventId, actor, { householdId: input.householdId, guestIds: input.guestIds }, input, now);
 }
 
 export const DESK_HOUSEHOLDS_PER_PAGE = 40;
 
 export type DeskMember = { id: string; name: string; relation: string | null; ageGroup: Guest["ageGroup"]; phone: string | null; status: RsvpStatus | null };
-export type DeskHousehold = { id: string; name: string; side: Household["side"]; members: DeskMember[] };
+export type DeskHousehold = {
+  id: string;
+  name: string;
+  side: Household["side"];
+  members: DeskMember[];
+  /** Members of this family invited to the function, including any hidden by the search/tab. */
+  invitedMembers: number;
+};
 export type DeskCounts = { invited: number; attending: number; maybe: number; declined: number; pending: number; households: number };
 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, "\\$&");
@@ -332,16 +351,29 @@ export async function rsvpDesk(
   for (const r of rows) {
     let h = grouped.at(-1);
     if (!h || h.id !== r.householdId) {
-      h = { id: r.householdId, name: r.household, side: r.side, members: [] };
+      h = { id: r.householdId, name: r.household, side: r.side, members: [], invitedMembers: 0 };
       grouped.push(h);
     }
     h.members.push({ id: r.id, name: r.name, relation: r.relation, ageGroup: r.ageGroup, phone: r.phone, status: r.status });
   }
   const pages = Math.max(1, Math.ceil(grouped.length / DESK_HOUSEHOLDS_PER_PAGE));
   const page = Math.min(Math.max(1, Math.floor(filters.page ?? 1) || 1), pages);
+  const shown = grouped.slice((page - 1) * DESK_HOUSEHOLDS_PER_PAGE, page * DESK_HOUSEHOLDS_PER_PAGE);
+  for (const h of shown) h.invitedMembers = h.members.length;
+  if ((q || status) && shown.length) {
+    // A filtered view may show only part of a family: count everyone invited for those families.
+    const sizes = await db
+      .select({ householdId: guests.householdId, n: sql<number>`count(*)::int` })
+      .from(functionInvites)
+      .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+      .where(and(base, inArray(guests.householdId, shown.map((h) => h.id))))
+      .groupBy(guests.householdId);
+    const byId = new Map(sizes.map((x) => [x.householdId, x.n]));
+    for (const h of shown) h.invitedMembers = byId.get(h.id) ?? h.members.length;
+  }
   return {
     counts: countRows[0] ?? { invited: 0, attending: 0, maybe: 0, declined: 0, pending: 0, households: 0 },
-    households: grouped.slice((page - 1) * DESK_HOUSEHOLDS_PER_PAGE, page * DESK_HOUSEHOLDS_PER_PAGE),
+    households: shown,
     totalHouseholds: grouped.length,
     matchingGuests: rows.length,
     page,

@@ -131,7 +131,16 @@ export default async function RsvpDeskPage({ params, searchParams }: PageProps<"
                     ))}
                   </ul>
                   <div className="border-t border-border px-4 py-3">
-                    <FamilyRsvpButtons action={familyAction} householdId={h.id} labels={{ attending: t("rsvp.desk.wholeAttending"), declined: t("rsvp.desk.wholeDeclined") }} />
+                    {h.members.length < h.invitedMembers ? (
+                      <FamilyRsvpButtons
+                        action={familyAction}
+                        householdId={h.id}
+                        guestIds={h.members.map((m) => m.id)}
+                        labels={{ attending: t("rsvp.desk.shownAttending", { count: h.members.length }), declined: t("rsvp.desk.shownDeclined", { count: h.members.length }) }}
+                      />
+                    ) : (
+                      <FamilyRsvpButtons action={familyAction} householdId={h.id} labels={{ attending: t("rsvp.desk.wholeAttending"), declined: t("rsvp.desk.wholeDeclined") }} />
+                    )}
                   </div>
                 </Card>
               </li>
