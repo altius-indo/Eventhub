@@ -121,7 +121,7 @@ describe("preview and import", () => {
     const parsed = await parseSpreadsheet(enc(csv), "guests.csv");
     const imp = await createImport(db(), event.id, actor.userId, "guests.csv", parsed);
     const result = await commitImport(db(), event.id, imp.id, actor, guessMapping(parsed.headers));
-    expect(result).toEqual({ guests: 5, households: 3, skipped: 3 });
+    expect(result).toEqual({ guests: 5, households: 3, skipped: 3, updated: 0, rsvps: 0 });
     await expect(commitImport(db(), event.id, imp.id, actor, guessMapping(parsed.headers))).rejects.toMatchObject({ code: "already_done" });
 
     const { households } = await listGuests(db(), event.id, {});

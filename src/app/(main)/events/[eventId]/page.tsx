@@ -216,7 +216,7 @@ export default async function EventDashboard({ params }: PageProps<"/events/[eve
               const h = heads.get(f.id)!;
               return (
                 <li key={f.id}>
-                  <Link href={`${base}/rsvp#fn-${f.id}`} className="flex min-h-11 flex-col justify-center py-1 hover:text-primary">
+                  <Link href={ctx.can("rsvp.edit") ? `${base}/rsvp/${f.id}` : `${base}/rsvp#fn-${f.id}`} className="flex min-h-11 flex-col justify-center py-1 hover:text-primary">
                     <span className="font-medium">{f.name}</span>
                     <span className="text-sm text-muted">{t("dashboard.headcountRow", { attending: h.attending, maybe: h.maybe, invited: h.invited })}</span>
                   </Link>

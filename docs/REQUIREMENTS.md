@@ -125,7 +125,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **GST-01 (M)** **Households**: a household has a head and members (name, relation, age group adult/child/infant, phone, email, dietary preference, accessibility notes). Optional **postal address** per household (for printed invites and thank-you cards).
 - **GST-02 (M)** Attributes: **side** (bride / groom / both-mutual), free-form **tags** (VIP, elders, kids, college friends, …).
 - **GST-03 (M)** **Per-function invitations** at household or member level.
-- **GST-04 (M)** Bulk **import from Excel/CSV** with column mapping, duplicate detection and validation report; export to Excel.
+- **GST-04 (M)** Bulk **import from Excel/CSV** with column mapping, duplicate detection and validation report; export to Excel. The import can also invite and record RSVPs: "invite everyone in this file to" chosen functions, a column per function (header = function name; cells Yes / Maybe / No / Invited, in English or Hindi) and a general RSVP column. Rows matching guests already on the list can optionally add those invitations and RSVPs (never removing invites or changing contact details); the preview shows per row whether it is a new guest, an update or a skip.
 - **GST-05 (M)** Search, filter and save views (by side, tag, function, RSVP status, travel status).
 - **GST-06 (M)** Guest **magic link** per household, shareable over WhatsApp/SMS/email; regenerate or revoke.
 
@@ -133,7 +133,7 @@ IDs: `MOD-NN`. Priority: **M** = must (v1), **S** = should (v1 if feasible), **C
 - **RSV-01 (M)** Guests RSVP **per function, per member**: attending / not attending / maybe.
 - **RSV-02 (M)** Capture +1s (if allowed), kids count, meal preference (veg / non-veg / Jain / vegan / custom) and allergies.
 - **RSV-03 (M)** RSVP deadline; automated reminders to non-responders (via messaging channels).
-- **RSV-04 (M)** Hosts and Planners can record RSVPs on behalf of guests (phone calls with elders).
+- **RSV-04 (M)** Hosts and Planners can record RSVPs on behalf of guests (phone calls with elders): on the household page (including meals and +1s), on a per-function **RSVP desk** (every invited family and member with one-tap Attending / Maybe / Not attending / Clear, "whole family" buttons, search and reply tabs), or in bulk through the guest **import** with per-function RSVP columns (GST-04).
 - **RSV-05 (M)** Live headcount per function, broken down by side, meal type and adults/kids; exportable for caterers.
 - **RSV-06 (M)** **Caterer live headcount**: vendors booked on a **Catering** service automatically see the live headcount for **the functions they're booked for**, and only those, in the vendor portal.
   - **What they see**: expected attendees (confirmed + maybe, shown separately), adults/kids/infants, meal preference counts (veg / non-veg / Jain / vegan / custom), allergy counts, and pending RSVPs still outstanding.
