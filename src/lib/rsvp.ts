@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Tx } from "@/db";
 import {
@@ -172,6 +172,181 @@ export async function saveRsvps(db: Database, input: SaveRsvpInput) {
     }
     return changed;
   });
+}
+
+// ---------------------------------------------------------------------------
+// RSVP desk: Hosts/Planners record replies per function (RSV-04)
+// ---------------------------------------------------------------------------
+
+export const deskStatuses = ["attending", "maybe", "declined", "pending"] as const;
+export type DeskStatus = (typeof deskStatuses)[number];
+
+export const setRsvpSchema = z.object({
+  functionId: z.string().uuid(),
+  status: z.enum(rsvpStatus.enumValues).nullable(),
+});
+
+/**
+ * Records one reply (or clears it with `status: null`) for every target guest who is invited to
+ * `functionId` in this event. Targets are one guest or a whole family; guests of other events or
+ * not invited to the function are rejected (`not_invited`). Freezes any due caterer lock first
+ * (RSV-07) and writes one audit entry per family. Returns how many answers changed.
+ */
+async function recordForFunction(
+  db: Database,
+  eventId: string,
+  actor: Actor,
+  target: { guestId: string } | { householdId: string },
+  input: z.infer<typeof setRsvpSchema>,
+  now?: Date,
+) {
+  const { functionId, status } = setRsvpSchema.parse(input);
+  return db.transaction(async (tx) => {
+    const invited = await tx
+      .select({ guestId: guests.id, householdId: households.id, household: households.name, fn: functions.name })
+      .from(functionInvites)
+      .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+      .innerJoin(households, eq(households.id, guests.householdId))
+      .innerJoin(functions, eq(functions.id, functionInvites.functionId))
+      .where(
+        and(
+          eq(functionInvites.functionId, functionId),
+          eq(functions.eventId, eventId),
+          eq(guests.eventId, eventId),
+          "guestId" in target ? eq(guests.id, target.guestId) : eq(guests.householdId, target.householdId),
+        ),
+      );
+    if (invited.length === 0) throw new RsvpError("not_invited");
+    await freezeDueLocks(tx, eventId, [functionId], now);
+    const ids = invited.map((i) => i.guestId);
+    let changed = 0;
+    if (status === null) {
+      changed = (await tx.delete(rsvps).where(and(eq(rsvps.functionId, functionId), inArray(rsvps.guestId, ids))).returning()).length;
+    } else {
+      changed = (
+        await tx
+          .insert(rsvps)
+          .values(ids.map((guestId) => ({ guestId, functionId, status, recordedBy: actor.userId })))
+          .onConflictDoUpdate({
+            target: [rsvps.functionId, rsvps.guestId],
+            set: { status, recordedBy: actor.userId, respondedAt: new Date() },
+            setWhere: sql`${rsvps.status} <> excluded.status`,
+          })
+          .returning()
+      ).length;
+    }
+    if (changed > 0) {
+      await audit(tx, {
+        eventId,
+        actor,
+        action: "rsvp.recorded",
+        entityType: "household",
+        entityId: invited[0].householdId,
+        data: { name: invited[0].household, function: invited[0].fn, status: status ?? "pending", changes: changed },
+      });
+    }
+    return changed;
+  });
+}
+
+/** One member's reply for one function, recorded by a Host/Planner. */
+export async function setRsvp(db: Database, eventId: string, actor: Actor, input: { guestId: string } & z.infer<typeof setRsvpSchema>, now?: Date) {
+  if (!z.string().uuid().safeParse(input.guestId).success) throw new RsvpError("not_invited");
+  return recordForFunction(db, eventId, actor, { guestId: input.guestId }, input, now);
+}
+
+/** "Whole family attending / not attending": every member of the family invited to the function. */
+export async function setHouseholdRsvp(db: Database, eventId: string, actor: Actor, input: { householdId: string } & z.infer<typeof setRsvpSchema>, now?: Date) {
+  if (!z.string().uuid().safeParse(input.householdId).success) throw new RsvpError("not_invited");
+  return recordForFunction(db, eventId, actor, { householdId: input.householdId }, input, now);
+}
+
+export const DESK_HOUSEHOLDS_PER_PAGE = 40;
+
+export type DeskMember = { id: string; name: string; relation: string | null; ageGroup: Guest["ageGroup"]; phone: string | null; status: RsvpStatus | null };
+export type DeskHousehold = { id: string; name: string; side: Household["side"]; members: DeskMember[] };
+export type DeskCounts = { invited: number; attending: number; maybe: number; declined: number; pending: number; households: number };
+
+const escapeLike = (s: string) => s.replace(/[\\%_]/g, "\\$&");
+
+/**
+ * The desk list for one function: invited members grouped by family, filtered by a search
+ * (name, family or phone) and a reply tab, paged by family. Counts are for the whole function.
+ */
+export async function rsvpDesk(
+  db: Tx,
+  eventId: string,
+  functionId: string,
+  filters: { q?: string; status?: string; page?: number } = {},
+): Promise<{ counts: DeskCounts; households: DeskHousehold[]; totalHouseholds: number; matchingGuests: number; page: number; pages: number }> {
+  const base = and(eq(functionInvites.functionId, functionId), eq(guests.eventId, eventId));
+  const conds = [base];
+  const q = filters.q?.trim().slice(0, 100);
+  if (q) {
+    const digitsOnly = /^[\d\s+()-]+$/.test(q);
+    for (const term of digitsOnly ? [q] : q.split(/\s+/).filter(Boolean).slice(0, 5)) {
+      const pattern = `%${escapeLike(term)}%`;
+      const digits = term.replace(/\D/g, "");
+      conds.push(or(ilike(guests.name, pattern), ilike(households.name, pattern), digits.length >= 4 ? ilike(guests.phone, `%${digits}%`) : undefined));
+    }
+  }
+  const status = (deskStatuses as readonly string[]).includes(filters.status ?? "") ? (filters.status as DeskStatus) : null;
+  if (status === "pending") conds.push(isNull(rsvps.status));
+  else if (status) conds.push(eq(rsvps.status, status));
+
+  const [countRows, rows] = await Promise.all([
+    db
+      .select({
+        invited: sql<number>`count(*)::int`,
+        attending: sql<number>`count(*) filter (where ${rsvps.status} = 'attending')::int`,
+        maybe: sql<number>`count(*) filter (where ${rsvps.status} = 'maybe')::int`,
+        declined: sql<number>`count(*) filter (where ${rsvps.status} = 'declined')::int`,
+        pending: sql<number>`count(*) filter (where ${rsvps.status} is null)::int`,
+        households: sql<number>`count(distinct ${guests.householdId})::int`,
+      })
+      .from(functionInvites)
+      .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+      .leftJoin(rsvps, and(eq(rsvps.guestId, functionInvites.guestId), eq(rsvps.functionId, functionInvites.functionId)))
+      .where(base),
+    db
+      .select({
+        householdId: households.id,
+        household: households.name,
+        side: households.side,
+        id: guests.id,
+        name: guests.name,
+        relation: guests.relation,
+        ageGroup: guests.ageGroup,
+        phone: guests.phone,
+        status: rsvps.status,
+      })
+      .from(functionInvites)
+      .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+      .innerJoin(households, eq(households.id, guests.householdId))
+      .leftJoin(rsvps, and(eq(rsvps.guestId, functionInvites.guestId), eq(rsvps.functionId, functionInvites.functionId)))
+      .where(and(...conds))
+      .orderBy(sql`lower(${households.name})`, households.id, sql`${guests.isHead} desc`, asc(guests.sortOrder), asc(guests.createdAt)),
+  ]);
+
+  const grouped: DeskHousehold[] = [];
+  for (const r of rows) {
+    let h = grouped.at(-1);
+    if (!h || h.id !== r.householdId) {
+      h = { id: r.householdId, name: r.household, side: r.side, members: [] };
+      grouped.push(h);
+    }
+    h.members.push({ id: r.id, name: r.name, relation: r.relation, ageGroup: r.ageGroup, phone: r.phone, status: r.status });
+  }
+  const pages = Math.max(1, Math.ceil(grouped.length / DESK_HOUSEHOLDS_PER_PAGE));
+  const page = Math.min(Math.max(1, Math.floor(filters.page ?? 1) || 1), pages);
+  return {
+    counts: countRows[0] ?? { invited: 0, attending: 0, maybe: 0, declined: 0, pending: 0, households: 0 },
+    households: grouped.slice((page - 1) * DESK_HOUSEHOLDS_PER_PAGE, page * DESK_HOUSEHOLDS_PER_PAGE),
+    totalHouseholds: grouped.length,
+    matchingGuests: rows.length,
+    page,
+    pages,
+  };
 }
 
 /** A +1 (adult or child) added by the family, invited to the same functions as `invitedWithId`. */

@@ -10,12 +10,13 @@ import {
   ImportError,
   importFields,
   parseSpreadsheet,
+  saveImportSettings,
   type ColumnMapping,
+  type ImportResult,
+  type ImportSettings,
 } from "@/lib/guest-import";
 import { getEventContext } from "@/lib/server/event-context";
 import { getTranslator } from "@/lib/server/session";
-import { eq } from "drizzle-orm";
-import { guestImports } from "@/db/schema";
 
 type State = { error?: string; info?: string };
 
@@ -41,21 +42,38 @@ export async function uploadImportAction(eventId: string, _prev: State, formData
   redirect(`/events/${eventId}/guests/import/${id}`);
 }
 
-function readMapping(formData: FormData): ColumnMapping {
+function readSettings(formData: FormData): ImportSettings {
+  const col = (v: FormDataEntryValue | null) => (typeof v === "string" && v !== "" && Number.isInteger(Number(v)) ? Number(v) : undefined);
   const mapping: ColumnMapping = {};
   for (const field of importFields) {
-    const v = formData.get(`map_${field}`);
-    if (v !== null && v !== "" && Number.isInteger(Number(v))) mapping[field] = Number(v);
+    const c = col(formData.get(`map_${field}`));
+    if (c !== undefined) mapping[field] = c;
   }
-  return mapping;
+  const functionColumns: Record<string, number> = {};
+  for (const [k, v] of formData.entries()) {
+    const m = k.match(/^fncol_(.+)$/);
+    const c = col(v);
+    if (m && c !== undefined) functionColumns[m[1]] = c;
+  }
+  const inviteAll = [...new Set(formData.getAll("inviteAll").filter((v): v is string => typeof v === "string"))];
+  // "Update existing" follows the file (on when it has invite/RSVP data) until someone changes the box.
+  const checked = formData.get("updateExisting") === "1";
+  const stored = formData.get("updateExisting_stored");
+  const shownDefault = formData.get("updateExisting_default") === "1";
+  const updateExisting = stored === "auto" && checked === shownDefault ? null : checked;
+  return { mapping, functionColumns, inviteAll, updateExisting };
 }
 
 export async function updateMappingAction(eventId: string, importId: string, formData: FormData) {
   const ctx = await getEventContext(eventId);
   if (!ctx.can("guests.edit")) return;
-  const imp = await getImport(getDb(), eventId, importId);
-  if (imp.completedAt) return;
-  await getDb().update(guestImports).set({ mapping: readMapping(formData) }).where(eq(guestImports.id, importId));
+  try {
+    await saveImportSettings(getDb(), eventId, importId, readSettings(formData));
+  } catch (err) {
+    // A stale or tampered form (e.g. a function deleted meanwhile): keep the saved settings.
+    if (!(err instanceof ImportError)) throw err;
+    if (err.code === "not_found") return;
+  }
   revalidatePath(`/events/${eventId}/guests/import/${importId}`);
 }
 
@@ -63,7 +81,7 @@ export async function commitImportAction(eventId: string, importId: string, _pre
   const ctx = await getEventContext(eventId);
   const { t } = await getTranslator();
   if (!ctx.can("guests.edit")) return { error: t("common.notAllowed") };
-  let result: { guests: number; households: number; skipped: number };
+  let result: ImportResult;
   try {
     const imp = await getImport(getDb(), eventId, importId);
     result = await commitImport(getDb(), eventId, importId, ctx.actor, imp.mapping ?? {});
@@ -71,5 +89,5 @@ export async function commitImportAction(eventId: string, importId: string, _pre
     return importErrorMessage(err);
   }
   revalidatePath(`/events/${eventId}`, "layout");
-  redirect(`/events/${eventId}/guests?imported=${result.guests}.${result.households}.${result.skipped}`);
+  redirect(`/events/${eventId}/guests?imported=${[result.guests, result.households, result.skipped, result.rsvps, result.updated].join(".")}`);
 }

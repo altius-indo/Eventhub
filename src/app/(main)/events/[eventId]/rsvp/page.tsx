@@ -24,6 +24,7 @@ export default async function RsvpPage({ params }: PageProps<"/events/[eventId]/
   const { t, locale } = await getTranslator();
   const db = getDb();
   const [fns, counts] = await Promise.all([listFunctions(db, eventId), headcounts(db, eventId)]);
+  const canRecord = ctx.can("rsvp.edit");
   const guestsHref = (fn: string, rsvp: string) => `/events/${eventId}/guests?fn=${fn}&rsvp=${rsvp}`;
 
   return (
@@ -117,6 +118,13 @@ export default async function RsvpPage({ params }: PageProps<"/events/[eventId]/
                     </div>
                   )}
                 </>
+              )}
+              {canRecord && (
+                <div className="mt-3 border-t border-border pt-3">
+                  <Link href={`/events/${eventId}/rsvp/${fn.id}`} className={buttonClass("secondary")}>
+                    {t("rsvp.desk.link")}
+                  </Link>
+                </div>
               )}
             </Card>
           );

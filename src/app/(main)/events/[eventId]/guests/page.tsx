@@ -59,11 +59,13 @@ export default async function GuestsPage({ params, searchParams }: PageProps<"/e
         }
       />
 
-      {typeof sp.imported === "string" && /^\d+\.\d+\.\d+$/.test(sp.imported) && (
+      {typeof sp.imported === "string" && /^\d+\.\d+\.\d+(\.\d+\.\d+)?$/.test(sp.imported) && (
         <Alert tone="success">
           {(() => {
-            const [guests, households, skipped] = sp.imported.split(".");
-            return t("importer.done", { guests, households, skipped });
+            const [guests, households, skipped, rsvps, updated] = sp.imported.split(".");
+            return rsvps === undefined || (rsvps === "0" && updated === "0")
+              ? t("importer.done", { guests, households, skipped })
+              : t("importer.doneFull", { guests, households, skipped, rsvps, updated });
           })()}
         </Alert>
       )}

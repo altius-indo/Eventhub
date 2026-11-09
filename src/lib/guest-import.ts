@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs";
 import { and, eq } from "drizzle-orm";
 import type { Database, Tx } from "@/db";
-import { functionInvites, guestImports, guests, households, type AgeGroup, type Diet, type Side } from "@/db/schema";
+import { functionInvites, guestImports, guests, households, rsvps, type AgeGroup, type Diet, type RsvpStatus, type Side } from "@/db/schema";
 import { audit, type Actor } from "./audit";
 import { freezeDueLocks } from "./caterer-headcount";
 import { listFunctions } from "./functions";
@@ -11,7 +11,7 @@ export const MAX_IMPORT_ROWS = 5000;
 export const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 
 export class ImportError extends Error {
-  constructor(public code: "unsupported" | "empty" | "too_many_rows" | "too_large" | "not_found" | "no_name_column" | "already_done") {
+  constructor(public code: "unsupported" | "empty" | "too_many_rows" | "too_large" | "not_found" | "no_name_column" | "already_done" | "bad_setting") {
     super(code);
   }
 }
@@ -120,6 +120,7 @@ export const importFields = [
   "notes",
   "isHead",
   "functions",
+  "rsvp",
 ] as const;
 export type ImportField = (typeof importFields)[number];
 export type ColumnMapping = Partial<Record<ImportField, number>>;
@@ -140,17 +141,23 @@ const synonyms: Record<ImportField, string[]> = {
   notes: ["notes", "note", "comments", "remarks", "नोट"],
   isHead: ["head", "head of family", "primary", "main contact", "मुखिया"],
   functions: ["functions", "events", "invited to", "function", "कार्यक्रम", "रस्में"],
+  rsvp: ["rsvp", "rsvp status", "response", "reply", "जवाब", "आरएसवीपी"],
 };
+/** Short words that only count as an exact header ("Status", not "Travel status"). */
+const exactOnly: Partial<Record<ImportField, string[]>> = { rsvp: ["status"] };
 
-const norm = (s: string) => s.toLowerCase().replace(/[_*:]/g, " ").replace(/\s+/g, " ").trim();
+const norm = (s: string) => s.normalize("NFC").toLowerCase().replace(/[_*:]/g, " ").replace(/\s+/g, " ").trim();
+/** Case- and space-insensitive key for matching a header to a function name. */
+const fnKey = (s: string) => norm(s).replace(/\s*[(\[-]?\s*(rsvp|response|reply|जवाब)\s*[)\]]?$/, "").replace(/\s+/g, "");
 
-/** Guesses which column holds which field from the header names. */
-export function guessMapping(headers: string[]): ColumnMapping {
+/** Guesses which column holds which field from the header names (skipping `exclude` columns). */
+export function guessMapping(headers: string[], exclude: Iterable<number> = []): ColumnMapping {
   const mapping: ColumnMapping = {};
-  const used = new Set<number>();
+  const used = new Set<number>(exclude);
   for (const field of importFields) {
     const options = synonyms[field];
-    let idx = headers.findIndex((h, i) => !used.has(i) && options.includes(norm(h)));
+    const exact = [...options, ...(exactOnly[field] ?? [])];
+    let idx = headers.findIndex((h, i) => !used.has(i) && exact.includes(norm(h)));
     if (idx < 0) idx = headers.findIndex((h, i) => !used.has(i) && options.some((o) => o.length > 3 && norm(h).includes(o)));
     if (idx >= 0) {
       mapping[field] = idx;
@@ -158,6 +165,72 @@ export function guessMapping(headers: string[]): ColumnMapping {
     }
   }
   return mapping;
+}
+
+/** Columns whose header is a function's name ("Sangeet", "sangeet rsvp", "हल्दी"), by function id. */
+export function guessFunctionColumns(headers: string[], fns: { id: string; name: string }[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  const used = new Set<number>();
+  for (const fn of fns) {
+    const key = fnKey(fn.name);
+    if (!key) continue;
+    const idx = headers.findIndex((h, i) => !used.has(i) && fnKey(h) === key);
+    if (idx >= 0) {
+      out[fn.id] = idx;
+      used.add(idx);
+    }
+  }
+  return out;
+}
+
+/**
+ * Everything chosen on the mapping screen. Stored in `guest_imports.mapping` as one flat record:
+ * field names → column, `fn:<functionId>` → column, `all:<functionId>` → 1, `updateExisting` → 0/1.
+ */
+export type ImportSettings = {
+  mapping: ColumnMapping;
+  /** Per-function columns (GST-04): function id → column index. */
+  functionColumns: Record<string, number>;
+  /** "Invite everyone in this file to": function ids. */
+  inviteAll: string[];
+  /** Update invitations/RSVPs of rows that match existing guests; null = default (on when the file has invite/RSVP data). */
+  updateExisting: boolean | null;
+};
+export type StoredMapping = Record<string, number>;
+
+export function encodeSettings(s: ImportSettings): StoredMapping {
+  const out: StoredMapping = { ...s.mapping } as StoredMapping;
+  for (const [id, col] of Object.entries(s.functionColumns)) out[`fn:${id}`] = col;
+  for (const id of s.inviteAll) out[`all:${id}`] = 1;
+  if (s.updateExisting !== null) out.updateExisting = s.updateExisting ? 1 : 0;
+  return out;
+}
+
+/** Reads stored settings, keeping only this event's functions and real columns. */
+export function decodeSettings(stored: StoredMapping | ImportSettings, fns: { id: string }[], width = Infinity): ImportSettings {
+  if ("mapping" in stored && typeof stored.mapping === "object") {
+    return decodeSettings(encodeSettings(stored as ImportSettings), fns, width);
+  }
+  const flat = stored as StoredMapping;
+  const valid = new Set(fns.map((f) => f.id));
+  const col = (v: unknown) => (Number.isInteger(v) && (v as number) >= 0 && (v as number) < width ? (v as number) : undefined);
+  const mapping: ColumnMapping = {};
+  for (const f of importFields) {
+    const c = col(flat[f]);
+    if (c !== undefined) mapping[f] = c;
+  }
+  const functionColumns: Record<string, number> = {};
+  const inviteAll: string[] = [];
+  for (const [k, v] of Object.entries(flat)) {
+    if (k.startsWith("fn:") && valid.has(k.slice(3)) && col(v) !== undefined) functionColumns[k.slice(3)] = v;
+    if (k.startsWith("all:") && valid.has(k.slice(4)) && v === 1) inviteAll.push(k.slice(4));
+  }
+  return { mapping, functionColumns, inviteAll, updateExisting: flat.updateExisting === undefined ? null : flat.updateExisting === 1 };
+}
+
+/** Whether the file says anything about invitations or replies (the "update existing" default). */
+export function hasInviteData(s: ImportSettings) {
+  return s.mapping.functions !== undefined || s.mapping.rsvp !== undefined || Object.keys(s.functionColumns).length > 0 || s.inviteAll.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +271,26 @@ export function parseDiet(raw: string): { diet: Diet | null; notes: string | nul
 
 const truthy = (raw: string) => /^(y|yes|true|1|x|✓|head|हाँ|हां)$/i.test(raw.trim());
 
+const rsvpWords: [RsvpStatus | "invited", string[]][] = [
+  ["attending", ["attending", "attend", "will attend", "yes", "y", "coming", "confirmed", "हाँ", "हां", "आएंगे", "आएँगे", "आ रहे हैं", "आएगा", "आएगी"]],
+  ["maybe", ["maybe", "may be", "tentative", "not sure", "शायद", "पक्का नहीं"]],
+  ["declined", ["no", "n", "not attending", "not coming", "declined", "decline", "regrets", "नहीं", "ना", "नहीं आएंगे", "नहीं आएँगे", "नहीं आ पाएंगे", "नहीं आ पाएँगे"]],
+  ["invited", ["invited", "invite", "x", "✓", "✔", "1", "true", "pending", "no reply yet", "आमंत्रित", "बुलावा", "अभी जवाब नहीं"]],
+];
+const rsvpLookup = new Map(rsvpWords.flatMap(([k, words]) => words.map((w) => [w, k] as const)));
+
+/**
+ * A cell of a function column or the RSVP column: blank → null (no change); otherwise whether
+ * it invites and which reply it records, or "unknown" for anything else.
+ */
+export function parseRsvpCell(raw: string): { status: RsvpStatus | null } | null | "unknown" {
+  const v = norm(raw.replace(/️/g, "")).replace(/[.!।]+$/, "").trim();
+  if (!v) return null;
+  const k = rsvpLookup.get(v);
+  if (!k) return "unknown";
+  return { status: k === "invited" ? null : k };
+}
+
 // ---------------------------------------------------------------------------
 // Preview (validation + duplicates)
 // ---------------------------------------------------------------------------
@@ -206,11 +299,18 @@ export type RowIssue =
   | { kind: "error"; code: "missingName" }
   | { kind: "warning"; code: "phoneInvalid" | "emailInvalid" | "sideUnknown" | "ageUnknown"; value: string }
   | { kind: "warning"; code: "functionUnknown"; value: string }
+  | { kind: "warning"; code: "rsvpUnknown"; value: string; column: string }
+  | { kind: "warning"; code: "rsvpNoFunction"; value: string }
   | { kind: "skip"; code: "duplicateInFile"; row: number }
-  | { kind: "skip"; code: "alreadyInList"; name: string };
+  | { kind: "skip"; code: "alreadyInList"; name: string }
+  | { kind: "info"; code: "updateExisting"; name: string };
+
+export type RowAction = "create" | "update" | "skip" | "error";
+export type RsvpChange = { functionId: string; newInvite: boolean; from: RsvpStatus | null; to: RsvpStatus | null };
 
 export type PreviewRow = {
   row: number; // 1-based spreadsheet row number (header is row 1)
+  action: RowAction;
   householdKey: string;
   householdName: string;
   side: Side;
@@ -227,34 +327,58 @@ export type PreviewRow = {
   postalCode: string | null;
   notes: string | null;
   isHead: boolean;
+  /** Functions this row is invited to (new guests) or should be invited to (existing guests). */
   functionIds: string[];
+  /** Replies the file gives, per function. */
+  rsvps: { functionId: string; status: RsvpStatus }[];
+  /** For "update" rows: the matched guest and what will change. */
+  existingGuestId: string | null;
+  changes: RsvpChange[];
   issues: RowIssue[];
 };
 
 export type ImportPreview = {
   rows: PreviewRow[];
   importable: number;
+  updates: number;
+  rsvps: number;
   skipped: number;
   errors: number;
   warnings: number;
   households: number;
+  updateExisting: boolean;
 };
 
-type ExistingGuest = { name: string; phone: string | null; email: string | null; householdName: string };
+export type ExistingGuest = {
+  id: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  householdName: string;
+  functionIds: string[];
+  rsvp: Record<string, RsvpStatus>;
+};
 
 export function buildPreview(
   rows: string[][],
-  mapping: ColumnMapping,
-  existing: ExistingGuest[],
+  input: StoredMapping | ImportSettings,
+  existing: (Omit<ExistingGuest, "id" | "functionIds" | "rsvp"> & Partial<ExistingGuest>)[],
   fns: { id: string; name: string }[],
+  headers: string[] = [],
 ): ImportPreview {
+  const settings = decodeSettings(input, fns);
+  const { mapping } = settings;
   if (mapping.name === undefined) throw new ImportError("no_name_column");
+  const updateExisting = settings.updateExisting ?? hasInviteData(settings);
   const get = (r: string[], f: ImportField) => (mapping[f] === undefined ? "" : (r[mapping[f]!] ?? "").trim());
   const fnByName = new Map(fns.map((f) => [norm(f.name), f.id]));
+  const fnOrder = new Map(fns.map((f, i) => [f.id, i]));
+  const fnCols = Object.entries(settings.functionColumns);
+  const header = (c: number) => headers[c] ?? `#${c + 1}`;
 
-  const existingPhones = new Map(existing.filter((g) => g.phone).map((g) => [g.phone!, g.name]));
-  const existingEmails = new Map(existing.filter((g) => g.email).map((g) => [g.email!, g.name]));
-  const existingNames = new Set(existing.map((g) => `${norm(g.householdName)}|${norm(g.name)}`));
+  const existingPhones = new Map(existing.filter((g) => g.phone).map((g) => [g.phone!, g]));
+  const existingEmails = new Map(existing.filter((g) => g.email).map((g) => [g.email!, g]));
+  const existingNames = new Map(existing.map((g) => [`${norm(g.householdName)}|${norm(g.name)}`, g]));
   const seenPhones = new Map<string, number>();
   const seenEmails = new Map<string, number>();
   const seenNames = new Map<string, number>();
@@ -280,12 +404,33 @@ export function buildPreview(
     const email = normalizeEmail(rawEmail);
     if (email === "invalid") issues.push({ kind: "warning", code: "emailInvalid", value: rawEmail });
 
-    const functionIds: string[] = [];
+    // Invitations: "invite everyone" + the functions column + per-function columns.
+    const invited = new Set<string>(settings.inviteAll);
     for (const fnName of get(r, "functions").split(/[,;/]/).map((s) => s.trim()).filter(Boolean)) {
       const id = fnByName.get(norm(fnName));
-      if (id) functionIds.push(id);
+      if (id) invited.add(id);
       else issues.push({ kind: "warning", code: "functionUnknown", value: fnName });
     }
+    const replies = new Map<string, RsvpStatus>();
+    for (const [fnId, c] of fnCols) {
+      const raw = (r[c] ?? "").trim();
+      const cell = parseRsvpCell(raw);
+      if (cell === "unknown") issues.push({ kind: "warning", code: "rsvpUnknown", value: raw, column: header(c) });
+      else if (cell) {
+        invited.add(fnId);
+        if (cell.status) replies.set(fnId, cell.status);
+      }
+    }
+    // The generic RSVP column fills in every invited function without its own reply.
+    const rawRsvp = get(r, "rsvp");
+    const generic = parseRsvpCell(rawRsvp);
+    if (generic === "unknown") issues.push({ kind: "warning", code: "rsvpUnknown", value: rawRsvp, column: header(mapping.rsvp!) });
+    else if (generic?.status) {
+      if (invited.size === 0) issues.push({ kind: "warning", code: "rsvpNoFunction", value: rawRsvp });
+      for (const fnId of invited) if (!replies.has(fnId)) replies.set(fnId, generic.status);
+    }
+    const functionIds = [...invited].sort((a, b) => (fnOrder.get(a) ?? 0) - (fnOrder.get(b) ?? 0));
+    const rsvps = functionIds.filter((id) => replies.has(id)).map((functionId) => ({ functionId, status: replies.get(functionId)! }));
 
     const householdName = get(r, "household") || name;
     const { diet, notes: dietNotes } = parseDiet(get(r, "diet"));
@@ -294,24 +439,46 @@ export function buildPreview(
     const validPhone = phone && phone !== "invalid" ? phone : null;
     const validEmail = email && email !== "invalid" ? email : null;
     const nameKey = `${norm(householdName)}|${norm(name)}`;
+    let existingGuestId: string | null = null;
+    let changes: RsvpChange[] = [];
     if (name) {
       const firstRow =
         (validPhone && seenPhones.get(validPhone)) || (validEmail && seenEmails.get(validEmail)) || seenNames.get(nameKey);
       if (firstRow) issues.push({ kind: "skip", code: "duplicateInFile", row: firstRow });
       else {
-        const match =
-          (validPhone && existingPhones.get(validPhone)) ||
-          (validEmail && existingEmails.get(validEmail)) ||
-          (existingNames.has(nameKey) ? name : undefined);
-        if (match) issues.push({ kind: "skip", code: "alreadyInList", name: match });
+        const match = (validPhone && existingPhones.get(validPhone)) || (validEmail && existingEmails.get(validEmail)) || existingNames.get(nameKey);
+        if (match) {
+          if (updateExisting && match.id) {
+            const has = new Set(match.functionIds ?? []);
+            changes = functionIds
+              .map((functionId) => {
+                const from = match.rsvp?.[functionId] ?? null;
+                return { functionId, newInvite: !has.has(functionId), from, to: replies.get(functionId) ?? from };
+              })
+              .filter((c) => c.newInvite || c.to !== c.from);
+          }
+          if (changes.length) {
+            existingGuestId = match.id!;
+            issues.push({ kind: "info", code: "updateExisting", name: match.name });
+          } else issues.push({ kind: "skip", code: "alreadyInList", name: match.name });
+        }
       }
       if (validPhone && !seenPhones.has(validPhone)) seenPhones.set(validPhone, rowNo);
       if (validEmail && !seenEmails.has(validEmail)) seenEmails.set(validEmail, rowNo);
       if (!seenNames.has(nameKey)) seenNames.set(nameKey, rowNo);
     }
 
+    const action: RowAction = issues.some((x) => x.kind === "error")
+      ? "error"
+      : issues.some((x) => x.kind === "skip")
+        ? "skip"
+        : existingGuestId
+          ? "update"
+          : "create";
+
     return {
       row: rowNo,
+      action,
       householdKey: norm(householdName),
       householdName,
       side: side ?? "both",
@@ -329,18 +496,25 @@ export function buildPreview(
       notes: get(r, "notes") || null,
       isHead: truthy(get(r, "isHead")),
       functionIds,
+      rsvps,
+      existingGuestId,
+      changes,
       issues,
     };
   });
 
-  const importable = out.filter((r) => !r.issues.some((i) => i.kind === "error" || i.kind === "skip"));
+  const importable = out.filter((r) => r.action === "create");
+  const updates = out.filter((r) => r.action === "update");
   return {
     rows: out,
     importable: importable.length,
-    skipped: out.filter((r) => r.issues.some((i) => i.kind === "skip")).length,
-    errors: out.filter((r) => r.issues.some((i) => i.kind === "error")).length,
+    updates: updates.length,
+    rsvps: importable.reduce((n, r) => n + r.rsvps.length, 0) + updates.reduce((n, r) => n + r.changes.filter((c) => c.to && c.to !== c.from).length, 0),
+    skipped: out.filter((r) => r.action === "skip").length,
+    errors: out.filter((r) => r.action === "error").length,
     warnings: out.filter((r) => r.issues.some((i) => i.kind === "warning")).length,
     households: new Set(importable.map((r) => r.householdKey)).size,
+    updateExisting,
   };
 }
 
@@ -348,10 +522,24 @@ export function buildPreview(
 // Persistence
 // ---------------------------------------------------------------------------
 
+/** Guessed settings for a new upload: function-name columns first, then the usual fields. */
+export function guessSettings(headers: string[], fns: { id: string; name: string }[]): ImportSettings {
+  const functionColumns = guessFunctionColumns(headers, fns);
+  return { mapping: guessMapping(headers, Object.values(functionColumns)), functionColumns, inviteAll: [], updateExisting: null };
+}
+
 export async function createImport(db: Tx, eventId: string, userId: string, filename: string, parsed: { headers: string[]; rows: string[][] }) {
+  const fns = await listFunctions(db, eventId);
   const [row] = await db
     .insert(guestImports)
-    .values({ eventId, createdBy: userId, filename: filename.slice(0, 200), headers: parsed.headers, rows: parsed.rows, mapping: guessMapping(parsed.headers) })
+    .values({
+      eventId,
+      createdBy: userId,
+      filename: filename.slice(0, 200),
+      headers: parsed.headers,
+      rows: parsed.rows,
+      mapping: encodeSettings(guessSettings(parsed.headers, fns)),
+    })
     .returning();
   return row;
 }
@@ -365,26 +553,70 @@ export async function getImport(db: Tx, eventId: string, importId: string) {
   return row;
 }
 
+/**
+ * Saves the mapping screen. Function ids must belong to this event and columns must exist,
+ * since they come from a form (`bad_setting` otherwise).
+ */
+export async function saveImportSettings(db: Tx, eventId: string, importId: string, settings: ImportSettings) {
+  const imp = await getImport(db, eventId, importId);
+  if (imp.completedAt) throw new ImportError("already_done");
+  const fns = await listFunctions(db, eventId);
+  const valid = new Set(fns.map((f) => f.id));
+  const width = imp.headers.length;
+  const okCol = (c: number) => Number.isInteger(c) && c >= 0 && c < width;
+  if (
+    Object.values(settings.mapping).some((c) => !okCol(c!)) ||
+    Object.entries(settings.functionColumns).some(([id, c]) => !valid.has(id) || !okCol(c)) ||
+    settings.inviteAll.some((id) => !valid.has(id))
+  ) {
+    throw new ImportError("bad_setting");
+  }
+  await db.update(guestImports).set({ mapping: encodeSettings(settings) }).where(eq(guestImports.id, importId));
+}
+
 export async function existingGuestsForDedup(db: Tx, eventId: string): Promise<ExistingGuest[]> {
-  return db
-    .select({ name: guests.name, phone: guests.phone, email: guests.email, householdName: households.name })
+  // Sequential: this also runs inside the commit transaction (one connection).
+  const rows = await db
+    .select({ id: guests.id, name: guests.name, phone: guests.phone, email: guests.email, householdName: households.name })
     .from(guests)
     .innerJoin(households, eq(households.id, guests.householdId))
     .where(eq(guests.eventId, eventId));
+  const invites = await db
+    .select({ guestId: functionInvites.guestId, functionId: functionInvites.functionId })
+    .from(functionInvites)
+    .innerJoin(guests, eq(guests.id, functionInvites.guestId))
+    .where(eq(guests.eventId, eventId));
+  const answers = await db
+    .select({ guestId: rsvps.guestId, functionId: rsvps.functionId, status: rsvps.status })
+    .from(rsvps)
+    .innerJoin(guests, eq(guests.id, rsvps.guestId))
+    .where(eq(guests.eventId, eventId));
+  const byId = new Map<string, ExistingGuest>(rows.map((g) => [g.id, { ...g, functionIds: [], rsvp: {} }]));
+  for (const i of invites) byId.get(i.guestId)?.functionIds.push(i.functionId);
+  for (const a of answers) {
+    const g = byId.get(a.guestId);
+    if (g) g.rsvp[a.functionId] = a.status;
+  }
+  return [...byId.values()];
 }
 
-export async function previewImport(db: Tx, eventId: string, importId: string, mapping?: ColumnMapping) {
+export async function previewImport(db: Tx, eventId: string, importId: string, mapping?: StoredMapping | ImportSettings) {
   const imp = await getImport(db, eventId, importId);
   const fns = await listFunctions(db, eventId);
-  const preview = buildPreview(imp.rows, mapping ?? imp.mapping ?? {}, await existingGuestsForDedup(db, eventId), fns);
-  return { imp, preview };
+  const settings = decodeSettings(mapping ?? imp.mapping ?? {}, fns, imp.headers.length);
+  const preview = buildPreview(imp.rows, settings, await existingGuestsForDedup(db, eventId), fns, imp.headers);
+  return { imp, preview, settings, functions: fns };
 }
+
+export type ImportResult = { guests: number; households: number; skipped: number; updated: number; rsvps: number };
 
 /**
  * Imports the valid, non-duplicate rows. Rows sharing a household value become
- * one household (merged into an existing household with the same name).
+ * one household (merged into an existing household with the same name). Rows matching
+ * an existing guest get the file's invitations and replies when "update existing" is on;
+ * their name and contact details are never changed and no invitation is removed.
  */
-export async function commitImport(db: Database, eventId: string, importId: string, actor: Actor, mapping: ColumnMapping) {
+export async function commitImport(db: Database, eventId: string, importId: string, actor: Actor, mapping: StoredMapping | ImportSettings): Promise<ImportResult> {
   return db.transaction(async (tx) => {
     const [locked] = await tx
       .select()
@@ -393,12 +625,16 @@ export async function commitImport(db: Database, eventId: string, importId: stri
       .for("update");
     if (!locked) throw new ImportError("not_found");
     if (locked.completedAt) throw new ImportError("already_done");
-    // New invitations change headcounts: freeze any due caterer lock first (RSV-07).
-    await freezeDueLocks(tx, eventId, null);
 
     const fns = await listFunctions(tx, eventId);
-    const preview = buildPreview(locked.rows, mapping, await existingGuestsForDedup(tx, eventId), fns);
-    const rows = preview.rows.filter((r) => !r.issues.some((i) => i.kind === "error" || i.kind === "skip"));
+    const settings = decodeSettings(mapping, fns, locked.headers.length);
+    const preview = buildPreview(locked.rows, settings, await existingGuestsForDedup(tx, eventId), fns, locked.headers);
+    const rows = preview.rows.filter((r) => r.action === "create");
+    const updates = preview.rows.filter((r) => r.action === "update");
+
+    // New invitations and replies change headcounts: freeze any due caterer lock first (RSV-07).
+    const affected = new Set([...rows.flatMap((r) => r.functionIds), ...updates.flatMap((r) => r.changes.map((c) => c.functionId))]);
+    await freezeDueLocks(tx, eventId, [...affected]);
 
     const existingHouseholds = await tx.select().from(households).where(eq(households.eventId, eventId));
     const householdIds = new Map(existingHouseholds.map((h) => [norm(h.name), h.id]));
@@ -408,6 +644,7 @@ export async function commitImport(db: Database, eventId: string, importId: stri
 
     let createdHouseholds = 0;
     let createdGuests = 0;
+    let recorded = 0;
     for (const [key, members] of groups) {
       let householdId = householdIds.get(key);
       let isNew = false;
@@ -461,20 +698,40 @@ export async function commitImport(db: Database, eventId: string, importId: stri
             .values(m.functionIds.map((functionId) => ({ functionId, guestId: g.id })))
             .onConflictDoNothing();
         }
+        if (m.rsvps.length) {
+          await tx.insert(rsvps).values(m.rsvps.map((a) => ({ functionId: a.functionId, guestId: g.id, status: a.status, recordedBy: actor.userId })));
+          recorded += m.rsvps.length;
+        }
         createdGuests++;
       }
     }
 
-    await tx.update(guestImports).set({ mapping, completedAt: new Date() }).where(eq(guestImports.id, importId));
+    // Guests already on the list: add invitations and set replies only.
+    for (const u of updates) {
+      const guestId = u.existingGuestId!;
+      const newInvites = u.changes.filter((c) => c.newInvite).map((c) => ({ functionId: c.functionId, guestId }));
+      if (newInvites.length) await tx.insert(functionInvites).values(newInvites).onConflictDoNothing();
+      for (const c of u.changes) {
+        if (!c.to || c.to === c.from) continue;
+        await tx
+          .insert(rsvps)
+          .values({ functionId: c.functionId, guestId, status: c.to, recordedBy: actor.userId })
+          .onConflictDoUpdate({ target: [rsvps.functionId, rsvps.guestId], set: { status: c.to, recordedBy: actor.userId, respondedAt: new Date() } });
+        recorded++;
+      }
+    }
+
+    const skipped = preview.rows.length - rows.length - updates.length;
+    await tx.update(guestImports).set({ mapping: encodeSettings(settings), completedAt: new Date() }).where(eq(guestImports.id, importId));
     await audit(tx, {
       eventId,
       actor,
       action: "guests.imported",
       entityType: "import",
       entityId: importId,
-      data: { filename: locked.filename, guests: createdGuests, households: createdHouseholds, skipped: preview.rows.length - rows.length },
+      data: { filename: locked.filename, guests: createdGuests, households: createdHouseholds, skipped, updated: updates.length, rsvps: recorded },
     });
-    return { guests: createdGuests, households: createdHouseholds, skipped: preview.rows.length - rows.length };
+    return { guests: createdGuests, households: createdHouseholds, skipped, updated: updates.length, rsvps: recorded };
   });
 }
 
@@ -483,7 +740,7 @@ export async function commitImport(db: Database, eventId: string, importId: stri
 // ---------------------------------------------------------------------------
 
 export type ExportLabels = {
-  headers: Record<ImportField, string>;
+  headers: Record<Exclude<ImportField, "rsvp">, string>;
   sides: Record<Side, string>;
   ages: Record<AgeGroup, string>;
   diets: Record<Diet, string>;
@@ -506,7 +763,7 @@ export async function buildGuestWorkbook(
   const wb = new ExcelJS.Workbook();
   wb.creator = "EventHub";
   const sheet = wb.addWorksheet(labels.guestsSheet, { views: [{ state: "frozen", ySplit: 1 }] });
-  const order: ImportField[] = ["household", "side", "name", "isHead", "relation", "ageGroup", "phone", "email", "diet", "tags", "functions", "address", "city", "postalCode", "notes"];
+  const order: Exclude<ImportField, "rsvp">[] = ["household", "side", "name", "isHead", "relation", "ageGroup", "phone", "email", "diet", "tags", "functions", "address", "city", "postalCode", "notes"];
   sheet.columns = order.map((f) => ({ header: labels.headers[f], key: f, width: f === "functions" || f === "address" ? 36 : f === "name" || f === "household" ? 24 : 16 }));
   sheet.getRow(1).font = { bold: true };
   const fnName = new Map(fns.map((f) => [f.id, f.name]));

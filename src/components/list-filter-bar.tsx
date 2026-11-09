@@ -116,7 +116,7 @@ export function ListFilterBar({
                 replace
                 scroll={false}
                 aria-current={on ? "page" : undefined}
-                className={`flex min-h-11 flex-1 items-center justify-center rounded-md px-1 text-sm font-medium ${
+                className={`flex min-h-11 flex-1 items-center justify-center rounded-md px-1 text-center text-sm leading-tight font-medium ${
                   on ? "bg-surface text-primary shadow-sm" : "text-muted hover:text-text"
                 }`}
               >
